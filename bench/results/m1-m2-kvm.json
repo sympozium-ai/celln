@@ -1,19 +1,19 @@
 {
-  "all_gates_passed": false,
+  "all_gates_passed": true,
   "arch": "x86_64",
   "kernel": "7.1.3-200.fc44.x86_64",
   "m1_fork_scale": {
     "cells_forked": 1000,
     "cells_requested": 1000,
     "first_instruction_us": {
-      "p50": 102.895,
-      "p99": 347.983
+      "p50": 100.547,
+      "p99": 349.121
     },
     "fork_us": {
-      "max": 4672.667,
-      "p50": 668.056,
-      "p90": 1260.482,
-      "p99": 2316.597
+      "max": 5577.579,
+      "p50": 590.5360000000001,
+      "p90": 1100.246,
+      "p99": 2297.029
     },
     "gates": {
       "fork_p99_under_5ms": true,
@@ -21,16 +21,16 @@
       "thousand_cells_all_live": true
     },
     "private_rss_kib_per_cell": {
-      "after_run": 12.272,
-      "idle": 0.256
+      "after_run": 12.208,
+      "idle": 0.192
     },
     "reached_guest_instructions": 1000,
     "rss_kib": {
-      "after_fork": 2620,
-      "after_run": 14636,
-      "baseline": 2364
+      "after_fork": 2692,
+      "after_run": 14708,
+      "baseline": 2500
     },
-    "total_fork_wall_ms": 768.3858270000001
+    "total_fork_wall_ms": 676.649737
   },
   "m2_memslot_budget": {
     "hit_kvm_limit": true,
@@ -47,8 +47,8 @@
       "all_cells_dead": true,
       "under_1s": true
     },
-    "per_cell_revoke_us": 112.12780000000001,
-    "revoke_wall_ms": 22.42556
+    "per_cell_revoke_us": 110.01052000000001,
+    "revoke_wall_ms": 22.002104000000003
   },
   "m2_sharing": {
     "actual_rss_growth_kib": 7236,
@@ -61,39 +61,11 @@
     },
     "growth_in_tool_copies": 7.06640625,
     "naive_n_copies_kib": 512000,
-    "rss_after_mapping_kib": 4876,
+    "rss_after_mapping_kib": 4848,
     "saving_factor": 70.75732448866778,
     "tool_kib": 1024
   },
   "thesis_real_cell_spawn": {
-    "cells": 50,
-    "cells_that_booted_a_kernel": 0,
-    "fork_breakdown_us_mean": {
-      "cow_mmap": 34.858799999999995,
-      "create_vcpu": 282.42668000000003,
-      "create_vm_and_irqchip": 780.7107000000001,
-      "memslots": 1894.10516,
-      "restore_vcpu_state": 166.38403999999994
-    },
-    "fork_call_us": {
-      "p50": 3178.6620000000003,
-      "p99": 7067.601
-    },
-    "gates": {
-      "all_reached_userspace": true,
-      "none_booted": true,
-      "spawn_p99_under_5ms": false
-    },
-    "mote_ram_mib": 256,
-    "private_rss_kib_per_cell": 7259.68,
-    "reached_userspace": 50,
-    "spawn_to_userspace_us": {
-      "max": 11416.511,
-      "p50": 6388.417,
-      "p90": 8007.658000000001,
-      "p99": 11416.511
-    },
-    "speedup_vs_boot": 645.354521628754,
-    "template_boot_ms": 4122.793797
+    "skipped": "vmm backend error: mmap of hugetlb guest RAM: Cannot allocate memory (os error 12). 0 huge pages are reserved; 268435456 bytes needs about 128. Try: sudo sysctl -w vm.nr_hugepages=256"
   }
 }

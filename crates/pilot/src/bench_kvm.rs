@@ -498,6 +498,14 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
         format!("{boot_ms:.0} ms"),
         None,
     );
+    let mem_mode = if std::env::var_os("NOUS_HUGETLB").is_some() {
+        "hugetlbfs (2 MiB)"
+    } else if std::env::var_os("NOUS_HUGEPAGE").is_some() {
+        "memfd + MADV_HUGEPAGE"
+    } else {
+        "memfd, 4 KiB pages"
+    };
+    row("guest RAM backing", mem_mode.to_string(), None);
     row("mote RAM parked", format!("{ram_mib} MiB"), None);
     row(
         "fork call p50 / p99",
@@ -600,6 +608,7 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
         "cells_that_booted_a_kernel": booted_again,
         "template_boot_ms": boot_ms,
         "mote_ram_mib": ram_mib,
+        "guest_ram_backing": mem_mode,
         "fork_call_us": { "p50": us(pct(&spawn, 0.50)), "p99": us(pct(&spawn, 0.99)) },
         "fork_breakdown_us_mean": {
             "create_vm_and_irqchip": mean(|x| x.create_vm),

@@ -495,6 +495,18 @@ impl Serial {
     }
 }
 
+/// Ask for transparent huge pages when `NOUS_HUGEPAGE=1`.
+///
+/// A no-op unless the host allows shmem THP. Kept as advice rather than a hard
+/// requirement so the same binary measures both ways: the point is the fault
+/// count, and whether 2 MiB pages actually reduce it for a CoW-forked guest is
+/// exactly the open question.
+fn maybe_hugepage(ptr: *mut libc::c_void, len: usize) {
+    if std::env::var_os("NOUS_HUGEPAGE").is_some() {
+        unsafe { libc::madvise(ptr, len, libc::MADV_HUGEPAGE) };
+    }
+}
+
 /// Host mmap backing guest memory.
 ///
 /// Guest RAM is always backed by a memfd rather than anonymous memory, because
@@ -514,11 +526,35 @@ unsafe impl Send for Mem {}
 
 impl Mem {
     /// A writable, shareable RAM image: the template a mote is parked in.
+    ///
+    /// Two huge-page paths, both off by default because both need host state
+    /// this project will not change on its own (see `docs/findings/m1-spawn.md`):
+    ///
+    /// * `NOUS_HUGEPAGE=1` — `MADV_HUGEPAGE` on the mapping. Needs
+    ///   `/sys/kernel/mm/transparent_hugepage/shmem_enabled` set to `advise` or
+    ///   `always`; it is `never` on stock Fedora, where this is a silent no-op.
+    /// * `NOUS_HUGETLB=1` — back the memfd with hugetlbfs outright. Needs
+    ///   `vm.nr_hugepages` reserved, and **fails loudly** rather than falling
+    ///   back, because a silent fallback would report a huge-page result for a
+    ///   4 KiB run.
     fn memfd_shared(len: usize, name: &str) -> Result<Self, VmmError> {
         let cname =
             CString::new(name).map_err(|_| VmmError::Backend("memfd name contains NUL".into()))?;
-        let raw = unsafe { libc::memfd_create(cname.as_ptr(), libc::MFD_CLOEXEC) };
+        let hugetlb = std::env::var_os("NOUS_HUGETLB").is_some();
+        let flags = if hugetlb {
+            libc::MFD_CLOEXEC | libc::MFD_HUGETLB
+        } else {
+            libc::MFD_CLOEXEC
+        };
+        let raw = unsafe { libc::memfd_create(cname.as_ptr(), flags) };
         if raw < 0 {
+            if hugetlb {
+                return Err(VmmError::Backend(format!(
+                    "memfd_create(MFD_HUGETLB): {}. Reserve huge pages first: \
+                     sudo sysctl -w vm.nr_hugepages=<n>",
+                    std::io::Error::last_os_error()
+                )));
+            }
             return Err(errno("memfd_create guest RAM"));
         }
         let fd = unsafe { OwnedFd::from_raw_fd(raw) };
@@ -536,8 +572,24 @@ impl Mem {
             )
         };
         if ptr == libc::MAP_FAILED {
+            if hugetlb {
+                // memfd_create(MFD_HUGETLB) succeeds even with no huge pages
+                // reserved; it is the mmap that fails, with a bare ENOMEM that
+                // says nothing about why.
+                return Err(VmmError::Backend(format!(
+                    "mmap of hugetlb guest RAM: {}. {} huge pages are reserved; \
+                     {len} bytes needs about {}. Try: sudo sysctl -w vm.nr_hugepages={}",
+                    std::io::Error::last_os_error(),
+                    std::fs::read_to_string("/proc/sys/vm/nr_hugepages")
+                        .unwrap_or_default()
+                        .trim(),
+                    len.div_ceil(2 << 20),
+                    len.div_ceil(2 << 20) * 2,
+                )));
+            }
             return Err(errno("mmap guest RAM (shared)"));
         }
+        maybe_hugepage(ptr, len);
         Ok(Mem {
             ptr: ptr as *mut u8,
             len,
@@ -566,6 +618,7 @@ impl Mem {
         if ptr == libc::MAP_FAILED {
             return Err(errno("mmap guest RAM (CoW)"));
         }
+        maybe_hugepage(ptr, len);
         if std::env::var_os("NOUS_PREFAULT").is_some() {
             // MADV_POPULATE_READ: fault in the shared pages now, read-only, so
             // sharing survives; a guest write still takes its own CoW fault.
