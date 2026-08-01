@@ -5,13 +5,13 @@
 //! Linux boot protocol, a serial console, and an attested tool page-set sealed
 //! into the guest's physical address space while it boots.
 //!
-//! It then asks guest userspace the question the **VFS↔memslot join** turns on:
-//! map the sealed region, check it really is the sealed page-set, execute out
-//! of it, and try to modify it. The seal holds through that mapping.
+//! It then proves the **VFS↔memslot join** in its production shape: guest
+//! userspace opens a tool BY PATH under DAX, checks it really is the sealed
+//! page-set, executes out of it, fails to modify it, and then — while it still
+//! holds the mapping — has the tool revoked out from under it.
 //!
-//! The probe reaches the pages via `/dev/mem` — the shortest unambiguously
-//! direct mapping. What remains is the production path: getting a *file* to
-//! resolve to those same pages without a page-cache copy (ADR-0005).
+//! The older `/dev/mem` probe runs alongside as the unambiguously-direct
+//! control, so a regression says which half broke (ADR-0005).
 
 use nous_manifest::Hash;
 use warden::vmm::boot::{BootConfig, BootEnd, LinuxCell};
@@ -65,6 +65,9 @@ fn main() -> anyhow::Result<()> {
     let mut cell = LinuxCell::boot(cfg)?;
     let h = Hash::of(&payload);
     let gpa = cell.seal_tool(&h, &payload)?;
+    // Beat 5, against a real kernel: the guest tells us when it is holding the
+    // tool, and we pull the pages out from under it mid-run.
+    cell.revoke_when_guest_prints(&h, "NOUS:dax_revoke_ready=now");
     println!("sealed: {sealed_what}");
     println!("  {h}");
     println!(
@@ -127,6 +130,13 @@ fn main() -> anyhow::Result<()> {
         "    host counted {} refused write(s) into sealed regions",
         r.sealed_writes_blocked
     );
+    let revoked = r.revoked_live && g("dax_after_revoke") == "revoked";
+    dax_ok &= revoked;
+    println!(
+        "  {} revoked mid-run, tool gone from the mapping  {}",
+        verdict(revoked),
+        g("dax_after_revoke")
+    );
 
     println!("\n\x1b[1mThe same question via /dev/mem (the earlier, direct probe)\x1b[0m");
     println!("  mapped the sealed region          {}", g("seal_probe"));
@@ -145,8 +155,9 @@ fn main() -> anyhow::Result<()> {
         println!("   probe correctly declines to execute it — see the DAX rows above)");
     }
 
-    let after = cell
-        .tool_bytes(&h, payload.len())
+    // Via the shared registry: after revocation the cell no longer maps this
+    // hash, which is the point, while the lent page-set is still there.
+    let after = warden::vmm::kvm::shared_tool_bytes(&h, 0, payload.len())
         .ok_or_else(|| anyhow::anyhow!("sealed payload vanished"))?;
     let intact = after == payload;
     println!("\n  sealed bytes intact after the whole run: {intact}");

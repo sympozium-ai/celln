@@ -195,6 +195,8 @@ pub struct BootReport {
     /// Guest writes into a sealed tool region that the hardware refused. The
     /// host-side counterpart to the guest's own account of the same event.
     pub sealed_writes_blocked: u64,
+    /// True when a tool was revoked mid-run by [`LinuxCell::revoke_when_guest_prints`].
+    pub revoked_live: bool,
 }
 
 impl BootReport {
@@ -553,6 +555,9 @@ pub struct LinuxCell {
     /// caller of `e820__reserve_resources_late()`, which is what finally
     /// inserts persistent-memory resources into iomem. No PCI, no pmem device.
     pci_cf8: u32,
+    /// Revoke this tool the moment the guest prints this marker. See
+    /// [`LinuxCell::revoke_when_guest_prints`].
+    revoke_trigger: Option<(Hash, Vec<u8>)>,
     tools: HashMap<Hash, (u32, u64, usize)>, // slot, gpa, len
     next_slot: u32,
     next_tool_gpa: u64,
@@ -678,6 +683,7 @@ impl LinuxCell {
             _mem: mem,
             serial: Serial::default(),
             pci_cf8: 0,
+            revoke_trigger: None,
             tools: HashMap::new(),
             next_slot: FIRST_TOOL_SLOT,
             next_tool_gpa: TOOL_WINDOW_GPA,
@@ -713,6 +719,18 @@ impl LinuxCell {
         self.next_slot += 1;
         self.next_tool_gpa += len as u64;
         Ok(gpa)
+    }
+
+    /// Arrange to revoke `hash` the instant the guest prints `marker`.
+    ///
+    /// This is how the kill wire gets tested against a *running* Linux guest
+    /// with the tool open and mapped. The guest says when it is holding the
+    /// tool; we delete the memslot out from under it mid-run; the guest then
+    /// reports what it can still see. Doing it on a marker rather than a timer
+    /// means the revocation lands at a known point in the guest's execution
+    /// rather than a hopeful one.
+    pub fn revoke_when_guest_prints(&mut self, hash: &Hash, marker: &str) {
+        self.revoke_trigger = Some((hash.clone(), marker.as_bytes().to_vec()));
     }
 
     /// Host-side view of a sealed tool's bytes (to assert the seal held).
@@ -754,6 +772,7 @@ impl LinuxCell {
         let started = Instant::now();
         let mut exits = 0u64;
         let mut sealed_writes_blocked = 0u64;
+        let mut revoked_live = false;
         let end = loop {
             if stop.load(Ordering::Relaxed) {
                 break BootEnd::TimedOut;
@@ -773,6 +792,28 @@ impl LinuxCell {
                                     // runs and feeds us the next byte.
                                     let _ = self.vm.set_irq_line(Serial::IRQ, true);
                                     let _ = self.vm.set_irq_line(Serial::IRQ, false);
+                                }
+                                // The guest has told us it is holding the tool:
+                                // pull the pages out from under it, right now.
+                                let fire = self
+                                    .revoke_trigger
+                                    .as_ref()
+                                    .is_some_and(|(_, m)| self.serial.out.ends_with(m));
+                                if fire {
+                                    if let Some((hash, _)) = self.revoke_trigger.take() {
+                                        if let Some((slot, gpa, _)) = self.tools.remove(&hash) {
+                                            let del = kvm_userspace_memory_region {
+                                                slot,
+                                                flags: 0,
+                                                guest_phys_addr: gpa,
+                                                memory_size: 0,
+                                                userspace_addr: 0,
+                                            };
+                                            unsafe { self.vm.set_user_memory_region(del) }
+                                                .map_err(|e| kvm_err("revoke memslot", e))?;
+                                            revoked_live = true;
+                                        }
+                                    }
                                 }
                             } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
                                 self.pci_cf8 =
@@ -837,6 +878,7 @@ impl LinuxCell {
             exits,
             elapsed: started.elapsed(),
             sealed_writes_blocked,
+            revoked_live,
         })
     }
 }
@@ -1178,6 +1220,9 @@ mod tests {
         let h = Hash::of(&image);
         let gpa = cell.seal_tool(&h, &image).unwrap();
         assert_eq!(gpa, TOOL_WINDOW_GPA, "pmem cmdline names this address");
+        // Beat 5 of the five-beat proof, against a real kernel: revoke while
+        // the guest holds the tool open and mapped.
+        cell.revoke_when_guest_prints(&h, "NOUS:dax_revoke_ready=now");
 
         let r = cell.run().unwrap();
         assert!(r.guest_init_ran(), "console tail:\n{}", r.tail(30));
@@ -1246,11 +1291,26 @@ mod tests {
             "host counted no refused write; the mapping is not reaching the \
              sealed memslot (a page-cache copy would look exactly like this)"
         );
+
+        // Revocation reaches a running guest through the file mapping: the
+        // memslot was deleted while the guest held the tool open, and what it
+        // could see afterwards was not the tool.
+        assert!(r.revoked_live, "the revocation trigger never fired");
+        assert_eq!(
+            r.guest_report("dax_after_revoke"),
+            Some("revoked"),
+            "a revoked tool was still readable through the guest's existing \
+             mapping — revocation does not reach a running cell"
+        );
         // The whole image, not its first bytes: an ext2 image opens with a
         // 1024-byte boot block, so offset 0 is legitimately zeros and the
         // magic lives inside the /probe file's data block.
+        //
+        // Read through the shared registry rather than the cell: the cell no
+        // longer maps this hash — that is what revocation means — while the
+        // host page-set it lent is still there to be checked.
         assert_eq!(
-            cell.tool_bytes(&h, image.len()).unwrap(),
+            shared_tool_bytes(&h, 0, image.len()).unwrap(),
             image,
             "the sealed filesystem image changed"
         );

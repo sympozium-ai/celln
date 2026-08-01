@@ -319,6 +319,16 @@ static void probe_tool_by_path(void) {
 	report("dax_write_landed", after == before ? "no" : "YES");
 	report_hex("dax_byte_after", (unsigned char)after);
 
+	/* The kill wire, against a guest that is holding the tool open and
+	 * mapped. Printing this line is the signal for the host to delete the
+	 * memslot out from under us; whatever we can still see afterwards is
+	 * the answer to "does revocation reach a running cell". */
+	report("dax_revoke_ready", "now");
+	sleep_ms(100);
+	char post[8];
+	for (int i = 0; i < 8; i++) post[i] = p[i];
+	report("dax_after_revoke", same(post, TOOL_MAGIC, 8) ? "STILL-READABLE" : "revoked");
+
 	sys(SYS_close, fd, 0, 0, 0, 0, 0);
 }
 
