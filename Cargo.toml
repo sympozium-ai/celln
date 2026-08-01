@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/nous-manifest",
+    "crates/nous-spec",
+    "crates/nous-cli",
     "crates/nous-store",
     "crates/forgectl",
     "crates/pilot",
@@ -22,8 +24,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 anyhow = "1"
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive", "env"] }
 tempfile = "3"
+toml = "0.8"
+is-terminal = "0.4"
 # Real-KVM backend (warden feature `kvm`; Linux with /dev/kvm only).
 kvm-ioctls = "0.25"
 kvm-bindings = "0.14"

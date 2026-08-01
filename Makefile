@@ -1,4 +1,13 @@
-# Nouscell POC — build orchestration.
+# Development tasks for working ON nouscell.
+#
+# This is NOT the user interface. Users install `nous` and run `nous <verb>` —
+# nothing here is required to use the tool, and nothing here does anything a
+# user needs. If you find yourself documenting a make target for users, it
+# belongs in the CLI instead.
+#
+#   make install    build and install `nous` into ~/.cargo/bin
+#   make ci         what CI runs
+#
 # Rust for code, make for orchestration, shell for glue. No Python.
 
 CARGO ?= cargo
@@ -8,6 +17,11 @@ CARGO ?= cargo
 help: ## show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+.PHONY: install
+install: ## build and install the `nous` CLI into ~/.cargo/bin
+	$(CARGO) install --path crates/nous-cli --locked
+	@echo "installed. try: nous doctor"
 
 .PHONY: build
 build: ## build the whole workspace (mock backend)

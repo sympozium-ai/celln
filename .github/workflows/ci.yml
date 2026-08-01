@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Everything that does not need virtualization. Hardware tests skip rather
+  # than fail without /dev/kvm, so this is honest on a normal runner — see the
+  # `hardware` job for the part that actually needs a machine.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace
+      # The CLI has to work on a machine with no hardware isolation, because
+      # most people will meet it there first.
+      - name: cli works without /dev/kvm
+        run: |
+          cargo build -p nous-cli
+          BIN=target/debug/nous
+          $BIN --version
+          $BIN spec init > /tmp/agent.toml
+          $BIN spec check /tmp/agent.toml --no-json
+          $BIN demo --no-json
+          # exit 3 == "cannot seal cells", which is correct here, not a failure
+          $BIN doctor -q; test $? -eq 3 || test $? -eq 0
+          # and the pipe contract holds
+          $BIN demo --json | jq -e 'select(.event=="beat")' > /dev/null
+
+  # The claims this project exists to make can only be tested on a machine with
+  # KVM. Kept separate and allowed to be unavailable, rather than pretending a
+  # skipped test is a passing one.
+  hardware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: does this runner have /dev/kvm?
+        id: kvm
+        run: |
+          if [ -r /dev/kvm ]; then echo "have=yes" >> "$GITHUB_OUTPUT";
+          else echo "have=no" >> "$GITHUB_OUTPUT"; fi
+      - name: hardware proofs
+        if: steps.kvm.outputs.have == 'yes'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc cpio e2fsprogs
+          make guest
+          cargo test -p warden --features kvm
+          cargo run -p nous-cli -- verify --no-json
+      - name: no /dev/kvm on this runner
+        if: steps.kvm.outputs.have == 'no'
+        run: |
+          echo "::warning::No /dev/kvm — the hardware proofs did not run."
+          echo "Run 'nous verify' on a machine with KVM to check them."

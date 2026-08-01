@@ -1,96 +1,139 @@
 # nouscell
 
-**Nouscell** ( _NOWSS-cell_ ) — an agent-native operating system: a tiny, fast,
-hardware-isolated **cell** that intelligence is launched into, where every tool
-is attested memory the host lends in and can revoke in microseconds.
+**Nouscell** ( _NOWSS-cell_ ) — run agents in hardware-isolated **cells**, where
+every tool is attested memory the host lends in and can revoke in microseconds.
 
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
 
-This repository is the **proof-of-concept**: the security substrate, built and
-tested against real hardware. You cannot run an agent in it yet — there is no
-`pip install` path, no vsock, no toolplane. What you can do is check whether the
-idea holds up, in about five minutes.
-
-## Try it
+## Install
 
 ```sh
-make doctor     # what this machine can run (only cargo is required)
-make demo       # the five-beat loop — no KVM needed, runs anywhere
-make boot-kvm   # a real kernel: guest opens a tool by path, runs it, can't modify it
-make bench-kvm  # the numbers, including the gate we miss
+brew install sympozium-ai/tap/nouscell
 ```
 
-**→ [docs/TRY_IT.md](docs/TRY_IT.md)** walks through each one, with the output
-and what to look for. Readable without running anything.
+<details>
+<summary>or from source</summary>
 
-The single most interesting line comes out of `make boot-kvm`:
-
+```sh
+cargo install --git https://github.com/sympozium-ai/nouscell nous-cli
 ```
-✔ executed the tool from the mapping     ok
-✔ write through the file mapping refused  landed=no
-✔ revoked mid-run, tool gone from the mapping  revoked
+</details>
+
+Sealing cells needs Linux with `/dev/kvm`. Everywhere else `nous` still
+validates specs and runs `nous demo`, and `nous doctor` says which you have.
+
+## Use it
+
+**1. Write a spec** — what your agent may be lent, and what it intends to run.
+
+```sh
+nous spec init > agent.toml
 ```
 
-A real process on a stock Linux kernel opened a file, executed code out of it,
-could not modify it, and then had it taken away mid-run. Nothing in the guest is
-enforcing that — the guest is root. The seal is a stage-2 page table it cannot
-reach.
+```toml
+name = "code-reviewer"
 
-## Where it stands
+[cell]
+memory = "256MiB"
+require_tier = "verified"
 
-**Proven on real hardware** (`docs/findings/m2.md`):
+[[tool]]
+alias = "/usr/bin/python"     # the name your agent uses
+path = "/usr/bin/python3"     # where the bytes come from
+interpreter = true            # see below
 
-- **Claim C1** — a guest that enters protected mode and maps a sealed tool page
-  writable *in page tables it wrote itself* still cannot write it.
-- **The VFS↔memslot join** — a guest reaches lent tool code by file path under
-  DAX and gets the sealed pages, not a page-cache copy.
-- **Density** — 500 cells share one 1 MiB tool at a single physical copy (71×);
-  KVM's real memslot budget is 32,762 per VM, so per-tool sealing is viable.
-- **Cells fork from a booted kernel** and resume in userspace having booted
-  nothing — 663× faster than booting one.
+[run]
+exec = "/usr/bin/python"
+args = ["review.py"]
+input = "data"                # the agent wrote it
+```
 
-**Not met** (`docs/findings/m1-spawn.md`): the M1 spawn gate. Real cells spawn in
-**6.3 ms p50 / 9.4 ms p99** against a 5 ms p99 target. It is page-fault-bound,
-and pooling, shrinking the mote, and pre-faulting all failed to fix it. The
-design corpus's "~1 ms spawn" is not supported by measurement.
+**2. Check it** — validation, plus what the trust model will decide.
 
-**Not started**: stripped mote kernel, vsock transport, guest userland, the
-hermetic build farm, per-tool granularity through the DAX path.
+```sh
+$ nous spec check agent.toml
+✔ code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
+
+tools
+  /usr/bin/python          interpreter  /usr/bin/python3
+
+run
+  /usr/bin/python review.py
+  runs in the data lane — demoted: an interpreter fed agent-authored input
+```
+
+That demotion is the point. `python` is fully attested, but the moment it is
+fed something the agent wrote, *that invocation* runs collared — including the
+`python -c "…"` form that file-level taint tracking misses.
+
+**3. Run it.**
+
+```sh
+$ nous run agent.toml
+● sealing cell code-reviewer
+  + /usr/bin/python        tier=verified cold — verified now, forged queued
+  · microVM sealed, phase=Materialise
+  · /usr/bin/python sealed read-only into the cell
+  · authority ratcheted to Work — no further tools can be lent
+  ✔ /usr/bin/python permitted in the data lane
+● cell dissolved
+```
+
+**4. Prove it.** Not a claim in a README — run it on your machine.
+
+```sh
+$ nous verify
+proving isolation on this machine
+  ✔ a ring-0 guest with its own page tables cannot write lent tool code
+  ✔ revoking a tool stops it in an already-running cell
+```
+
+## It pipes
+
+Human-readable on a terminal, NDJSON the moment it is not. No flag needed,
+though `--json` and `--no-json` force it either way.
+
+```sh
+nous run agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
+nous doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can seal"
+```
+
+Diagnostics go to stderr, so they never land in the data. Exit codes mean
+something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells.
+
+## What is real
+
+`nous run` seals a **real** hardware-isolated microVM and lends it your tools as
+read-only memory that the guest cannot modify — proven against a guest that
+enters protected mode and maps the page writable in page tables it wrote itself.
+Revocation reaches a cell that is already running.
+
+**In-cell execution of your command is not wired yet** (build plan M5: stripped
+mote kernel + `pilot`). Today `nous run` provisions the cell, attests and seals
+the tools, and applies every trust decision — the isolation substrate, not yet a
+place to run arbitrary work.
+
+Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 
 ## Reading
 
 | | |
 |---|---|
-| **Start here** | [docs/TRY_IT.md](docs/TRY_IT.md) |
+| The five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) |
 | What is proven, and what is not | [docs/findings/](docs/findings/) |
 | Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0005 |
 | How it actually went, wrong turns included | [docs/diary/](docs/diary/) |
 | The milestone plan | [docs/NOUSCELL_BUILD_PLAN.md](docs/NOUSCELL_BUILD_PLAN.md) |
-| Committed measurements | [bench/results/](bench/results/) |
-| House rules for working on it | [AGENTS.md](AGENTS.md) |
+| Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
+| Working on nouscell itself | [AGENTS.md](AGENTS.md), then `make help` |
 
 ## Vocabulary
 
-- **mote** — the substrate at rest (stripped kernel + `pilot`). The seed.
+- **mote** — the substrate at rest. The seed.
 - **cell** — a live, sealed, tool-loaned mote. *Every cell is a sealed mote.*
-- **forgectl / warden / pilot** — host daemon / per-cell VMM / in-cell
-  supervisor. 1 warden : 1 microVM : 1 cell.
-
-Full glossary: [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md).
-
-## Layout
-
-```
-crates/nous-manifest   trust core: Hash, Tier, Lane, exec-by-hash, laundering ban
-crates/nous-store      content-addressed store
-crates/forgectl        fleet daemon: tiered resolution
-crates/warden          per-cell VMM: ratchet, KVM backend, Linux boot + fork
-crates/pilot           in-cell supervisor + the demos
-guest/init             freestanding guest init (no libc)
-docs/                  design corpus, ADRs, findings, diary
-```
-
-Rust for code · Make for orchestration · shell for glue.
+- **tool lane / data lane** — attested code has authority; code the agent wrote
+  runs collared. An interpreter fed agent-authored input is demoted to the data
+  lane for that invocation.
 
 Pre-alpha, single-host. Working name pending trademark/domain clearance.
