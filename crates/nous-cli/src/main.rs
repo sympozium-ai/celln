@@ -3,6 +3,7 @@
 //! One binary, subcommands, and output that behaves in a pipe. There is no
 //! build system in the user's way: everything a user does is `nous <verb>`.
 
+mod cells;
 mod host;
 mod out;
 mod run;
@@ -68,6 +69,13 @@ enum Cmd {
         dry_run: bool,
     },
 
+    /// List cells, like `docker ps`. Recent runs need `-a`.
+    Ps {
+        /// Include cells that have already finished.
+        #[arg(short, long)]
+        all: bool,
+    },
+
     /// List the tools this host has attested.
     Tools,
 
@@ -121,6 +129,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),
         Cmd::Run { spec, dry_run } => run::run(spec, &cli.root, *dry_run, o),
+        Cmd::Ps { all } => run::ps(&cli.root, *all, o),
         Cmd::Tools => run::tools(&cli.root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),

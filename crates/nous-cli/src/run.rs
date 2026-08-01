@@ -179,6 +179,16 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let mut forge =
         Forge::open(root).with_context(|| format!("opening store {}", root.display()))?;
 
+    // Write the cell down before it exists, so `nous ps` can see it while it
+    // runs and still has a record if this process is killed mid-cell.
+    let mut record = crate::cells::begin(
+        root,
+        &spec.name,
+        path,
+        spec.tools.iter().map(|t| t.alias.clone()).collect(),
+    )
+    .ok();
+
     o.event(
         "cell_sealing",
         serde_json::json!({"name": spec.name, "memory_bytes": spec.memory_bytes()}),
@@ -234,7 +244,15 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     }
 
     // Seal the cell. This is a real microVM with real stage-2 sealing.
-    let sealed = seal_cell(&spec, &resolved, o)?;
+    let sealed = match seal_cell(&spec, &resolved, o) {
+        Ok(b) => b,
+        Err(e) => {
+            if let Some(r) = record.as_mut() {
+                crate::cells::finish(root, r, "kvm", Some(e.to_string()));
+            }
+            return Err(e);
+        }
+    };
 
     // Apply the exec gate and the laundering ban to the declared run.
     if let Some(r) = &spec.run {
@@ -268,9 +286,12 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
         }
     }
 
+    if let Some(r) = record.as_mut() {
+        crate::cells::finish(root, r, sealed, None);
+    }
     o.event(
         "cell_dissolved",
-        serde_json::json!({"name": spec.name, "sealed_tools": resolved.len(), "backend": sealed}),
+        serde_json::json!({"id": record.as_ref().map(|r| r.id.clone()), "name": spec.name, "sealed_tools": resolved.len(), "backend": sealed}),
         format!("{} cell dissolved", green("●")),
     );
 
@@ -335,6 +356,98 @@ fn seal_cell(
     _o: &Out,
 ) -> Result<&'static str> {
     anyhow::bail!("hardware isolation needs Linux with /dev/kvm")
+}
+
+/// `nous ps` — cells, the way `docker ps` shows containers.
+///
+/// This registry exists because a KVM VM has no identity outside the process
+/// that made it: it is a file descriptor, there is no `/proc/kvm` to walk, and
+/// `virsh list` only ever shows domains libvirt itself created. If a cell is to
+/// be visible at all, `nous` has to write it down.
+pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
+    let mut records = crate::cells::list(root);
+    if !all {
+        records.retain(|r| r.live().is_live());
+    }
+
+    if o.is_json() {
+        for r in &records {
+            o.event(
+                "cell",
+                serde_json::json!({
+                    "id": r.id, "name": r.name, "status": r.live().label(),
+                    "tools": r.tools, "spec": r.spec, "backend": r.backend,
+                    "started_ms": r.started_ms, "finished_ms": r.finished_ms,
+                    "duration_ms": r.duration_ms(), "pid": r.pid, "error": r.error,
+                }),
+                "",
+            );
+        }
+        return Ok(exit::OK);
+    }
+
+    if records.is_empty() {
+        o.note(dim(if all {
+            "no cells yet — `nous run <spec>` seals one"
+        } else {
+            // Cells are short-lived, so an empty `ps` is the normal case and
+            // saying nothing here would look like a broken command.
+            "no live cells — `nous ps -a` shows recent runs"
+        }));
+        return Ok(exit::OK);
+    }
+
+    println!(
+        "{}",
+        bold(&format!(
+            "{:<14} {:<18} {:<12} {:>5}  {}",
+            "CELL ID", "NAME", "STATUS", "TOOLS", "CREATED"
+        ))
+    );
+    for r in &records {
+        let live = r.live();
+        let status = match (live, r.duration_human()) {
+            (crate::cells::Live::Running, _) => green("running"),
+            (crate::cells::Live::Dissolved, Some(d)) => format!("dissolved {}", dim(&d)),
+            (crate::cells::Live::Failed, _) => red("failed"),
+            (crate::cells::Live::Died, _) => red("died"),
+            (s, None) => s.label().to_string(),
+        };
+        // Pad on the visible text, not the escape codes, or the columns wander.
+        let pad = 12usize.saturating_sub(visible_len(&status));
+        println!(
+            "{:<14} {:<18} {}{:pad$} {:>5}  {}",
+            r.id,
+            r.name,
+            status,
+            "",
+            r.tools.len(),
+            crate::cells::ago(r.started_ms),
+            pad = pad,
+        );
+        if let Some(e) = &r.error {
+            println!("  {}", dim(&format!("↳ {e}")));
+        }
+    }
+    Ok(exit::OK)
+}
+
+/// Length of a string as a terminal renders it, ignoring ANSI escapes.
+fn visible_len(s: &str) -> usize {
+    let mut n = 0;
+    let mut in_esc = false;
+    for c in s.chars() {
+        if in_esc {
+            if c == 'm' {
+                in_esc = false;
+            }
+        } else if c == '\x1b' {
+            in_esc = true;
+        } else {
+            n += 1;
+        }
+    }
+    n
 }
 
 /// `nous tools` — what this host has attested.
