@@ -96,6 +96,7 @@ though `--json` and `--no-json` force it either way.
 
 ```sh
 nous run agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
+nous ps -a --json | jq -r "select(.status==\"failed\") | .id"
 nous doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can seal"
 ```
 
@@ -123,8 +124,6 @@ Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 | The five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) |
 | What is proven, and what is not | [docs/findings/](docs/findings/) |
 | Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0005 |
-| How it actually went, wrong turns included | [docs/diary/](docs/diary/) |
-| The milestone plan | [docs/NOUSCELL_BUILD_PLAN.md](docs/NOUSCELL_BUILD_PLAN.md) |
 | Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
 | Working on nouscell itself | [AGENTS.md](AGENTS.md), then `make help` |
 

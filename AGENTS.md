@@ -44,7 +44,6 @@ of the design corpus in `docs/`.
 - Guest-side code: `guest/init/init.c` (freestanding, no libc); guest images built
   by `scripts/mkinitramfs.sh` and `scripts/mktoolfs.sh`
 - Verdicts and measurements: `docs/findings/`, `bench/results/`
-- Narrative history, including what failed: `docs/diary/`
 
 ## Proving things
 

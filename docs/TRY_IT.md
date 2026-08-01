@@ -205,5 +205,4 @@ laptop, container, CI runner with no virtualization at all.
 | What is proven, and what is not | [findings/m2.md](findings/m2.md) |
 | A gate we miss, and why | [findings/m1-spawn.md](findings/m1-spawn.md) |
 | Why each design choice was made | [decisions/](decisions/) |
-| How it actually went | [diary/](diary/) |
 | Working on nouscell itself | [../AGENTS.md](../AGENTS.md), then `make help` |
