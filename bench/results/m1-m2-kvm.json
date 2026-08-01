@@ -1,19 +1,19 @@
 {
-  "all_gates_passed": true,
+  "all_gates_passed": false,
   "arch": "x86_64",
   "kernel": "7.1.3-200.fc44.x86_64",
   "m1_fork_scale": {
     "cells_forked": 1000,
     "cells_requested": 1000,
     "first_instruction_us": {
-      "p50": 55.082,
-      "p99": 103.574
+      "p50": 107.73100000000001,
+      "p99": 387.082
     },
     "fork_us": {
-      "max": 4440.617,
-      "p50": 630.327,
-      "p90": 1339.254,
-      "p99": 3202.598
+      "max": 3681.554,
+      "p50": 342.336,
+      "p90": 782.5799999999999,
+      "p99": 2021.317
     },
     "gates": {
       "fork_p99_under_5ms": true,
@@ -26,11 +26,11 @@
     },
     "reached_guest_instructions": 1000,
     "rss_kib": {
-      "after_fork": 2660,
-      "after_run": 14676,
-      "baseline": 2404
+      "after_fork": 2744,
+      "after_run": 14760,
+      "baseline": 2488
     },
-    "total_fork_wall_ms": 771.5256870000001
+    "total_fork_wall_ms": 463.45808100000005
   },
   "m2_memslot_budget": {
     "hit_kvm_limit": true,
@@ -47,8 +47,8 @@
       "all_cells_dead": true,
       "under_1s": true
     },
-    "per_cell_revoke_us": 117.67761999999999,
-    "revoke_wall_ms": 23.535524
+    "per_cell_revoke_us": 100.28721000000002,
+    "revoke_wall_ms": 20.057442
   },
   "m2_sharing": {
     "actual_rss_growth_kib": 7236,
@@ -61,8 +61,39 @@
     },
     "growth_in_tool_copies": 7.06640625,
     "naive_n_copies_kib": 512000,
-    "rss_after_mapping_kib": 4836,
+    "rss_after_mapping_kib": 4916,
     "saving_factor": 70.75732448866778,
     "tool_kib": 1024
+  },
+  "thesis_real_cell_spawn": {
+    "cells": 50,
+    "cells_that_booted_a_kernel": 0,
+    "fork_breakdown_us_mean": {
+      "cow_mmap": 35.90756,
+      "create_vcpu": 306.37966000000006,
+      "create_vm_and_irqchip": 758.2330999999999,
+      "memslots": 1816.7469999999998,
+      "restore_vcpu_state": 171.39649999999997
+    },
+    "fork_call_us": {
+      "p50": 2750.925,
+      "p99": 6402.571
+    },
+    "gates": {
+      "all_reached_userspace": true,
+      "none_booted": true,
+      "spawn_p99_under_5ms": false
+    },
+    "mote_ram_mib": 256,
+    "private_rss_kib_per_cell": 7369.44,
+    "reached_userspace": 50,
+    "spawn_to_userspace_us": {
+      "max": 9436.855,
+      "p50": 6299.491,
+      "p90": 8533.661,
+      "p99": 9436.855
+    },
+    "speedup_vs_boot": 662.7339946989367,
+    "template_boot_ms": 4174.886834999999
   }
 }

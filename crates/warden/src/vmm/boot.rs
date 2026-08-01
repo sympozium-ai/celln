@@ -39,12 +39,14 @@
 //! is a second, larger vehicle; unifying them belongs with the mote kernel,
 //! once we know what a mote actually looks like.
 
-use super::kvm::{shared_tool_bytes, shared_tool_map, PAGE};
+use super::kvm::{shared_tool_bytes, shared_tool_map, shared_tool_map_existing, PAGE};
 use super::VmmError;
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_READONLY};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use nous_manifest::Hash;
 use std::collections::HashMap;
+use std::ffi::CString;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -81,9 +83,9 @@ pub const EBDA_GPA: u64 = 0x9_fc00;
 /// deliberate and self-checking: the guest verifies [`PROBE_MAGIC`] before
 /// trusting anything it reads there, so drift shows up as a loud mismatch
 /// rather than a silent pass.
-pub const TOOL_WINDOW_GPA: u64 = 0x1800_0000; // 384 MiB
+pub const TOOL_WINDOW_GPA: u64 = 0x600_0000; // 96 MiB
 /// Size of that hole. RAM resumes above it.
-pub const TOOL_WINDOW_SIZE: u64 = 64 << 20;
+pub const TOOL_WINDOW_SIZE: u64 = 32 << 20;
 
 /// Marker at the start of the probe tool, so the guest can tell "I mapped the
 /// sealed page-set" apart from "I mapped something plausible".
@@ -122,6 +124,12 @@ const E820_PRAM: u32 = 12;
 
 /// PCI type-1 configuration address port.
 const PCI_CONFIG_ADDR: u16 = 0xcf8;
+
+/// Unused port the guest writes to signal "this cell is doing userspace work".
+/// One exit, timestamped by the host — the cheapest observable a guest can
+/// produce. Saying it on the console instead measures our 8250 emulation, not
+/// spawn latency. Must match NOUS_LIVE_PORT in guest/init/init.c.
+const LIVE_SIGNAL_PORT: u16 = 0x3f0;
 
 // ---- setup_header / boot_params offsets (Documentation/x86/boot.rst) ----
 
@@ -182,6 +190,10 @@ pub enum BootEnd {
     TimedOut,
     /// The vCPU halted with nothing left to wake it.
     Halted,
+    /// The guest printed the marker set by
+    /// [`LinuxCell::stop_when_guest_prints`]. The vCPU is at a clean exit
+    /// boundary and can be parked with [`LinuxCell::park`].
+    Parked,
 }
 
 /// What a boot run produced.
@@ -195,6 +207,9 @@ pub struct BootReport {
     /// Guest writes into a sealed tool region that the hardware refused. The
     /// host-side counterpart to the guest's own account of the same event.
     pub sealed_writes_blocked: u64,
+    /// When the guest first signalled that it was doing userspace work. The
+    /// spawn-latency clock stops here.
+    pub live_signal_at: Option<Instant>,
     /// True when a tool was revoked mid-run by [`LinuxCell::revoke_when_guest_prints`].
     pub revoked_live: bool,
 }
@@ -211,6 +226,12 @@ impl BootReport {
         self.console.contains("Run /init")
             || self.console.contains("Kernel panic")
             || self.console.contains("Freeing unused kernel image")
+    }
+
+    /// Did a cell forked from a parked mote reach userspace and do work?
+    /// This is what "spawn is a fork, not a boot" has to mean concretely.
+    pub fn cell_went_live(&self) -> bool {
+        self.console.contains("NOUS:cell=live")
     }
 
     /// Did our guest init actually run? Distinct from a hand-off that panics.
@@ -330,7 +351,7 @@ impl BootConfig {
                       panic=-1 reboot=t nokaslr tsc=reliable pci=conf1 \
                       i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd"
                 .into(),
-            mem_size: 512 << 20,
+            mem_size: 256 << 20,
             timeout: Duration::from_secs(20),
             pmem_bytes: None,
         }
@@ -475,14 +496,91 @@ impl Serial {
 }
 
 /// Host mmap backing guest memory.
+///
+/// Guest RAM is always backed by a memfd rather than anonymous memory, because
+/// that is what makes a *booted* guest forkable: the template maps it
+/// `MAP_SHARED` so its writes land in the memfd, and every cell forked from it
+/// maps the same memfd `MAP_PRIVATE`. Clean pages are shared; a cell's writes
+/// are private to it. Without the memfd there is no way to fork a live guest —
+/// only to boot another one.
 struct Mem {
     ptr: *mut u8,
     len: usize,
+    /// The memfd this is a view of, when there is one.
+    fd: Option<Arc<OwnedFd>>,
 }
 
 unsafe impl Send for Mem {}
 
 impl Mem {
+    /// A writable, shareable RAM image: the template a mote is parked in.
+    fn memfd_shared(len: usize, name: &str) -> Result<Self, VmmError> {
+        let cname =
+            CString::new(name).map_err(|_| VmmError::Backend("memfd name contains NUL".into()))?;
+        let raw = unsafe { libc::memfd_create(cname.as_ptr(), libc::MFD_CLOEXEC) };
+        if raw < 0 {
+            return Err(errno("memfd_create guest RAM"));
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        if unsafe { libc::ftruncate(fd.as_raw_fd(), len as libc::off_t) } != 0 {
+            return Err(errno("ftruncate guest RAM"));
+        }
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(errno("mmap guest RAM (shared)"));
+        }
+        Ok(Mem {
+            ptr: ptr as *mut u8,
+            len,
+            fd: Some(Arc::new(fd)),
+        })
+    }
+
+    /// A copy-on-write view of a parked mote. This is the fork.
+    ///
+    /// `NOUS_PREFAULT=1` populates the mapping up front instead of letting the
+    /// resumed guest fault its working set in one page at a time. That is not
+    /// obviously a win — it moves cost from activation to the fork call and
+    /// touches every page — which is exactly why it is measurable rather than
+    /// assumed. See `docs/findings/m1-spawn.md`.
+    fn cow_of(fd: &Arc<OwnedFd>, len: usize) -> Result<Self, VmmError> {
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(errno("mmap guest RAM (CoW)"));
+        }
+        if std::env::var_os("NOUS_PREFAULT").is_some() {
+            // MADV_POPULATE_READ: fault in the shared pages now, read-only, so
+            // sharing survives; a guest write still takes its own CoW fault.
+            unsafe {
+                libc::madvise(ptr, len, 22 /* MADV_POPULATE_READ */)
+            };
+        }
+        Ok(Mem {
+            ptr: ptr as *mut u8,
+            len,
+            fd: Some(fd.clone()),
+        })
+    }
+
+    #[allow(dead_code)]
     fn anon(len: usize) -> Result<Self, VmmError> {
         let ptr = unsafe {
             libc::mmap(
@@ -500,6 +598,7 @@ impl Mem {
         Ok(Mem {
             ptr: ptr as *mut u8,
             len,
+            fd: None,
         })
     }
 
@@ -520,6 +619,88 @@ impl Mem {
 impl Drop for Mem {
     fn drop(&mut self) {
         unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+    }
+}
+
+/// MSRs that have to travel with a snapshot for a booted Linux guest to resume.
+///
+/// Not the full `KVM_GET_MSR_INDEX_LIST` — most of that is not restorable and
+/// the failures are per-MSR and silent. This is the set a resumed guest
+/// actually needs: syscall entry, segment bases, TSC, and the KVM paravirt
+/// clock, which the guest is using (`kvm-clock: using msrs 4b564d01/4b564d00`
+/// in the boot log) and without which time stops making sense after a fork.
+const SNAPSHOT_MSRS: &[u32] = &[
+    0x0000_0174, // IA32_SYSENTER_CS
+    0x0000_0175, // IA32_SYSENTER_ESP
+    0x0000_0176, // IA32_SYSENTER_EIP
+    0x0000_0010, // IA32_TSC
+    0x0000_01a0, // IA32_MISC_ENABLE
+    0xc000_0080, // EFER
+    0xc000_0081, // STAR
+    0xc000_0082, // LSTAR
+    0xc000_0083, // CSTAR
+    0xc000_0084, // SYSCALL_MASK
+    0xc000_0100, // FS_BASE
+    0xc000_0101, // GS_BASE
+    0xc000_0102, // KERNEL_GS_BASE
+    0x4b56_4d00, // KVM_WALL_CLOCK_NEW
+    0x4b56_4d01, // KVM_SYSTEM_TIME_NEW
+    0x4b56_4d02, // KVM_ASYNC_PF_EN
+    0x4b56_4d03, // KVM_STEAL_TIME
+    0x4b56_4d04, // KVM_PV_EOI_EN
+];
+
+/// Where the time goes when sealing a cell. Spawn latency turned out to be
+/// dominated by fixed per-VM setup rather than by mote size -- halving the mote
+/// barely moved it -- so the split is what says whether it can be optimised.
+/// A **parked mote**: a Linux guest that has already booted, captured at a
+/// known instruction, ready to be forked into cells.
+///
+/// This is the thing the whole design turns on. "The guest never boots in the
+/// hot path" is only true if a booted guest can be forked, and forking a booted
+/// guest means capturing everything that is not in RAM: vCPU registers, model
+/// specific registers, the local APIC, the in-kernel interrupt controllers and
+/// timer. RAM itself is not copied — it stays in the memfd and every cell maps
+/// it copy-on-write.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ForkTiming {
+    pub create_vm: Duration,
+    pub cow_mmap: Duration,
+    pub memslots: Duration,
+    pub create_vcpu: Duration,
+    pub restore_state: Duration,
+}
+
+pub struct Mote {
+    ram: Arc<OwnedFd>,
+    ram_size: usize,
+    cpuid: kvm_bindings::CpuId,
+    regs: kvm_bindings::kvm_regs,
+    sregs: kvm_bindings::kvm_sregs,
+    fpu: kvm_bindings::kvm_fpu,
+    xcrs: kvm_bindings::kvm_xcrs,
+    lapic: kvm_bindings::kvm_lapic_state,
+    events: kvm_bindings::kvm_vcpu_events,
+    mp_state: kvm_bindings::kvm_mp_state,
+    msrs: Vec<(u32, u64)>,
+    pic_master: kvm_bindings::kvm_irqchip,
+    pic_slave: kvm_bindings::kvm_irqchip,
+    ioapic: kvm_bindings::kvm_irqchip,
+    pit: kvm_bindings::kvm_pit_state2,
+    clock: kvm_bindings::kvm_clock_data,
+    /// Serial register state, so a resumed guest's driver sees what it left.
+    serial_lcr: u8,
+    serial_ier: u8,
+    serial_mcr: u8,
+    /// Tools that were sealed into the template, re-sealed into every fork.
+    tools: Vec<(Hash, u64, usize)>,
+    cfg: BootConfig,
+}
+
+impl Mote {
+    /// Size of the parked RAM image. Forks share these pages until they write.
+    pub fn ram_size(&self) -> usize {
+        self.ram_size
     }
 }
 
@@ -558,6 +739,13 @@ pub struct LinuxCell {
     /// Revoke this tool the moment the guest prints this marker. See
     /// [`LinuxCell::revoke_when_guest_prints`].
     revoke_trigger: Option<(Hash, Vec<u8>)>,
+    /// Stop the run when the guest prints this, leaving the vCPU at a clean
+    /// boundary for [`LinuxCell::park`].
+    stop_marker: Option<Vec<u8>>,
+    /// Stop as soon as the guest writes [`LIVE_SIGNAL_PORT`].
+    stop_on_signal: bool,
+    /// The CPUID the vCPU was configured with; travels with a snapshot.
+    cpuid: kvm_bindings::CpuId,
     tools: HashMap<Hash, (u32, u64, usize)>, // slot, gpa, len
     next_slot: u32,
     next_tool_gpa: u64,
@@ -614,7 +802,7 @@ impl LinuxCell {
         vm.create_pit2(Default::default())
             .map_err(|e| kvm_err("create_pit2", e))?;
 
-        let mem = Mem::anon(cfg.mem_size)?;
+        let mem = Mem::memfd_shared(cfg.mem_size, "nous-mote-ram")?;
         // RAM in two memslots, with the sealed tool window as a hole between
         // them. The host allocation stays contiguous, so a GPA is still an
         // offset into it; the hole is simply never mapped as RAM.
@@ -684,6 +872,9 @@ impl LinuxCell {
             serial: Serial::default(),
             pci_cf8: 0,
             revoke_trigger: None,
+            stop_marker: None,
+            stop_on_signal: false,
+            cpuid,
             tools: HashMap::new(),
             next_slot: FIRST_TOOL_SLOT,
             next_tool_gpa: TOOL_WINDOW_GPA,
@@ -719,6 +910,237 @@ impl LinuxCell {
         self.next_slot += 1;
         self.next_tool_gpa += len as u64;
         Ok(gpa)
+    }
+
+    /// Stop as soon as the guest signals it is doing userspace work, and
+    /// timestamp that instant. This is how spawn latency is measured without
+    /// the console in the way.
+    pub fn stop_at_live_signal(&mut self) {
+        self.stop_on_signal = true;
+    }
+
+    /// Stop the run the instant the guest prints `marker`, leaving the vCPU at
+    /// a clean exit boundary so its state can be captured.
+    pub fn stop_when_guest_prints(&mut self, marker: &str) {
+        self.stop_marker = Some(marker.as_bytes().to_vec());
+    }
+
+    /// Park this booted guest as a [`Mote`] that cells can be forked from.
+    ///
+    /// Call after a run that stopped at a marker, so the vCPU is at an
+    /// instruction boundary with no I/O completion outstanding.
+    pub fn park(&self) -> Result<Mote, VmmError> {
+        let vcpu = &self.vcpu;
+        let ram = self
+            ._mem
+            .fd
+            .clone()
+            .ok_or_else(|| VmmError::Backend("guest RAM is not memfd-backed".into()))?;
+
+        let mut msrs = Vec::with_capacity(SNAPSHOT_MSRS.len());
+        for &index in SNAPSHOT_MSRS {
+            let entry = kvm_bindings::kvm_msr_entry {
+                index,
+                data: 0,
+                ..Default::default()
+            };
+            let mut buf = kvm_bindings::Msrs::from_entries(&[entry])
+                .map_err(|e| VmmError::Backend(format!("Msrs::from_entries: {e:?}")))?;
+            // An MSR this host does not implement simply does not travel.
+            if vcpu.get_msrs(&mut buf).unwrap_or(0) == 1 {
+                msrs.push((index, buf.as_slice()[0].data));
+            }
+        }
+
+        let mut pic_master = kvm_bindings::kvm_irqchip {
+            chip_id: kvm_bindings::KVM_IRQCHIP_PIC_MASTER,
+            ..Default::default()
+        };
+        let mut pic_slave = kvm_bindings::kvm_irqchip {
+            chip_id: kvm_bindings::KVM_IRQCHIP_PIC_SLAVE,
+            ..Default::default()
+        };
+        let mut ioapic = kvm_bindings::kvm_irqchip {
+            chip_id: kvm_bindings::KVM_IRQCHIP_IOAPIC,
+            ..Default::default()
+        };
+        self.vm
+            .get_irqchip(&mut pic_master)
+            .map_err(|e| kvm_err("get_irqchip(pic master)", e))?;
+        self.vm
+            .get_irqchip(&mut pic_slave)
+            .map_err(|e| kvm_err("get_irqchip(pic slave)", e))?;
+        self.vm
+            .get_irqchip(&mut ioapic)
+            .map_err(|e| kvm_err("get_irqchip(ioapic)", e))?;
+
+        Ok(Mote {
+            ram,
+            ram_size: self._mem.len,
+            cpuid: self.cpuid.clone(),
+            regs: vcpu.get_regs().map_err(|e| kvm_err("get_regs", e))?,
+            sregs: vcpu.get_sregs().map_err(|e| kvm_err("get_sregs", e))?,
+            fpu: vcpu.get_fpu().map_err(|e| kvm_err("get_fpu", e))?,
+            xcrs: vcpu.get_xcrs().map_err(|e| kvm_err("get_xcrs", e))?,
+            lapic: vcpu.get_lapic().map_err(|e| kvm_err("get_lapic", e))?,
+            events: vcpu
+                .get_vcpu_events()
+                .map_err(|e| kvm_err("get_vcpu_events", e))?,
+            mp_state: vcpu
+                .get_mp_state()
+                .map_err(|e| kvm_err("get_mp_state", e))?,
+            msrs,
+            pic_master,
+            pic_slave,
+            ioapic,
+            pit: self.vm.get_pit2().map_err(|e| kvm_err("get_pit2", e))?,
+            clock: self.vm.get_clock().map_err(|e| kvm_err("get_clock", e))?,
+            serial_lcr: self.serial.lcr,
+            serial_ier: self.serial.ier,
+            serial_mcr: self.serial.mcr,
+            tools: self
+                .tools
+                .iter()
+                .map(|(h, (_, gpa, len))| (h.clone(), *gpa, *len))
+                .collect(),
+            cfg: self.cfg.clone(),
+        })
+    }
+
+    /// **Seal a cell from a parked mote.** The hot path the design claims:
+    /// no boot, no kernel decompression, no device probe — a copy-on-write
+    /// mapping of already-booted RAM plus a vCPU restored to where the mote
+    /// was parked.
+    pub fn fork_from(mote: &Mote) -> Result<Self, VmmError> {
+        Self::fork_from_timed(mote).map(|(c, _)| c)
+    }
+
+    /// As [`LinuxCell::fork_from`], reporting where the time went.
+    ///
+    /// Worth having because the intuition is wrong: the CoW mapping itself is
+    /// ~36 µs, and everything else is VM construction and page-fault work. See
+    /// `docs/findings/m1-spawn.md`.
+    pub fn fork_from_timed(mote: &Mote) -> Result<(Self, ForkTiming), VmmError> {
+        let mut t = ForkTiming::default();
+        let mark = Instant::now();
+        let kvm = Kvm::new().map_err(|e| VmmError::Unsupported(format!("/dev/kvm: {e}")))?;
+        let vm = kvm.create_vm().map_err(|e| kvm_err("create_vm", e))?;
+        vm.set_identity_map_address(0xfffb_c000)
+            .map_err(|e| kvm_err("set_identity_map_address", e))?;
+        vm.set_tss_address(0xfffb_d000)
+            .map_err(|e| kvm_err("set_tss_address", e))?;
+        vm.create_irq_chip()
+            .map_err(|e| kvm_err("create_irq_chip", e))?;
+        vm.create_pit2(Default::default())
+            .map_err(|e| kvm_err("create_pit2", e))?;
+        t.create_vm = mark.elapsed();
+        let mark = Instant::now();
+
+        // The fork itself: a private view of the mote's RAM.
+        let mem = Mem::cow_of(&mote.ram, mote.ram_size)?;
+        t.cow_mmap = mark.elapsed();
+        let mark = Instant::now();
+        let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+        for (slot, gpa, len) in [
+            (RAM_SLOT_LOW, 0u64, TOOL_WINDOW_GPA),
+            (RAM_SLOT_HIGH, tool_end, mote.ram_size as u64 - tool_end),
+        ] {
+            let region = kvm_userspace_memory_region {
+                slot,
+                flags: 0,
+                guest_phys_addr: gpa,
+                memory_size: len,
+                userspace_addr: mem.ptr as u64 + gpa,
+            };
+            unsafe { vm.set_user_memory_region(region) }
+                .map_err(|e| kvm_err("set_user_memory_region(RAM)", e))?;
+        }
+
+        // Re-lend the same sealed tools, at the same addresses, from the same
+        // single host copy.
+        let mut tools = HashMap::new();
+        let mut next_slot = FIRST_TOOL_SLOT;
+        for (hash, gpa, len) in &mote.tools {
+            let map = shared_tool_map_existing(hash)
+                .ok_or_else(|| VmmError::Backend(format!("tool {hash} no longer held")))?;
+            let region = kvm_userspace_memory_region {
+                slot: next_slot,
+                flags: KVM_MEM_READONLY,
+                guest_phys_addr: *gpa,
+                memory_size: *len as u64,
+                userspace_addr: map.addr(),
+            };
+            unsafe { vm.set_user_memory_region(region) }
+                .map_err(|e| kvm_err("set_user_memory_region(tool)", e))?;
+            tools.insert(hash.clone(), (next_slot, *gpa, *len));
+            next_slot += 1;
+        }
+
+        vm.set_irqchip(&mote.pic_master)
+            .map_err(|e| kvm_err("set_irqchip(pic master)", e))?;
+        vm.set_irqchip(&mote.pic_slave)
+            .map_err(|e| kvm_err("set_irqchip(pic slave)", e))?;
+        vm.set_irqchip(&mote.ioapic)
+            .map_err(|e| kvm_err("set_irqchip(ioapic)", e))?;
+        vm.set_pit2(&mote.pit).map_err(|e| kvm_err("set_pit2", e))?;
+        vm.set_clock(&mote.clock)
+            .map_err(|e| kvm_err("set_clock", e))?;
+
+        t.memslots = mark.elapsed();
+        let mark = Instant::now();
+        let vcpu = vm.create_vcpu(0).map_err(|e| kvm_err("create_vcpu", e))?;
+        t.create_vcpu = mark.elapsed();
+        let mark = Instant::now();
+        vcpu.set_cpuid2(&mote.cpuid)
+            .map_err(|e| kvm_err("set_cpuid2", e))?;
+        for (index, data) in &mote.msrs {
+            let entry = kvm_bindings::kvm_msr_entry {
+                index: *index,
+                data: *data,
+                ..Default::default()
+            };
+            if let Ok(buf) = kvm_bindings::Msrs::from_entries(&[entry]) {
+                let _ = vcpu.set_msrs(&buf); // best effort, per MSR
+            }
+        }
+        vcpu.set_sregs(&mote.sregs)
+            .map_err(|e| kvm_err("set_sregs", e))?;
+        vcpu.set_regs(&mote.regs)
+            .map_err(|e| kvm_err("set_regs", e))?;
+        vcpu.set_fpu(&mote.fpu).map_err(|e| kvm_err("set_fpu", e))?;
+        let _ = vcpu.set_xcrs(&mote.xcrs);
+        vcpu.set_lapic(&mote.lapic)
+            .map_err(|e| kvm_err("set_lapic", e))?;
+        vcpu.set_vcpu_events(&mote.events)
+            .map_err(|e| kvm_err("set_vcpu_events", e))?;
+        vcpu.set_mp_state(mote.mp_state)
+            .map_err(|e| kvm_err("set_mp_state", e))?;
+        t.restore_state = mark.elapsed();
+
+        Ok((
+            LinuxCell {
+                _kvm: kvm,
+                vm,
+                vcpu,
+                _mem: mem,
+                serial: Serial {
+                    out: Vec::new(),
+                    lcr: mote.serial_lcr,
+                    ier: mote.serial_ier,
+                    mcr: mote.serial_mcr,
+                },
+                pci_cf8: 0,
+                revoke_trigger: None,
+                stop_marker: None,
+                stop_on_signal: false,
+                cpuid: mote.cpuid.clone(),
+                tools,
+                next_slot,
+                next_tool_gpa: TOOL_WINDOW_GPA,
+                cfg: mote.cfg.clone(),
+            },
+            t,
+        ))
     }
 
     /// Arrange to revoke `hash` the instant the guest prints `marker`.
@@ -773,9 +1195,14 @@ impl LinuxCell {
         let mut exits = 0u64;
         let mut sealed_writes_blocked = 0u64;
         let mut revoked_live = false;
+        let mut stop_at_marker = false;
+        let mut live_signal_at: Option<Instant> = None;
         let end = loop {
             if stop.load(Ordering::Relaxed) {
                 break BootEnd::TimedOut;
+            }
+            if stop_at_marker {
+                break BootEnd::Parked;
             }
             match self.vcpu.run() {
                 Ok(exit) => {
@@ -792,6 +1219,16 @@ impl LinuxCell {
                                     // runs and feeds us the next byte.
                                     let _ = self.vm.set_irq_line(Serial::IRQ, true);
                                     let _ = self.vm.set_irq_line(Serial::IRQ, false);
+                                }
+                                // The guest has reached the point we want to
+                                // park it at. Stop here, at a clean exit
+                                // boundary, so its state can be captured.
+                                if self
+                                    .stop_marker
+                                    .as_ref()
+                                    .is_some_and(|m| self.serial.out.ends_with(m))
+                                {
+                                    stop_at_marker = true;
                                 }
                                 // The guest has told us it is holding the tool:
                                 // pull the pages out from under it, right now.
@@ -818,6 +1255,13 @@ impl LinuxCell {
                             } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
                                 self.pci_cf8 =
                                     u32::from_le_bytes(data.try_into().unwrap_or([0; 4]));
+                            } else if port == LIVE_SIGNAL_PORT {
+                                if live_signal_at.is_none() {
+                                    live_signal_at = Some(Instant::now());
+                                }
+                                if self.stop_on_signal {
+                                    stop_at_marker = true;
+                                }
                             }
                         }
                         VcpuExit::IoIn(port, data) => {
@@ -879,6 +1323,7 @@ impl LinuxCell {
             elapsed: started.elapsed(),
             sealed_writes_blocked,
             revoked_live,
+            live_signal_at,
         })
     }
 }
@@ -1314,6 +1759,58 @@ mod tests {
             image,
             "the sealed filesystem image changed"
         );
+    }
+
+    /// **The thesis, tested.** "The guest never boots in the hot path — spawn
+    /// is a CoW fork of a warm mote."
+    ///
+    /// Everything before this was a fork of a 16 KiB hand-assembled toy, which
+    /// says nothing about whether a *real* guest can be forked. Here a stock
+    /// Linux kernel boots once, is parked at a known instruction in userspace,
+    /// and cells are forked from it. Each cell must resume in userspace and do
+    /// work without booting anything.
+    #[test]
+    fn cells_fork_from_a_booted_kernel_without_booting() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = BootConfig::built_initramfs() else {
+            eprintln!("skipping: no initramfs — run `make initramfs`");
+            return;
+        };
+
+        // Boot once. This is the slow part, and it happens off the hot path.
+        let mut template = LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)).unwrap();
+        template.stop_when_guest_prints("NOUS:mote=parked");
+        let boot = template.run().unwrap();
+        assert_eq!(
+            boot.end,
+            BootEnd::Parked,
+            "template did not reach the park point; tail:\n{}",
+            boot.tail(20)
+        );
+        assert!(boot.guest_init_ran());
+        let mote = template.park().unwrap();
+
+        // Now the hot path: fork cells from the parked mote.
+        for i in 0..3 {
+            let mut cell = LinuxCell::fork_from(&mote).unwrap();
+            cell.stop_when_guest_prints("NOUS:cell=live");
+            let r = cell.run().unwrap();
+            assert!(
+                r.cell_went_live(),
+                "cell {i} never reached userspace after the fork; \
+                 ended {:?}, console:\n{}",
+                r.end,
+                r.console
+            );
+            // It resumed — it did not boot. A booting guest would have
+            // announced itself again.
+            assert!(
+                !r.console.contains("Linux version"),
+                "cell {i} booted a kernel; this is supposed to be a fork"
+            );
+        }
     }
 
     /// The sealed region must be present in a *real* kernel's physical address

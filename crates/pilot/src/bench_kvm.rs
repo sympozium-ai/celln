@@ -360,6 +360,249 @@ fn bench_revocation(n: usize) -> (serde_json::Value, bool) {
     (json, gate)
 }
 
+/// **The thesis number.** "The guest never boots in the hot path — spawn is a
+/// CoW fork of a warm mote."
+///
+/// Every other latency figure in this harness forks a 16 KiB hand-assembled
+/// guest, which says nothing about whether a *real* cell can be spawned that
+/// way. This boots a stock Linux kernel once, parks it in userspace, and then
+/// forks cells from it — measuring the time from "spawn this cell" to the cell
+/// doing work in userspace, having booted nothing.
+fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
+    use warden::vmm::boot::{BootConfig, BootEnd, LinuxCell};
+
+    head(&format!(
+        "THESIS — spawning real cells from a parked mote (n = {n})"
+    ));
+
+    let kernel = match BootConfig::host_kernel() {
+        Some(k) => k,
+        None => {
+            println!("    skipped: no readable /boot/vmlinuz-*");
+            return (serde_json::json!({"skipped": "no kernel"}), true);
+        }
+    };
+    let initrd = match BootConfig::built_initramfs() {
+        Some(p) => p,
+        None => {
+            println!("    skipped: no initramfs — run `make initramfs`");
+            return (serde_json::json!({"skipped": "no initramfs"}), true);
+        }
+    };
+
+    // Off the hot path: boot once, park at a known point in userspace.
+    let t_boot = Instant::now();
+    let mut template = match LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("    skipped: {e}");
+            return (serde_json::json!({"skipped": e.to_string()}), true);
+        }
+    };
+    template.stop_when_guest_prints("NOUS:mote=parked");
+    let boot = template.run().expect("template run");
+    let boot_ms = t_boot.elapsed().as_secs_f64() * 1e3;
+    if boot.end != BootEnd::Parked {
+        println!("    template never parked (ended {:?})", boot.end);
+        return (serde_json::json!({"error": "template did not park"}), false);
+    }
+    let mote = template.park().expect("park");
+    let ram_mib = mote.ram_size() >> 20;
+
+    // The hot path.
+    let rss0 = rss_kib();
+    let mut spawn = Vec::with_capacity(n);
+    let mut to_live = Vec::with_capacity(n);
+    let mut console_live = Vec::with_capacity(n);
+    let mut tv: Vec<warden::vmm::boot::ForkTiming> = Vec::with_capacity(n);
+    let mut live = 0usize;
+    let mut booted_again = 0usize;
+    let mut cells = Vec::with_capacity(n);
+    for _ in 0..n {
+        let t = Instant::now();
+        let (mut cell, ft) = match LinuxCell::fork_from_timed(&mote) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("    stopped after {} cells: {e}", cells.len());
+                break;
+            }
+        };
+        spawn.push(t.elapsed());
+        tv.push(ft);
+        cell.stop_at_live_signal();
+        let r = cell.run().expect("cell run");
+        if let Some(at) = r.live_signal_at {
+            to_live.push(at.saturating_duration_since(t));
+        }
+        console_live.push(t.elapsed());
+        if r.live_signal_at.is_some() {
+            live += 1;
+        }
+        if r.console.contains("Linux version") {
+            booted_again += 1;
+        }
+        cells.push(cell);
+    }
+    let rss1 = rss_kib();
+    let made = cells.len();
+
+    // What a pre-warmed pool would deliver: build the cells first, then time
+    // only the activation. The fork is cheap; VM construction is not, so this
+    // is the number that says whether pooling is worth building.
+    let mut pool: Vec<LinuxCell> = Vec::with_capacity(made);
+    for _ in 0..made {
+        match LinuxCell::fork_from(&mote) {
+            Ok(c) => pool.push(c),
+            Err(_) => break,
+        }
+    }
+    let mut activate = Vec::with_capacity(pool.len());
+    for cell in pool.iter_mut() {
+        cell.stop_at_live_signal();
+        let t = Instant::now();
+        let r = cell.run().expect("pooled cell run");
+        if let Some(at) = r.live_signal_at {
+            activate.push(at.saturating_duration_since(t));
+        }
+    }
+    activate.sort();
+    spawn.sort();
+    to_live.sort();
+    console_live.sort();
+
+    let per_cell_rss = (rss1.saturating_sub(rss0) as f64) / made.max(1) as f64;
+    let p99_live = pct(&to_live, 0.99);
+    let gate_live = live == made && made > 0;
+    let gate_no_boot = booted_again == 0;
+    let gate_p99 = p99_live < Duration::from_millis(5);
+
+    row("cells spawned from the mote", format!("{made}"), None);
+    row(
+        "reached userspace and did work",
+        format!("{live}/{made}"),
+        Some((gate_live, "all")),
+    );
+    row(
+        "cells that booted a kernel",
+        format!("{booted_again}"),
+        Some((gate_no_boot, "0 — a fork, not a boot")),
+    );
+    row(
+        "template boot (off hot path)",
+        format!("{boot_ms:.0} ms"),
+        None,
+    );
+    row("mote RAM parked", format!("{ram_mib} MiB"), None);
+    row(
+        "fork call p50 / p99",
+        format!(
+            "{:.0} / {:.0} µs",
+            us(pct(&spawn, 0.50)),
+            us(pct(&spawn, 0.99))
+        ),
+        None,
+    );
+    row(
+        "spawn -> userspace work p50",
+        format!("{:.0} µs", us(pct(&to_live, 0.50))),
+        None,
+    );
+    row(
+        "spawn -> userspace work p99",
+        format!("{:.0} µs", us(p99_live)),
+        Some((gate_p99, "p99 < 5 ms")),
+    );
+    let mean = |f: fn(&warden::vmm::boot::ForkTiming) -> Duration| {
+        if tv.is_empty() {
+            0.0
+        } else {
+            tv.iter().map(|x| us(f(x))).sum::<f64>() / tv.len() as f64
+        }
+    };
+    row(
+        "  of which: create VM + irqchip",
+        format!("{:.0} µs", mean(|x| x.create_vm)),
+        None,
+    );
+    row(
+        "  of which: CoW mmap of mote RAM",
+        format!("{:.0} µs", mean(|x| x.cow_mmap)),
+        None,
+    );
+    row(
+        "  of which: memslot ioctls",
+        format!("{:.0} µs", mean(|x| x.memslots)),
+        None,
+    );
+    row(
+        "  of which: create vCPU",
+        format!("{:.0} µs", mean(|x| x.create_vcpu)),
+        None,
+    );
+    row(
+        "  of which: restore vCPU state",
+        format!("{:.0} µs", mean(|x| x.restore_state)),
+        None,
+    );
+    row(
+        "spawn -> userspace, via console (8250)",
+        format!("{:.1} ms", pct(&console_live, 0.50).as_secs_f64() * 1e3),
+        None,
+    );
+    row(
+        "from a PRE-WARMED pool: p50 / p99",
+        format!(
+            "{:.0} / {:.0} µs",
+            us(pct(&activate, 0.50)),
+            us(pct(&activate, 0.99))
+        ),
+        Some((
+            pct(&activate, 0.99) < Duration::from_millis(5),
+            "p99 < 5 ms",
+        )),
+    );
+    row(
+        "private RSS / live cell",
+        format!("{per_cell_rss:.0} KiB"),
+        None,
+    );
+    println!(
+        "    → a cell reaches userspace {:.0}x faster than booting one ({:.1} ms)",
+        boot_ms * 1e3 / us(pct(&to_live, 0.50)).max(1.0),
+        boot_ms
+    );
+
+    let json = serde_json::json!({
+        "cells": made,
+        "reached_userspace": live,
+        "cells_that_booted_a_kernel": booted_again,
+        "template_boot_ms": boot_ms,
+        "mote_ram_mib": ram_mib,
+        "fork_call_us": { "p50": us(pct(&spawn, 0.50)), "p99": us(pct(&spawn, 0.99)) },
+        "fork_breakdown_us_mean": {
+            "create_vm_and_irqchip": mean(|x| x.create_vm),
+            "cow_mmap": mean(|x| x.cow_mmap),
+            "memslots": mean(|x| x.memslots),
+            "create_vcpu": mean(|x| x.create_vcpu),
+            "restore_vcpu_state": mean(|x| x.restore_state),
+        },
+        "spawn_to_userspace_us": {
+            "p50": us(pct(&to_live, 0.50)),
+            "p90": us(pct(&to_live, 0.90)),
+            "p99": us(p99_live),
+            "max": us(pct(&to_live, 1.0)),
+        },
+        "private_rss_kib_per_cell": per_cell_rss,
+        "speedup_vs_boot": boot_ms * 1e3 / us(pct(&to_live, 0.50)).max(1.0),
+        "gates": {
+            "all_reached_userspace": gate_live,
+            "none_booted": gate_no_boot,
+            "spawn_p99_under_5ms": gate_p99,
+        },
+    });
+    (json, gate_live && gate_no_boot && gate_p99)
+}
+
 /// M2: KVM's memslot budget — the limit that decides whether per-tool sealing
 /// is viable or whether tools must be packed into coarser layers (ADR-0004).
 fn bench_memslot_budget() -> serde_json::Value {
@@ -423,6 +666,7 @@ fn main() -> anyhow::Result<()> {
     let (fork_json, fork_ok) = bench_fork_scale(1000);
     let (share_json, share_ok) = bench_sharing(500, 1024);
     let (revoke_json, revoke_ok) = bench_revocation(200);
+    let (spawn_json, spawn_ok) = bench_real_cell_spawn(50);
     let slots_json = bench_memslot_budget();
 
     let all = serde_json::json!({
@@ -431,8 +675,9 @@ fn main() -> anyhow::Result<()> {
         "m1_fork_scale": fork_json,
         "m2_sharing": share_json,
         "m2_revocation": revoke_json,
+        "thesis_real_cell_spawn": spawn_json,
         "m2_memslot_budget": slots_json,
-        "all_gates_passed": fork_ok && share_ok && revoke_ok,
+        "all_gates_passed": fork_ok && share_ok && revoke_ok && spawn_ok,
     });
 
     let dir = std::path::Path::new("bench/results");
@@ -442,7 +687,7 @@ fn main() -> anyhow::Result<()> {
 
     println!("\n\x1b[1mSummary\x1b[0m");
     println!("  results written to {}", path.display());
-    if fork_ok && share_ok && revoke_ok {
+    if fork_ok && share_ok && revoke_ok && spawn_ok {
         println!("\x1b[32m✔ every M1/M2 numeric gate met on this host.\x1b[0m");
     } else {
         println!("\x1b[33m! some gates not met — see rows marked ✘ above.\x1b[0m");

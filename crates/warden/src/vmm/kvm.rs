@@ -153,6 +153,18 @@ pub fn shared_tool_map(hash: &Hash, bytes: &[u8]) -> Result<SharedTool, VmmError
     shared_tool(hash, bytes).map(SharedTool)
 }
 
+/// The shared page-set for `hash`, if some cell already lent it. Used when
+/// forking a mote: the tools it was holding are re-lent from the same copy,
+/// never re-created.
+pub fn shared_tool_map_existing(hash: &Hash) -> Option<SharedTool> {
+    tool_registry()
+        .lock()
+        .ok()?
+        .get(hash)
+        .cloned()
+        .map(SharedTool)
+}
+
 /// Host-side read of a shared tool's bytes, for asserting the seal held.
 pub fn shared_tool_bytes(hash: &Hash, off: usize, len: usize) -> Option<Vec<u8>> {
     tool_registry()

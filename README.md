@@ -39,19 +39,42 @@ make boot-kvm  # boot a STOCK kernel + prove the VFS<->memslot join by file path
 ## Measured on real hardware
 
 `make bench-kvm`, x86_64 / kernel 7.1 / VT-x — raw JSON in `bench/results/`.
-Latency figures move with host load; the ranges below span observed runs on an
-otherwise-busy workstation, and every gate held in all of them.
+Latency moves with host load; ranges span observed runs on a busy workstation.
+
+**Spawning a real cell** — a stock Linux kernel booted once, parked, and forked.
+This is the design's central claim and the number that matters:
 
 | Gate | Measured | Target |
 |---|---|---|
-| concurrent cells, all reaching guest instructions | 1000 / 1000 | ≥ 1000 |
-| fork latency p50 / p99 | 184–630 µs / 0.5–3.2 ms | p99 < 5 ms |
-| private RSS per idle cell | 0.26 KiB | — |
-| private RSS per cell after running | 12.3 KiB | < 1 MiB |
+| cells reaching userspace, having booted nothing | 50 / 50 | all |
+| **spawn → userspace work, p50 / p99** | **6.3 ms / 9.4 ms** | **p99 < 5 ms — ✘ MISSED** |
+| the CoW fork itself | 36 µs | — |
+| booting the same guest instead | 4,175 ms | — |
+| speedup of forking over booting | **663×** | — |
+
+The mechanism is validated; the latency gate is not met, and neither pooling nor
+pre-faulting closes it. The cost is the guest re-faulting its working set after
+resume. Full analysis, including three negative results and what they imply for
+the mote kernel: **`docs/findings/m1-spawn.md`**.
+
+**VMM overhead floor** — forking a 16 KiB hand-assembled guest. Useful as a
+lower bound on the VMM's own cost; *not* a spawn time, and previously reported as
+if it were:
+
+| | Measured | |
+|---|---|---|
+| concurrent toy cells, all reaching guest instructions | 1000 / 1000 | ≥ 1000 |
+| toy fork latency p50 / p99 | 184–630 µs / 0.5–3.2 ms | p99 < 5 ms |
+| private RSS per idle toy cell | 0.26 KiB | — |
+
+**Sealing and revocation** (claim C1 and the kill wire):
+
+| Gate | Measured | Target |
+|---|---|---|
 | 1 MiB tool across 500 cells | 1 physical copy, 71× saving | ~one copy |
 | revocation across 200 running cells | 7.5–24 ms (37–118 µs/cell) | < 1 s |
 | sealed memslots per VM (KVM's real limit) | 32,762 | — |
-| stock Fedora kernel → guest userspace (`make boot-kvm`) | ~2.6 s | — |
+| private RSS per live real cell | 7.4 MiB | — |
 
 ## What's real vs stubbed
 
@@ -104,9 +127,15 @@ Full glossary: `docs/NAMES_AND_CONVENTIONS.md`.
 ## Status
 
 Pre-alpha, single-host. Working name pending trademark/domain clearance.
-M1 (fork path) and M2's sealing work are done and hardware-proven — **claim C1
-holds end to end** (`docs/findings/m2.md`). A stock Linux kernel boots on the
-substrate, and a guest process **opens a tool by path**, executes out of it, and
-cannot modify it: the mapping reaches the sealed memslot, not a page-cache copy.
+**Claim C1 holds end to end** (`docs/findings/m2.md`): a guest opens a tool by
+path, executes out of it, and cannot modify it — the mapping reaches the sealed
+memslot, not a page-cache copy. Cells fork from a booted kernel and resume in
+userspace without booting.
+
+**The M1 latency gate is missed** (`docs/findings/m1-spawn.md`): real cells spawn
+in 6.3 ms p50 against a 5 ms p99 target. That is 663× better than booting and 30×
+worse than the toy benchmark suggested. The design corpus's "~1 ms spawn" is not
+supported by measurement.
+
 See `docs/NOUSCELL_BUILD_PLAN.md` for the milestone plan, `docs/decisions/` for
 ADRs 0001–0005, and `docs/diary/` for how it actually went.

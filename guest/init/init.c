@@ -26,6 +26,12 @@
 #define SYS_mount 165
 #define SYS_reboot 169
 #define SYS_finit_module 313
+#define SYS_iopl 172
+
+/* Unused I/O port the guest pokes to say "I am live", so the host can
+ * timestamp a cell reaching userspace in a single exit. Must match
+ * LIVE_SIGNAL_PORT in crates/warden/src/vmm/boot.rs. */
+#define NOUS_LIVE_PORT 0x3f0
 
 #define O_RDONLY 0
 #define O_RDWR 2
@@ -41,7 +47,7 @@
  * crates/warden/src/vmm/boot.rs — the coupling is deliberate and checked by
  * the magic below: if the two ever drift, the guest reads garbage and says so
  * rather than silently passing. */
-#define TOOL_GPA 0x18000000UL
+#define TOOL_GPA 0x6000000UL
 #define TOOL_MAGIC "NOUSTOOL"
 /* Offset within the sealed page of a function the guest is meant to call. */
 #define TOOL_FN_OFF 16
@@ -349,6 +355,29 @@ void _start(void) {
 
 	probe_sealed_tool();
 	probe_tool_by_path();
+
+	/* The park point.
+	 *
+	 * The host stops the run here and captures the guest as a mote. Every
+	 * cell forked from that mote resumes at the very next instruction — so
+	 * everything below this line runs once per *cell*, having never booted.
+	 * That is the design's central claim, and the only way to measure it is
+	 * to have the guest say something on the far side of the fork. */
+	report("mote", "parked");
+
+	/* Signal "this cell is doing userspace work" in ONE vCPU exit.
+	 *
+	 * Saying it on the console instead costs tens of milliseconds: the 8250
+	 * console is interrupt-driven and takes an exit plus an IRQ round trip
+	 * per byte, which would be measuring our serial emulation rather than
+	 * spawn latency. A single OUT to an unused port is the cheapest thing a
+	 * guest can do that the host can timestamp. */
+	if (sys(SYS_iopl, 3, 0, 0, 0, 0, 0) == 0) {
+		__asm__ volatile("outb %0, %1"
+		                 :
+		                 : "a"((unsigned char)0x5a), "Nd"((unsigned short)NOUS_LIVE_PORT));
+	}
+	report("cell", "live");
 
 	out("NOUS:done\n");
 	sys(SYS_reboot, REBOOT_MAGIC1, REBOOT_MAGIC2, REBOOT_CMD_RESTART, 0, 0, 0);
