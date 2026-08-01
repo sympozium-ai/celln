@@ -1,0 +1,27 @@
+[package]
+name = "forgectl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fleet daemon: store, manifests, tiered resolution. Where the distro lives."
+
+[[bin]]
+name = "forgectl"
+path = "src/main.rs"
+
+[lib]
+name = "forgectl"
+path = "src/lib.rs"
+
+[dependencies]
+nous-manifest = { path = "../nous-manifest" }
+nous-store = { path = "../nous-store" }
+clap.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

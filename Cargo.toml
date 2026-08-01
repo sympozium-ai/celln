@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nous-manifest",
+    "crates/nous-store",
+    "crates/forgectl",
+    "crates/pilot",
+    "crates/warden",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/sympozium-ai/nouscell"
+
+# Pinned to versions that build on Rust 1.75 (edition 2021).
+[workspace.dependencies]
+blake3 = "=1.5.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+clap = { version = "4.4", features = ["derive"] }
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1

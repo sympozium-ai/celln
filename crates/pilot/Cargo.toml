@@ -1,0 +1,26 @@
+[package]
+name = "pilot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "In-cell supervisor: exec-by-hash, taint lanes, structured explain."
+
+[[bin]]
+name = "nous-demo"
+path = "src/demo.rs"
+
+[lib]
+name = "pilot"
+path = "src/lib.rs"
+
+[dependencies]
+nous-manifest = { path = "../nous-manifest" }
+nous-store = { path = "../nous-store" }
+forgectl = { path = "../forgectl" }
+warden = { path = "../warden" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true

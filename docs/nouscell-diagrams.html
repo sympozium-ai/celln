@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nouscell — Architecture Diagrams</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#12161c; --ink-2:#181d25; --panel:#1b212b; --line:#2b333f;
+  --text:#e9e6df; --muted:#8b93a0;
+  --lent:#5fd0b5; --lent-dim:#2a4a42; --lent-deep:#12241f;
+  --born:#e8a15f; --born-dim:#4d3a26; --born-deep:#231913;
+  --danger:#e06c5f; --host:#7aa2d6;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--ink);color:var(--text);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;padding:40px 20px}
+.sheet{max-width:1080px;margin:0 auto}
+header.top{margin-bottom:40px;border-bottom:1px solid var(--line);padding-bottom:28px}
+header.top .brand{font-family:var(--mono);font-weight:600;font-size:20px;letter-spacing:.14em}
+header.top .brand span{color:var(--lent)}
+header.top .say{font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.1em;margin-top:4px}
+header.top p{color:var(--muted);font-size:14px;margin-top:14px;max-width:60ch}
+
+.legend{display:flex;gap:22px;flex-wrap:wrap;margin-top:18px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{width:11px;height:11px;border-radius:2px;display:inline-block}
+.legend i.l{background:var(--lent)} .legend i.b{background:var(--born)} .legend i.h{background:var(--host)}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:28px 30px 32px;margin:26px 0}
+.panel .cap{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+.panel .num{font-family:var(--mono);font-size:12px;color:var(--lent);letter-spacing:.1em}
+.panel h2{font-family:var(--mono);font-weight:600;font-size:19px;letter-spacing:-.01em}
+.panel .sub{color:var(--muted);font-size:13.5px;margin-bottom:22px;max-width:70ch}
+.panel svg{display:block;width:100%;height:auto;overflow:visible}
+
+/* svg text helpers via classes on <text> */
+text{font-family:var(--mono);fill:var(--text)}
+.t-lbl{font-size:13px;font-weight:500}
+.t-sm{font-size:11px;fill:var(--muted)}
+.t-xs{font-size:10px;fill:var(--muted)}
+.t-tag{font-size:9.5px;letter-spacing:.14em;fill:var(--muted)}
+.t-lent{fill:var(--lent)} .t-born{fill:var(--born)} .t-host{fill:var(--host)} .t-danger{fill:var(--danger)}
+.t-ink{fill:var(--ink)}
+
+footer{margin-top:44px;padding-top:22px;border-top:1px solid var(--line);font-family:var(--mono);font-size:11px;color:var(--muted)}
+@media print{
+  body{background:#fff}
+  .panel{break-inside:avoid;page-break-inside:avoid}
+}
+</style>
+</head>
+<body>
+<div class="sheet">
+
+<header class="top">
+  <div class="brand">NOUS<span>CELL</span></div>
+  <div class="say">/ NOWSS-cell / · a sealed cell of intelligence</div>
+  <p>Architecture reference. The distro lives on the host; the cell is an execution surface. Teal is host-lent, attested memory; amber is guest-born, collared data. Each panel is self-contained — screenshot any one into a deck.</p>
+  <div class="legend">
+    <span><i class="h"></i> host plane · trusted</span>
+    <span><i class="l"></i> lent · attested (tool lane)</span>
+    <span><i class="b"></i> born · collared (data lane)</span>
+  </div>
+</header>
+
+<!-- ============ 1 · THE STACK ============ -->
+<section class="panel">
+  <div class="cap"><span class="num">01</span><h2>The stack</h2></div>
+  <div class="sub">What runs where. Everything above the KVM line is the trusted host; everything below is the presumed-hostile cell. The hardware boundary is the security boundary.</div>
+  <svg viewBox="0 0 900 470" role="img" aria-label="Nouscell layered stack">
+    <!-- HOST PLANE -->
+    <rect x="0" y="0" width="900" height="150" rx="8" fill="#141a22" stroke="var(--host)" stroke-opacity="0.5"/>
+    <text x="20" y="26" class="t-tag t-host">HOST PLANE · PRIVILEGED · TRUSTED</text>
+    <!-- host components -->
+    <g>
+      <rect x="20" y="40" width="270" height="92" rx="7" fill="#182230" stroke="var(--host)" stroke-opacity="0.6"/>
+      <text x="34" y="64" class="t-lbl t-host">forgectl</text>
+      <text x="34" y="86" class="t-sm">snapshot forest · CAS store</text>
+      <text x="34" y="103" class="t-sm">manifests · page cache</text>
+      <text x="34" y="120" class="t-xs">the distro lives here</text>
+    </g>
+    <g>
+      <rect x="305" y="40" width="270" height="92" rx="7" fill="#182230" stroke="var(--host)" stroke-opacity="0.6"/>
+      <text x="319" y="64" class="t-lbl t-host">warden</text>
+      <text x="319" y="86" class="t-sm">per-cell VMM · KVM fds</text>
+      <text x="319" y="103" class="t-sm">vsock · authority ratchet</text>
+      <text x="319" y="120" class="t-xs">unprivileged · jailed</text>
+    </g>
+    <g>
+      <rect x="590" y="40" width="290" height="92" rx="7" fill="#182230" stroke="var(--host)" stroke-opacity="0.6"/>
+      <text x="604" y="64" class="t-lbl t-host">egress proxy</text>
+      <text x="604" y="86" class="t-sm">DNS · TLS · egress policy</text>
+      <text x="604" y="103" class="t-sm">credential injection · Nouscell CA</text>
+      <text x="604" y="120" class="t-xs">the only path to the internet</text>
+    </g>
+
+    <!-- KVM boundary -->
+    <rect x="0" y="166" width="900" height="34" rx="6" fill="#0e1319" stroke="var(--line)"/>
+    <text x="450" y="188" text-anchor="middle" class="t-lbl">▲  KVM / EPT · stage-2 page tables · hardware isolation boundary  ▲</text>
+
+    <!-- CELL -->
+    <rect x="0" y="216" width="900" height="254" rx="8" fill="#12171e" stroke="var(--line)"/>
+    <text x="20" y="242" class="t-tag">CELL · GUEST · PRESUMED HOSTILE  ·  ⟨ the mote: kernel + pilot, sealed & tool-loaned ⟩</text>
+
+    <!-- kernel + pilot column -->
+    <g>
+      <rect x="20" y="256" width="420" height="60" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="34" y="280" class="t-lbl">stripped kernel · ~70 syscalls</text>
+      <text x="34" y="300" class="t-sm">no in-kernel net stack · AF_INET → vsock</text>
+    </g>
+    <g>
+      <rect x="20" y="328" width="420" height="128" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="34" y="352" class="t-lbl">pilot · PID 1</text>
+      <text x="34" y="374" class="t-sm">tool-call ABI · shell-as-parser</text>
+      <text x="34" y="392" class="t-sm">taint tracker · toolplane binary</text>
+      <text x="34" y="410" class="t-sm">explain verb</text>
+      <text x="34" y="436" class="t-xs">baked into every snapshot</text>
+    </g>
+
+    <!-- lent tools -->
+    <g>
+      <rect x="460" y="256" width="420" height="98" rx="7" fill="var(--lent-deep)" stroke="var(--lent)" stroke-opacity="0.7"/>
+      <text x="474" y="280" class="t-lbl t-lent">tool pages · LENT</text>
+      <text x="474" y="302" class="t-sm">python · git · gcc · node · curl</text>
+      <text x="474" y="320" class="t-sm">mapped read+execute · never write</text>
+      <text x="474" y="340" class="t-xs">hypervisor-sealed · one copy serves N cells</text>
+    </g>
+    <!-- born workspace -->
+    <g>
+      <rect x="460" y="366" width="420" height="90" rx="7" fill="var(--born-deep)" stroke="var(--born)" stroke-opacity="0.7"/>
+      <text x="474" y="390" class="t-lbl t-born">workspace · BORN</text>
+      <text x="474" y="412" class="t-sm">agent files · downloads · JIT output</text>
+      <text x="474" y="430" class="t-sm">rw tmpfs · collared · dissolves on exit</text>
+      <text x="474" y="448" class="t-xs">persistent volume can outlive the cell</text>
+    </g>
+  </svg>
+</section>
+
+<!-- ============ 2 · THE MACHINERY ============ -->
+<section class="panel">
+  <div class="cap"><span class="num">02</span><h2>The machinery — three components, two lanes</h2></div>
+  <div class="sub">forgectl and warden are host-side; pilot is inside the cell. Two channels cross the boundary: a control lane (requests) and a memory lane (sealed pages). Nothing else crosses.</div>
+  <svg viewBox="0 0 900 400" role="img" aria-label="Components and lanes">
+    <!-- host box -->
+    <rect x="0" y="30" width="330" height="340" rx="8" fill="#141a22" stroke="var(--host)" stroke-opacity="0.45"/>
+    <text x="20" y="22" class="t-tag t-host">HOST</text>
+    <g>
+      <rect x="24" y="52" width="282" height="120" rx="7" fill="#182230" stroke="var(--host)" stroke-opacity="0.6"/>
+      <text x="40" y="78" class="t-lbl t-host">forgectl</text>
+      <text x="40" y="100" class="t-sm">snapshot forest</text>
+      <text x="40" y="118" class="t-sm">content-addressed store</text>
+      <text x="40" y="136" class="t-sm">manifests · revocation feed</text>
+      <text x="40" y="156" class="t-xs">talks to the outside world</text>
+    </g>
+    <g>
+      <rect x="24" y="196" width="282" height="150" rx="7" fill="#182230" stroke="var(--host)" stroke-opacity="0.6"/>
+      <text x="40" y="222" class="t-lbl t-host">warden</text>
+      <text x="40" y="244" class="t-sm">per-cell VMM · KVM fds</text>
+      <text x="40" y="262" class="t-sm">holds vsock + sealed maps</text>
+      <text x="40" y="280" class="t-sm">enforces the ratchet</text>
+      <text x="40" y="308" class="t-xs">jailed — an escaped agent</text>
+      <text x="40" y="324" class="t-xs">lands here, in nothing</text>
+    </g>
+
+    <!-- cell box -->
+    <rect x="560" y="30" width="340" height="340" rx="8" fill="#12171e" stroke="var(--line)"/>
+    <text x="580" y="22" class="t-tag">CELL</text>
+    <g>
+      <rect x="584" y="52" width="292" height="150" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="600" y="78" class="t-lbl t-born">pilot · PID 1</text>
+      <text x="600" y="100" class="t-sm">tool-call ABI</text>
+      <text x="600" y="118" class="t-sm">shell parser · taint tracker</text>
+      <text x="600" y="136" class="t-sm">toolplane · explain</text>
+      <text x="600" y="164" class="t-xs">receives task over vsock</text>
+      <text x="600" y="180" class="t-xs">already running in snapshot</text>
+    </g>
+    <g>
+      <rect x="584" y="226" width="292" height="120" rx="7" fill="var(--lent-deep)" stroke="var(--lent)" stroke-opacity="0.6"/>
+      <text x="600" y="252" class="t-lbl t-lent">mapped tool pages</text>
+      <text x="600" y="274" class="t-sm">read+execute · sealed</text>
+      <text x="600" y="292" class="t-sm">shared across all cells</text>
+      <text x="600" y="320" class="t-xs">revoked by unmap</text>
+    </g>
+
+    <!-- lanes between -->
+    <!-- control lane -->
+    <line x1="306" y1="120" x2="584" y2="120" stroke="var(--lent)" stroke-width="1.6" stroke-dasharray="6 4"/>
+    <polygon points="584,120 574,115 574,125" fill="var(--lent)"/>
+    <polygon points="306,120 316,115 316,125" fill="var(--lent)"/>
+    <rect x="360" y="86" width="170" height="20" rx="4" fill="var(--ink)" stroke="var(--lent)" stroke-opacity="0.5"/>
+    <text x="445" y="100" text-anchor="middle" class="t-xs t-lent">CONTROL LANE · vsock</text>
+    <text x="445" y="140" text-anchor="middle" class="t-xs">tool requests · egress · branch · explain</text>
+
+    <!-- memory lane -->
+    <line x1="306" y1="270" x2="584" y2="270" stroke="var(--lent)" stroke-width="1.6"/>
+    <polygon points="584,270 574,265 574,275" fill="var(--lent)"/>
+    <rect x="360" y="236" width="170" height="20" rx="4" fill="var(--ink)" stroke="var(--lent)" stroke-opacity="0.5"/>
+    <text x="445" y="250" text-anchor="middle" class="t-xs t-lent">MEMORY LANE · sealed pages</text>
+    <text x="445" y="290" text-anchor="middle" class="t-xs">attested pages mapped r-x, host-wide</text>
+  </svg>
+</section>
+
+<!-- ============ 3 · SEAL FLOW ============ -->
+<section class="panel">
+  <div class="cap"><span class="num">03</span><h2>Seal flow — task to first instruction</h2></div>
+  <div class="sub">The lifecycle verb is <b>seal(intent) → cell</b>, and it is literally a copy-on-write fork. Authority derives from the signed manifest, never from the prompt.</div>
+  <svg viewBox="0 0 900 210" role="img" aria-label="Seal flow pipeline">
+    <!-- steps -->
+    <g>
+      <rect x="0" y="40" width="140" height="96" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="14" y="64" class="t-lbl">TASK</text>
+      <text x="14" y="86" class="t-sm">signed manifest:</text>
+      <text x="14" y="102" class="t-xs">mounts · egress · TTL</text>
+      <text x="14" y="116" class="t-xs">tool ceiling · secrets</text>
+      <text x="14" y="158" class="t-tag">t = 0</text>
+    </g>
+    <g>
+      <rect x="180" y="40" width="140" height="96" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="194" y="64" class="t-lbl">CLASSIFY</text>
+      <text x="194" y="86" class="t-sm">routing hint only</text>
+      <text x="194" y="102" class="t-xs">"python + scipy"</text>
+      <text x="194" y="116" class="t-xs">zero authority</text>
+      <text x="194" y="158" class="t-tag">~1 ms</text>
+    </g>
+    <g>
+      <rect x="360" y="40" width="140" height="96" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="374" y="64" class="t-lbl">ROUTE</text>
+      <text x="374" y="86" class="t-sm">nearest warm</text>
+      <text x="374" y="102" class="t-sm">mote in the forest</text>
+      <text x="374" y="116" class="t-xs">the substrate seed</text>
+      <text x="374" y="158" class="t-tag">lookup</text>
+    </g>
+    <g>
+      <rect x="540" y="40" width="140" height="96" rx="7" fill="var(--lent-deep)" stroke="var(--lent)" stroke-opacity="0.7"/>
+      <text x="554" y="64" class="t-lbl t-lent">SEAL</text>
+      <text x="554" y="86" class="t-sm">fork mote → cell</text>
+      <text x="554" y="102" class="t-sm">mmap · KVM · vCPU</text>
+      <text x="554" y="116" class="t-xs">the CoW fork</text>
+      <text x="554" y="158" class="t-tag t-lent">~1 ms</text>
+    </g>
+    <g>
+      <rect x="720" y="40" width="180" height="96" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+      <text x="734" y="64" class="t-lbl">MAP + RUN</text>
+      <text x="734" y="86" class="t-sm">seal tool pages r-x</text>
+      <text x="734" y="102" class="t-sm">pilot runs 1st call</text>
+      <text x="734" y="116" class="t-xs">no boot · no install</text>
+      <text x="734" y="158" class="t-tag t-lent">single-digit ms total</text>
+    </g>
+    <!-- arrows -->
+    <g fill="var(--muted)">
+      <polygon points="140,88 168,88 162,82 176,88 162,94 168,88"/>
+      <polygon points="320,88 348,88 342,82 356,88 342,94 348,88"/>
+      <polygon points="500,88 528,88 522,82 536,88 522,94 528,88"/>
+      <polygon points="680,88 708,88 702,82 716,88 702,94 708,88"/>
+    </g>
+  </svg>
+</section>
+
+<!-- ============ 4 · TRUST TIERS ============ -->
+<section class="panel">
+  <div class="cap"><span class="num">04</span><h2>Trust tiers — serve fast, upgrade async</h2></div>
+  <div class="sub">Attestation is not the same as rebuilding. A cold request is served in seconds at Tier&nbsp;2 while a hermetic Tier&nbsp;1 rebuild runs in the background. Launch never waits on trust.</div>
+  <svg viewBox="0 0 900 300" role="img" aria-label="Trust tiers">
+    <!-- request path -->
+    <text x="0" y="24" class="t-tag">REQUEST PATH · what the user waits on</text>
+
+    <!-- Tier 3 -->
+    <g>
+      <rect x="0" y="38" width="288" height="120" rx="7" fill="var(--born-deep)" stroke="var(--born)" stroke-opacity="0.7"/>
+      <text x="16" y="64" class="t-lbl t-born">TIER 3 · Unsealed</text>
+      <text x="16" y="88" class="t-sm">no attestation</text>
+      <text x="16" y="106" class="t-sm">still hardware-isolated</text>
+      <text x="16" y="130" class="t-xs">instant · onboarding / escape hatch</text>
+      <text x="16" y="148" class="t-xs">never blocked on day one</text>
+    </g>
+    <!-- Tier 2 -->
+    <g>
+      <rect x="306" y="38" width="288" height="120" rx="7" fill="#1d2630" stroke="var(--lent)" stroke-opacity="0.55"/>
+      <text x="322" y="64" class="t-lbl t-lent">TIER 2 · Verified</text>
+      <text x="322" y="88" class="t-sm">upstream binary, hash-pinned</text>
+      <text x="322" y="106" class="t-sm">scanned + signed by forgectl</text>
+      <text x="322" y="130" class="t-xs">seconds · the cold path</text>
+      <text x="322" y="148" class="t-xs">default served tier</text>
+    </g>
+    <!-- Tier 1 -->
+    <g>
+      <rect x="612" y="38" width="288" height="120" rx="7" fill="var(--lent-deep)" stroke="var(--lent)" stroke-opacity="0.8"/>
+      <text x="628" y="64" class="t-lbl t-lent">TIER 1 · Forged</text>
+      <text x="628" y="88" class="t-sm">rebuilt hermetically</text>
+      <text x="628" y="106" class="t-sm">from source, signed</text>
+      <text x="628" y="130" class="t-xs">minutes · background only</text>
+      <text x="628" y="148" class="t-xs">the target state</text>
+    </g>
+
+    <!-- async upgrade arrow T2 -> T1 -->
+    <path d="M450 168 C 450 220, 756 220, 756 168" fill="none" stroke="var(--lent)" stroke-width="1.6" stroke-dasharray="6 4"/>
+    <polygon points="756,168 750,180 762,180" fill="var(--lent)"/>
+    <text x="603" y="238" text-anchor="middle" class="t-sm t-lent">background rebuild — trust ratchets up behind the traffic</text>
+    <text x="603" y="256" text-anchor="middle" class="t-xs">future cells silently receive Forged; manifest records the tier served</text>
+
+    <!-- warm note -->
+    <rect x="0" y="188" width="288" height="60" rx="7" fill="var(--ink-2)" stroke="var(--line)"/>
+    <text x="16" y="212" class="t-sm t-lent">WARM (seen before)</text>
+    <text x="16" y="232" class="t-xs">already a layer → page map, ~micro/ms</text>
+  </svg>
+</section>
+
+<!-- ============ 5 · TAINT + RATCHET ============ -->
+<section class="panel">
+  <div class="cap"><span class="num">05</span><h2>Two lanes of provenance · authority that only shrinks</h2></div>
+  <div class="sub">Every file carries one bit: attested (tool lane) or born-here (data lane). An attested interpreter fed tainted input is demoted for that call. A cell's rights ratchet down and never reopen.</div>
+  <svg viewBox="0 0 900 360" role="img" aria-label="Taint lanes and authority ratchet">
+    <!-- lanes -->
+    <g>
+      <rect x="0" y="30" width="430" height="88" rx="7" fill="var(--lent-deep)" stroke="var(--lent)" stroke-opacity="0.7"/>
+      <text x="16" y="56" class="t-lbl t-lent">TOOL LANE · born trusted</text>
+      <text x="16" y="80" class="t-sm">manifest-attested, hypervisor-sealed</text>
+      <text x="16" y="100" class="t-xs">runs with the cell's full (small) authority</text>
+    </g>
+    <g>
+      <rect x="470" y="30" width="430" height="88" rx="7" fill="var(--born-deep)" stroke="var(--born)" stroke-opacity="0.7"/>
+      <text x="486" y="56" class="t-lbl t-born">DATA LANE · born here</text>
+      <text x="486" y="80" class="t-sm">agent scripts · downloads · JIT output</text>
+      <text x="486" y="100" class="t-xs">per-exec Landlock + seccomp collar</text>
+    </g>
+
+    <!-- laundering ban -->
+    <rect x="0" y="142" width="900" height="70" rx="7" fill="#20191a" stroke="var(--danger)" stroke-opacity="0.55"/>
+    <text x="16" y="166" class="t-lbl t-danger">THE LAUNDERING BAN</text>
+    <text x="16" y="190" class="t-sm">tainted input via argv · stdin/pipe · file · fd · mmap · env</text>
+    <text x="470" y="166" class="t-sm t-born">python -c "&lt;tainted&gt;"</text>
+    <text x="470" y="190" class="t-xs">→ demoted to data lane for that invocation, even though python is attested</text>
+
+    <!-- ratchet -->
+    <text x="0" y="248" class="t-tag">AUTHORITY RATCHET · enforced host-side by warden</text>
+    <g>
+      <rect x="0" y="262" width="288" height="82" rx="7" fill="var(--ink-2)" stroke="var(--lent)" stroke-opacity="0.5"/>
+      <text x="16" y="286" class="t-lbl t-lent">P1 · MATERIALISE</text>
+      <text x="16" y="308" class="t-sm">tool loans + host verbs open</text>
+      <text x="16" y="326" class="t-xs">no untrusted code has run</text>
+    </g>
+    <g>
+      <rect x="306" y="262" width="288" height="82" rx="7" fill="var(--ink-2)" stroke="var(--born)" stroke-opacity="0.5"/>
+      <text x="322" y="286" class="t-lbl t-born">P2 · WORK</text>
+      <text x="322" y="308" class="t-sm">1st tainted exec → materialise</text>
+      <text x="322" y="326" class="t-xs">revoked for this lineage, forever</text>
+    </g>
+    <g>
+      <rect x="612" y="262" width="288" height="82" rx="7" fill="var(--ink-2)" stroke="var(--danger)" stroke-opacity="0.5"/>
+      <text x="628" y="286" class="t-lbl t-danger">P3 · DISSOLVE</text>
+      <text x="628" y="308" class="t-sm">exec disabled · read-only harvest</text>
+      <text x="628" y="326" class="t-xs">then struck; workspace can persist</text>
+    </g>
+    <!-- ratchet arrows -->
+    <g fill="var(--muted)">
+      <polygon points="288,303 306,303 300,297 312,303 300,309 306,303"/>
+      <polygon points="594,303 612,303 606,297 618,303 606,309 612,303"/>
+    </g>
+  </svg>
+</section>
+
+<footer>
+  NOUSCELL · architecture reference · teal = host-lent attested · amber = guest-born collared · working name, pending clearance
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,4 @@
+/target
+/.nous
+Cargo.lock.bak
+*.tmp

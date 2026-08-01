@@ -1,0 +1,20 @@
+[package]
+name = "warden"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Per-cell VMM: wraps one microVM, enforces the authority ratchet."
+
+[features]
+# Default builds the mock backend so the POC runs on any host (incl. this
+# container). The `kvm` feature selects the real backend and is only meaningful
+# on bare metal with /dev/kvm — it is a stub in the POC (see src/vmm/kvm.rs).
+default = ["mock"]
+mock = []
+kvm = []
+
+[dependencies]
+nous-manifest = { path = "../nous-manifest" }
+thiserror.workspace = true
