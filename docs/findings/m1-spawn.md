@@ -56,6 +56,10 @@ Measured per phase, mean over 50 spawns:
 **The fork is nearly free — 36 µs.** The design's intuition about copy-on-write
 is right. Everything expensive is around it.
 
+The two big line items are both page-fault work in disguise: "memslot ioctls"
+fell to 333 µs when the mapping was pre-populated, and the guest resume term is
+2,511 CoW faults (below).
+
 ## Three things that did not fix it
 
 Recording the negative results, because each is the obvious next idea:
@@ -77,13 +81,46 @@ cost *collapsed* from 1,817 µs to 333 µs when the mapping was pre-populated,
 which confirms that "memslot ioctl time" is really page-fault time wearing a
 different hat.
 
-## The actual cost, and what it implies
+## The actual cost, measured
 
-Taken together: the guest's post-resume **write** faults are what dominate. A
-forked guest shares every page until it touches one; each page it writes takes
-an EPT violation and a copy. Read pre-faulting does not help because the reads
-were not the problem. Pooling does not help because the faults happen at
-activation whichever side of the pool they fall on.
+Taken together the suspicion was that post-resume **write** faults dominate. That
+is now measured rather than inferred. Activating a cell from an
+already-constructed pool — so nothing but the guest's own execution is running —
+grows host RSS by:
+
+| | |
+|---|---|
+| dirtied per activation | **2,511 pages (10 MiB)** |
+| measured resume time | ~4 ms |
+| **implied cost per fault** | **~1.6 µs** |
+
+1.6 µs is exactly what an EPT violation plus a copy-on-write page copy costs.
+The arithmetic and the stopwatch agree, which is the strongest form of this
+result: **spawn latency is page-fault-bound, and the fault count is the number
+to attack.**
+
+A forked guest shares every page until it touches one. Read pre-faulting did not
+help because reads were never the problem; pooling did not help because the
+faults happen at activation whichever side of the pool they fall on.
+
+### What huge pages would do
+
+The same 10 MiB working set on 2 MiB pages is **5 faults instead of 2,511** — a
+500× reduction in fault count, which would take the dominant term to near zero.
+This is the cheapest lever available and it is **not implemented here**, because
+it needs host state this project should not change on its own:
+
+```sh
+# either: allow transparent huge pages for shmem (guest RAM is a memfd)
+echo advise | sudo tee /sys/kernel/mm/transparent_hugepage/shmem_enabled
+# or: reserve explicit huge pages and use MFD_HUGETLB
+sudo sysctl -w vm.nr_hugepages=512
+```
+
+On this host `shmem_enabled` is `[never]` and `HugePages_Total` is 0, so the
+experiment is pending, not failed. It should be run before M5 commits, because
+its result changes how much of the latency problem the mote kernel still has to
+solve.
 
 That has a sharp design consequence, and it is not the one I expected:
 
@@ -95,15 +132,16 @@ That has a sharp design consequence, and it is not the one I expected:
 > with a small resident working set is the only lever measured here that
 > attacks the actual cost.
 
-Secondary levers worth measuring before M5 commits:
+Ranked by expected value, given that the target is **fault count**:
 
-- **Huge pages for guest RAM.** 2 MiB pages would cut the fault *count* by up to
-  512×. This is the cheapest untested idea and should be tried first.
-- **Parking the mote later.** The mote here is parked after init has done a lot
-  of one-off work. Parking at a point closer to "about to receive a task" may
-  leave a smaller dirty set to re-fault.
-- **UFFD-based pre-copy of a known hot set**, if profiling shows the touched
-  pages are stable across cells.
+1. **Huge pages for guest RAM** — 2,511 faults becomes 5. Cheapest by far, needs
+   a host setting (above), untested here.
+2. **A stripped mote kernel (M5)** — attacks the 10 MiB working set directly.
+3. **Parking the mote later.** This mote is parked after init has done a lot of
+   one-off work. Parking closer to "about to receive a task" may leave a smaller
+   dirty set to re-fault.
+4. **UFFD-based pre-copy of a known hot set**, if the touched pages turn out to
+   be stable across cells. Most work, most speculative.
 
 ## Honest limits of this measurement
 

@@ -53,8 +53,9 @@ This is the design's central claim and the number that matters:
 | speedup of forking over booting | **663×** | — |
 
 The mechanism is validated; the latency gate is not met, and neither pooling nor
-pre-faulting closes it. The cost is the guest re-faulting its working set after
-resume. Full analysis, including three negative results and what they imply for
+pre-faulting closes it. The cost is measured: a resuming cell takes **2,511
+copy-on-write faults** at ~1.6 µs each. On 2 MiB pages that same working set
+would be 5 faults. Full analysis, including three negative results and what they imply for
 the mote kernel: **`docs/findings/m1-spawn.md`**.
 
 **VMM overhead floor** — forking a 16 KiB hand-assembled guest. Useful as a

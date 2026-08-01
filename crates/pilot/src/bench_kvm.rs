@@ -456,6 +456,9 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
             Err(_) => break,
         }
     }
+    // Pages dirtied purely by activation: the pool is already constructed, so
+    // any RSS growth from here is the resumed guest faulting its working set.
+    let rss_pool = rss_kib();
     let mut activate = Vec::with_capacity(pool.len());
     for cell in pool.iter_mut() {
         cell.stop_at_live_signal();
@@ -465,6 +468,9 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
             activate.push(at.saturating_duration_since(t));
         }
     }
+    let rss_active = rss_kib();
+    let dirtied_kib_per_cell =
+        (rss_active.saturating_sub(rss_pool) as f64) / pool.len().max(1) as f64;
     activate.sort();
     spawn.sort();
     to_live.sort();
@@ -560,6 +566,22 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
             pct(&activate, 0.99) < Duration::from_millis(5),
             "p99 < 5 ms",
         )),
+    );
+    let pages = dirtied_kib_per_cell / 4.0;
+    row(
+        "pages dirtied per activation",
+        format!("{pages:.0} ({dirtied_kib_per_cell:.0} KiB)"),
+        None,
+    );
+    row(
+        "  implied fault time @ ~1.8 us/fault",
+        format!("{:.1} ms", pages * 1.8 / 1000.0),
+        None,
+    );
+    row(
+        "  same working set on 2 MiB pages",
+        format!("{:.0} faults", (dirtied_kib_per_cell / 2048.0).ceil()),
+        None,
     );
     row(
         "private RSS / live cell",
