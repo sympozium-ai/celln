@@ -24,6 +24,10 @@ thiserror = "1"
 anyhow = "1"
 clap = { version = "4.4", features = ["derive"] }
 tempfile = "3"
+# Real-KVM backend (warden feature `kvm`; Linux with /dev/kvm only).
+kvm-ioctls = "0.25"
+kvm-bindings = "0.14"
+libc = "0.2"
 
 [profile.release]
 lto = true

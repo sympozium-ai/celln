@@ -7,9 +7,23 @@ license.workspace = true
 repository.workspace = true
 description = "In-cell supervisor: exec-by-hash, taint lanes, structured explain."
 
+[features]
+# Build the real-KVM demo binary (`nous-demo-kvm`). Needs /dev/kvm to run.
+kvm = ["warden/kvm"]
+
 [[bin]]
 name = "nous-demo"
 path = "src/demo.rs"
+
+[[bin]]
+name = "nous-demo-kvm"
+path = "src/demo_kvm.rs"
+required-features = ["kvm"]
+
+[[bin]]
+name = "nous-bench-kvm"
+path = "src/bench_kvm.rs"
+required-features = ["kvm"]
 
 [lib]
 name = "pilot"

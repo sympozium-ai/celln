@@ -1,0 +1,68 @@
+{
+  "all_gates_passed": true,
+  "arch": "x86_64",
+  "kernel": "7.1.3-200.fc44.x86_64",
+  "m1_fork_scale": {
+    "cells_forked": 1000,
+    "cells_requested": 1000,
+    "first_instruction_us": {
+      "p50": 43.286,
+      "p99": 148.539
+    },
+    "fork_us": {
+      "max": 2148.661,
+      "p50": 183.746,
+      "p90": 248.26200000000003,
+      "p99": 509.344
+    },
+    "gates": {
+      "fork_p99_under_5ms": true,
+      "idle_rss_under_1mib": true,
+      "thousand_cells_all_live": true
+    },
+    "private_rss_kib_per_cell": {
+      "after_run": 12.272,
+      "idle": 0.256
+    },
+    "reached_guest_instructions": 1000,
+    "rss_kib": {
+      "after_fork": 2772,
+      "after_run": 14788,
+      "baseline": 2516
+    },
+    "total_fork_wall_ms": 189.862423
+  },
+  "m2_memslot_budget": {
+    "hit_kvm_limit": true,
+    "probe_ceiling": 40000,
+    "sealed_slots_in_one_vm": 32762,
+    "stopped_by": "vmm backend error: set_user_memory_region(slot 32764): Invalid argument (os error 22)",
+    "verdict": "per-tool sealing is viable at realistic tool counts"
+  },
+  "m2_revocation": {
+    "cells": 200,
+    "dead_after_revoke": 200,
+    "executing_before_revoke": 200,
+    "gates": {
+      "all_cells_dead": true,
+      "under_1s": true
+    },
+    "per_cell_revoke_us": 43.8742,
+    "revoke_wall_ms": 8.774840000000001
+  },
+  "m2_sharing": {
+    "actual_rss_growth_kib": 7236,
+    "cells": 500,
+    "cells_executed_shared_image": 500,
+    "distinct_host_page_sets": 1,
+    "gates": {
+      "at_least_500_cells": true,
+      "rss_is_about_one_copy": true
+    },
+    "growth_in_tool_copies": 7.06640625,
+    "naive_n_copies_kib": 512000,
+    "rss_after_mapping_kib": 4900,
+    "saving_factor": 70.75732448866778,
+    "tool_kib": 1024
+  }
+}

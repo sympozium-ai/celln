@@ -1,10 +1,10 @@
 //! The VM boundary, behind a trait so the rest of warden is testable without KVM.
 //!
 //! [`MockVmm`] records operations in memory and runs anywhere. The real KVM
-//! backend ([`kvm::KvmVmm`], feature `kvm`) is a stub in the POC: the fork +
-//! second-stage page-sealing work is M1/M2 in the build plan and needs bare
-//! metal, so it deliberately returns [`VmmError::Unsupported`] rather than
-//! pretending.
+//! backend ([`kvm::KvmVmm`], feature `kvm`) drives a genuine microVM via
+//! `/dev/kvm`: CoW fork from a warm template, stage-2 read-only tool sealing,
+//! live unmap revocation, dissolve freeze. See `vmm/kvm.rs` for exactly which
+//! properties are hardware-enforced in the M1 slice and which are still ahead.
 
 use nous_manifest::Hash;
 
@@ -22,9 +22,10 @@ pub trait Vmm {
     /// Fork a live VM from a warm mote snapshot (the copy-on-write "seal").
     fn fork_from_snapshot(&mut self, snapshot: &str) -> Result<(), VmmError>;
 
-    /// Map a tool page-set into the guest as read+execute, never write —
-    /// enforced below the guest kernel. In the mock this just records intent.
-    fn map_pages_ro_exec(&mut self, hash: &Hash) -> Result<(), VmmError>;
+    /// Map a tool page-set — the attested `bytes` for `hash` — into the guest
+    /// as read+execute, never write, enforced below the guest kernel. In the
+    /// mock this just records intent.
+    fn map_pages_ro_exec(&mut self, hash: &Hash, bytes: &[u8]) -> Result<(), VmmError>;
 
     /// Unmap a page-set (how revocation reaches a running cell).
     fn unmap(&mut self, hash: &Hash) -> Result<(), VmmError>;
@@ -61,7 +62,7 @@ impl Vmm for MockVmm {
         Ok(())
     }
 
-    fn map_pages_ro_exec(&mut self, hash: &Hash) -> Result<(), VmmError> {
+    fn map_pages_ro_exec(&mut self, hash: &Hash, _bytes: &[u8]) -> Result<(), VmmError> {
         if !self.mapped.contains(hash) {
             self.mapped.push(hash.clone());
         }
@@ -79,40 +80,9 @@ impl Vmm for MockVmm {
     }
 }
 
-/// Real KVM backend — feature `kvm`. Stubbed in the POC.
+/// Real KVM backend — feature `kvm`, Linux with `/dev/kvm`.
 #[cfg(feature = "kvm")]
-pub mod kvm {
-    use super::*;
-
-    /// Drives a real microVM via `/dev/kvm`. Not implemented in the POC: the
-    /// fork-from-snapshot and stage-2 page-sealing work is M1/M2 and requires
-    /// bare metal. Every method returns `Unsupported` so nothing silently fakes
-    /// a hardware guarantee.
-    pub struct KvmVmm;
-
-    impl KvmVmm {
-        pub fn new() -> Result<Self, VmmError> {
-            Err(VmmError::Unsupported(
-                "KVM backend is a stub in the POC — see build plan M1/M2".into(),
-            ))
-        }
-    }
-
-    impl Vmm for KvmVmm {
-        fn fork_from_snapshot(&mut self, _snapshot: &str) -> Result<(), VmmError> {
-            Err(VmmError::Unsupported("fork_from_snapshot (M1)".into()))
-        }
-        fn map_pages_ro_exec(&mut self, _hash: &Hash) -> Result<(), VmmError> {
-            Err(VmmError::Unsupported("stage-2 page sealing (M2)".into()))
-        }
-        fn unmap(&mut self, _hash: &Hash) -> Result<(), VmmError> {
-            Err(VmmError::Unsupported("unmap (M2)".into()))
-        }
-        fn freeze_readonly(&mut self) -> Result<(), VmmError> {
-            Err(VmmError::Unsupported("freeze_readonly (M2)".into()))
-        }
-    }
-}
+pub mod kvm;
 
 #[cfg(all(test, feature = "mock"))]
 mod tests {
@@ -124,7 +94,7 @@ mod tests {
         v.fork_from_snapshot("mote:bare+python").unwrap();
         assert_eq!(v.snapshot.as_deref(), Some("mote:bare+python"));
         let h = Hash::of(b"python");
-        v.map_pages_ro_exec(&h).unwrap();
+        v.map_pages_ro_exec(&h, b"python").unwrap();
         assert!(v.is_mapped(&h));
         v.unmap(&h).unwrap();
         assert!(!v.is_mapped(&h));

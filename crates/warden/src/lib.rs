@@ -52,17 +52,37 @@ impl<V: Vmm> Cell<V> {
         self.ratchet.phase()
     }
 
-    /// Map an attested tool page-set into the cell. Gated by the ratchet: only
-    /// permitted while materialisation rights are open.
-    pub fn map_tool(&mut self, hash: &Hash) -> Result<(), CellError> {
+    /// Map an attested tool page-set (`bytes` fetched for `hash` from the
+    /// store) into the cell. Gated by the ratchet: only permitted while
+    /// materialisation rights are open.
+    pub fn map_tool(&mut self, hash: &Hash, bytes: &[u8]) -> Result<(), CellError> {
         self.ratchet
             .check(Verb::Materialise)
             .map_err(|phase| CellError::VerbDenied {
                 verb: Verb::Materialise,
                 phase,
             })?;
-        self.vmm.map_pages_ro_exec(hash)?;
+        self.vmm.map_pages_ro_exec(hash, bytes)?;
         Ok(())
+    }
+
+    /// Revoke a mapped tool from this (possibly running) cell. Never
+    /// phase-gated: revocation removes authority, it doesn't grant any.
+    pub fn revoke_tool(&mut self, hash: &Hash) -> Result<(), CellError> {
+        self.vmm.unmap(hash)?;
+        Ok(())
+    }
+
+    /// Backend access for the proof harness and diagnostics. Policy still goes
+    /// through the gated verbs above — this is how tests and demos observe what
+    /// the hardware actually did.
+    pub fn vmm(&self) -> &V {
+        &self.vmm
+    }
+
+    /// Mutable backend access (see [`Cell::vmm`]).
+    pub fn vmm_mut(&mut self) -> &mut V {
+        &mut self.vmm
     }
 
     /// Report that the cell just performed its first data-lane exec. This is the
@@ -93,13 +113,13 @@ mod tests {
 
         // materialisation works in P1
         let py = Hash::of(b"python");
-        cell.map_tool(&py).unwrap();
+        cell.map_tool(&py, b"python").unwrap();
 
         // first tainted exec ratchets to P2 and closes materialisation forever
         cell.on_first_tainted_exec();
         assert_eq!(cell.phase(), Phase::Work);
         let np = Hash::of(b"numpy");
-        let err = cell.map_tool(&np).unwrap_err();
+        let err = cell.map_tool(&np, b"numpy").unwrap_err();
         assert!(matches!(
             err,
             CellError::VerbDenied {

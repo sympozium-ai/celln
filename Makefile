@@ -25,6 +25,18 @@ test: ## run all unit tests
 demo: ## run the five-beat proof loop (mock mode, no KVM)
 	@$(CARGO) run --quiet --bin nous-demo
 
+.PHONY: test-kvm
+test-kvm: ## run warden tests against REAL KVM (needs /dev/kvm)
+	$(CARGO) test -p warden --features kvm
+
+.PHONY: demo-kvm
+demo-kvm: ## run the five-beat proof on REAL KVM (needs /dev/kvm)
+	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-demo-kvm
+
+.PHONY: bench-kvm
+bench-kvm: ## measure the M1/M2 exit criteria on REAL KVM -> bench/results/
+	@$(CARGO) run --quiet --release -p pilot --features kvm --bin nous-bench-kvm
+
 .PHONY: fmt
 fmt: ## format all crates
 	$(CARGO) fmt

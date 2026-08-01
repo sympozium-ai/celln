@@ -54,7 +54,8 @@ fn main() -> anyhow::Result<()> {
         "resolve python -> {} tier={} warm={}",
         r.hash, r.tier, r.warm
     ));
-    cell.map_tool(&r.hash)?;
+    let bytes = forge.fetch(&r.hash)?;
+    cell.map_tool(&r.hash, &bytes)?;
     note("mapped python pages r-x into the cell");
 
     // ---- beat 3: cold tool, still fast ----
@@ -67,7 +68,8 @@ fn main() -> anyhow::Result<()> {
         "resolve leftpad -> {} tier={} warm={} upgrade_queued={}",
         r.hash, r.tier, r.warm, r.upgrade_queued
     ));
-    cell.map_tool(&r.hash)?;
+    let bytes = forge.fetch(&r.hash)?;
+    cell.map_tool(&r.hash, &bytes)?;
     forge.run_one_rebuild();
     note("background rebuild landed -> future cells get Forged");
 
@@ -101,7 +103,7 @@ fn main() -> anyhow::Result<()> {
         cell.phase()
     ));
     // materialising new tools is now permanently closed for this cell
-    match cell.map_tool(&Hash::of(b"late-tool")) {
+    match cell.map_tool(&Hash::of(b"late-tool"), b"late-tool") {
         Err(e) => note(&format!("further tool loan denied: {e}")),
         Ok(_) => panic!("materialisation should be closed in Work phase"),
     }
