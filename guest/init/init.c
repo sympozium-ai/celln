@@ -253,7 +253,7 @@ static void probe_tool_by_path(void) {
 
 	/* Does the kernel see our region as legacy persistent memory at all, and
 	 * did the arch code create the platform device nd_e820 binds to? */
-	grep_file("iomem", "/proc/iomem", ":");
+	grep_file("iomem", "/proc/iomem", "ersistent");
 	long pd = sys(SYS_open, (long) "/sys/devices/platform/e820_pmem/uevent", O_RDONLY, 0, 0, 0, 0);
 	report("e820_pmem_dev", pd >= 0 ? "present" : "absent");
 	if (pd >= 0) sys(SYS_close, pd, 0, 0, 0, 0, 0);

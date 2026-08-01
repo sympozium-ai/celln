@@ -6,14 +6,14 @@
     "cells_forked": 1000,
     "cells_requested": 1000,
     "first_instruction_us": {
-      "p50": 43.286,
-      "p99": 148.539
+      "p50": 55.082,
+      "p99": 103.574
     },
     "fork_us": {
-      "max": 2148.661,
-      "p50": 183.746,
-      "p90": 248.26200000000003,
-      "p99": 509.344
+      "max": 4440.617,
+      "p50": 630.327,
+      "p90": 1339.254,
+      "p99": 3202.598
     },
     "gates": {
       "fork_p99_under_5ms": true,
@@ -26,11 +26,11 @@
     },
     "reached_guest_instructions": 1000,
     "rss_kib": {
-      "after_fork": 2772,
-      "after_run": 14788,
-      "baseline": 2516
+      "after_fork": 2660,
+      "after_run": 14676,
+      "baseline": 2404
     },
-    "total_fork_wall_ms": 189.862423
+    "total_fork_wall_ms": 771.5256870000001
   },
   "m2_memslot_budget": {
     "hit_kvm_limit": true,
@@ -47,8 +47,8 @@
       "all_cells_dead": true,
       "under_1s": true
     },
-    "per_cell_revoke_us": 43.8742,
-    "revoke_wall_ms": 8.774840000000001
+    "per_cell_revoke_us": 117.67761999999999,
+    "revoke_wall_ms": 23.535524
   },
   "m2_sharing": {
     "actual_rss_growth_kib": 7236,
@@ -61,7 +61,7 @@
     },
     "growth_in_tool_copies": 7.06640625,
     "naive_n_copies_kib": 512000,
-    "rss_after_mapping_kib": 4900,
+    "rss_after_mapping_kib": 4836,
     "saving_factor": 70.75732448866778,
     "tool_kib": 1024
   }

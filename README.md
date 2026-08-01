@@ -38,18 +38,20 @@ make boot-kvm  # boot a STOCK kernel + prove the VFS<->memslot join by file path
 
 ## Measured on real hardware
 
-`make bench-kvm`, x86_64 / kernel 7.1.3 / VT-x — raw JSON in `bench/results/`:
+`make bench-kvm`, x86_64 / kernel 7.1 / VT-x — raw JSON in `bench/results/`.
+Latency figures move with host load; the ranges below span observed runs on an
+otherwise-busy workstation, and every gate held in all of them.
 
 | Gate | Measured | Target |
 |---|---|---|
 | concurrent cells, all reaching guest instructions | 1000 / 1000 | ≥ 1000 |
-| fork latency p50 / p99 | 204 µs / 500 µs | p99 < 5 ms |
+| fork latency p50 / p99 | 184–630 µs / 0.5–3.2 ms | p99 < 5 ms |
 | private RSS per idle cell | 0.26 KiB | — |
 | private RSS per cell after running | 12.3 KiB | < 1 MiB |
 | 1 MiB tool across 500 cells | 1 physical copy, 71× saving | ~one copy |
-| revocation across 200 running cells | 9.8 ms (49 µs/cell) | < 1 s |
+| revocation across 200 running cells | 7.5–24 ms (37–118 µs/cell) | < 1 s |
 | sealed memslots per VM (KVM's real limit) | 32,762 | — |
-| stock Fedora kernel → guest userspace (`make boot-kvm`) | 2.6 s | — |
+| stock Fedora kernel → guest userspace (`make boot-kvm`) | ~2.6 s | — |
 
 ## What's real vs stubbed
 
