@@ -25,6 +25,11 @@ name = "nous-bench-kvm"
 path = "src/bench_kvm.rs"
 required-features = ["kvm"]
 
+[[bin]]
+name = "nous-boot-kvm"
+path = "src/boot_kvm.rs"
+required-features = ["kvm"]
+
 [lib]
 name = "pilot"
 path = "src/lib.rs"

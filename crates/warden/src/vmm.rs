@@ -84,6 +84,11 @@ impl Vmm for MockVmm {
 #[cfg(feature = "kvm")]
 pub mod kvm;
 
+/// Booting a stock Linux kernel in a microVM — the vehicle for the
+/// VFS↔memslot join. Feature `kvm`.
+#[cfg(feature = "kvm")]
+pub mod boot;
+
 #[cfg(all(test, feature = "mock"))]
 mod tests {
     use super::*;

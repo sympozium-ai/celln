@@ -37,6 +37,14 @@ demo-kvm: ## run the five-beat proof on REAL KVM (needs /dev/kvm)
 bench-kvm: ## measure the M1/M2 exit criteria on REAL KVM -> bench/results/
 	@$(CARGO) run --quiet --release -p pilot --features kvm --bin nous-bench-kvm
 
+.PHONY: initramfs
+initramfs: ## build the guest initramfs (freestanding init, needs gcc + cpio)
+	@./scripts/mkinitramfs.sh
+
+.PHONY: boot-kvm
+boot-kvm: initramfs ## boot a STOCK Linux kernel in a microVM (needs /dev/kvm)
+	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-boot-kvm
+
 .PHONY: fmt
 fmt: ## format all crates
 	$(CARGO) fmt
