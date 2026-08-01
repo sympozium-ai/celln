@@ -52,13 +52,13 @@ else
 fi
 
 missing=""
-for t in gcc cpio; do
+for t in gcc cpio mke2fs; do
   command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
 if [ -z "$missing" ]; then
-  pass "guest initramfs toolchain present (gcc, cpio)"
+  pass "guest image toolchain present (gcc, cpio, e2fsprogs)"
 else
-  warn "missing:$missing — 'make initramfs' will fail, boot tests will skip"
+  warn "missing:$missing — guest images cannot be built, boot tests will skip"
 fi
 
 echo

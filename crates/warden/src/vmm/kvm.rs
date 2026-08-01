@@ -898,7 +898,11 @@ mod tests {
         require_kvm!();
         let tool = guest::tool_stub(SCRATCH, 0x99);
         let h = Hash::of(&tool);
-        let before = shared_tool_count();
+        // The address of the one host allocation backing this hash. Asserting
+        // on this rather than on the registry's *size* keeps the test honest
+        // under parallel execution — the registry is process-global, so any
+        // other test sealing a tool would move a count.
+        let addr_before = shared_tool_map(&h, &tool).unwrap().addr();
 
         let mut cells: Vec<KvmVmm> = (0..64)
             .map(|_| {
@@ -908,8 +912,12 @@ mod tests {
             })
             .collect();
 
-        // exactly one new host page-set was created for all 64 cells
-        assert_eq!(shared_tool_count(), before + 1);
+        // 64 cells later, the tool is still the same single host allocation
+        assert_eq!(
+            shared_tool_map(&h, &tool).unwrap().addr(),
+            addr_before,
+            "each cell must map the one physical copy, not its own"
+        );
         // and every cell can actually execute it
         for v in cells.iter_mut() {
             let gpa = v.tool_gpa(&h).unwrap();

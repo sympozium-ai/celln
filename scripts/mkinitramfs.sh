@@ -15,13 +15,46 @@ trap 'rm -rf "$work"' EXIT
 command -v gcc >/dev/null 2>&1 || { echo "gcc not found — needed to build the guest init" >&2; exit 1; }
 command -v cpio >/dev/null 2>&1 || { echo "cpio not found — needed to pack the initramfs" >&2; exit 1; }
 
+# The kernel we boot must be one whose modules are installed, because the DAX
+# probe loads nvdimm modules and vermagic is checked exactly. Same rule as
+# BootConfig::host_kernel in crates/warden/src/vmm/boot.rs — keep them in step.
+pick_kver() {
+  local k v
+  for k in $(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v rescue | sort -r); do
+    v="${k#/boot/vmlinuz-}"
+    [ -r "$k" ] && [ -d "/lib/modules/$v" ] && { echo "$v"; return 0; }
+  done
+  return 1
+}
+kver="${2:-$(pick_kver || true)}"
+
 gcc -static -nostdlib -nostartfiles -ffreestanding -fno-stack-protector \
     -fno-asynchronous-unwind-tables -Os -Wall -Wextra \
     -o "$work/init" "$root/guest/init/init.c"
 
 # /dev must exist for init to mount devtmpfs onto it. Device nodes themselves
 # cannot be created without privilege, which is why init mounts devtmpfs.
-mkdir -p "$work/dev" "$work/tools"
+mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys"
+
+# Stage the nvdimm modules the DAX probe needs. They ship xz-compressed;
+# decompress here so the guest init can finit_module() them directly instead of
+# carrying a decompressor. Missing modules are not fatal — the guest reports
+# that the DAX path is unavailable and the /dev/mem probe still runs.
+if [ -n "${kver:-}" ]; then
+  staged=0
+  for m in libnvdimm nd_pmem nd_e820 ramdax; do
+    src=$(find "/lib/modules/$kver/kernel/drivers/nvdimm" -name "$m.ko*" 2>/dev/null | head -1)
+    [ -n "$src" ] || continue
+    case "$src" in
+      *.xz)  command -v xz   >/dev/null 2>&1 && xz   -dc "$src" > "$work/modules/$m.ko" && staged=$((staged+1)) ;;
+      *.zst) command -v zstd >/dev/null 2>&1 && zstd -dcq "$src" > "$work/modules/$m.ko" && staged=$((staged+1)) ;;
+      *.ko)  cp "$src" "$work/modules/$m.ko" && staged=$((staged+1)) ;;
+    esac
+  done
+  printf 'modules:  %s staged for kernel %s\n' "$staged" "$kver"
+else
+  printf 'modules:  none staged (no /boot kernel with matching /lib/modules)\n'
+fi
 
 mkdir -p "$(dirname "$out")"
 ( cd "$work" && find . -print0 | cpio --null -o -H newc --quiet ) > "$out"

@@ -21,13 +21,18 @@
 //! seal governs a userspace mapping, and sealed pages are genuinely r-x to a
 //! real process.
 //!
-//! **What is still open**: that probe reaches the pages through `/dev/mem`,
-//! which is deliberately the shortest unambiguously-direct mapping. It
-//! separates "does the seal survive a userspace mapping" (answered: yes) from
-//! "which mechanism gets a *file path* there without a page-cache copy" (open,
-//! ADR-0005: DAX over pmem, or a virtio-fs DAX window). The production shape is
-//! `open("/tools/python"); mmap(PROT_EXEC)`, and that plumbing does not exist
-//! yet.
+//! **And in its production shape** (`guest_opens_a_tool_by_path_and_gets_the_sealed_pages`):
+//! the sealed region is declared as persistent memory, the nvdimm drivers turn
+//! it into `/dev/pmem0`, an ext2 image inside it is mounted `dax=always`, and
+//! the guest does `open("/tools/probe")` + `mmap(PROT_EXEC)`. It gets the sealed
+//! pages — executes from them, and its write is refused. DAX is what makes the
+//! mapping direct; the refused write is what proves it, because a page-cache
+//! copy would have absorbed it silently.
+//!
+//! The `/dev/mem` probe is kept alongside it: it is the shortest unambiguously
+//! direct mapping, so it isolates "does the seal survive a userspace mapping"
+//! from "does this filesystem mechanism copy". When the DAX path regresses,
+//! having both says which half broke.
 //!
 //! Deliberately kept separate from `KvmVmm`: that type is built around the
 //! 16 KiB CoW proof guest and its properties are load-bearing for M1/M2. This
@@ -61,14 +66,24 @@ pub const CMDLINE_GPA: u64 = 0x20000;
 pub const KERNEL_GPA: u64 = 0x10_0000;
 /// Top of the low usable memory band (EBDA below it).
 pub const EBDA_GPA: u64 = 0x9_fc00;
-/// Sealed tool regions live above RAM, so the kernel never treats them as
-/// ordinary memory: they are not in the e820 map at all.
+/// Sealed tool regions live in a **hole punched inside the RAM span**, not
+/// above it. Guest RAM is mapped as two memslots either side of this window,
+/// and the window itself is backed by read-only sealed memslots.
+///
+/// The obvious layout — park tools above the top of RAM — does not work, and
+/// fails in a way that wastes a lot of time: the kernel accepts the e820 entry
+/// and prints it (`persistent RAM (type 12)`), but `last_pfn` stops at the top
+/// of real RAM, so the region is never registered in `/proc/iomem`,
+/// `register_e820_pmem()` finds nothing, and no pmem device appears. Every
+/// module loads successfully and the device simply is not there.
 ///
 /// `guest/init/init.c` hardcodes this address (`TOOL_GPA`). The coupling is
 /// deliberate and self-checking: the guest verifies [`PROBE_MAGIC`] before
 /// trusting anything it reads there, so drift shows up as a loud mismatch
 /// rather than a silent pass.
-pub const TOOL_WINDOW_GPA: u64 = 0x1_0000_0000; // 4 GiB
+pub const TOOL_WINDOW_GPA: u64 = 0x1800_0000; // 384 MiB
+/// Size of that hole. RAM resumes above it.
+pub const TOOL_WINDOW_SIZE: u64 = 64 << 20;
 
 /// Marker at the start of the probe tool, so the guest can tell "I mapped the
 /// sealed page-set" apart from "I mapped something plausible".
@@ -96,8 +111,17 @@ pub fn probe_tool() -> Vec<u8> {
     t
 }
 
-const RAM_SLOT: u32 = 0;
-const FIRST_TOOL_SLOT: u32 = 1;
+const RAM_SLOT_LOW: u32 = 0;
+const RAM_SLOT_HIGH: u32 = 1;
+const FIRST_TOOL_SLOT: u32 = 2;
+
+/// e820 type 12: persistent memory declared the legacy (non-ACPI) way. This is
+/// what makes the nvdimm drivers claim the region and expose it as `/dev/pmem0`,
+/// which is what a DAX filesystem can then be mounted from.
+const E820_PRAM: u32 = 12;
+
+/// PCI type-1 configuration address port.
+const PCI_CONFIG_ADDR: u16 = 0xcf8;
 
 // ---- setup_header / boot_params offsets (Documentation/x86/boot.rst) ----
 
@@ -278,23 +302,48 @@ pub struct BootConfig {
     pub mem_size: usize,
     /// Wall-clock budget for the run.
     pub timeout: Duration,
+    /// Declare the sealed tool window to the kernel as persistent memory, so
+    /// the nvdimm drivers turn it into `/dev/pmem0` and a filesystem inside it
+    /// can be mounted with DAX. Size in bytes; see [`BootConfig::with_pmem`].
+    pub pmem_bytes: Option<usize>,
 }
 
 impl BootConfig {
     /// A boot that exercises the kernel and then exits: serial console on,
     /// panic reboots immediately (which, with no initramfs, is how a healthy
     /// boot ends), and the devices we do not emulate are switched off.
+    ///
+    /// `pci=conf1` is load-bearing and easy to mistake for noise. We emulate no
+    /// PCI devices, so switching PCI off looks like an obvious cleanup — but
+    /// persistent-memory e820 resources are inserted by
+    /// `e820__reserve_resources_late()`, whose only caller on x86 is
+    /// `pcibios_resource_survey()`. No PCI initialisation means no pmem
+    /// resource, means no `/dev/pmem0`, means no DAX — while every module still
+    /// loads successfully and reports nothing wrong.
     pub fn new(kernel: impl Into<PathBuf>) -> Self {
         BootConfig {
             kernel: kernel.into(),
             initrd: None,
             cmdline: "console=ttyS0 earlyprintk=serial,ttyS0,115200 \
-                      panic=-1 reboot=t pci=off nokaslr tsc=reliable \
+                      panic=-1 reboot=t nokaslr tsc=reliable pci=conf1 \
                       i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd"
                 .into(),
             mem_size: 512 << 20,
             timeout: Duration::from_secs(20),
+            pmem_bytes: None,
         }
+    }
+
+    /// Declare `len` bytes at [`TOOL_WINDOW_GPA`] as persistent memory
+    /// (`memmap=<len>!<gpa>`). This is what lets a sealed filesystem image be
+    /// reached by *file path* under DAX rather than through `/dev/mem`.
+    ///
+    /// The region is outside the e820 RAM map, so this is the only thing that
+    /// tells the kernel it exists at all — and it announces it as pmem, which
+    /// is memory the kernel maps but never allocates from.
+    pub fn with_pmem(mut self, len: usize) -> Self {
+        self.pmem_bytes = Some(len);
+        self
     }
 
     /// Boot with the guest initramfs (`scripts/mkinitramfs.sh`), so the run
@@ -313,7 +362,15 @@ impl BootConfig {
         p.exists().then_some(p)
     }
 
-    /// Pick the newest kernel installed on this host, if any.
+    /// Pick a kernel from `/boot` to boot.
+    ///
+    /// Prefers the newest kernel that *also* has its modules installed under
+    /// `/lib/modules`, because the DAX probe loads nvdimm modules and module
+    /// vermagic is checked exactly — booting 7.1.4 with 7.1.3's modules fails
+    /// in a way that looks like a DAX problem and isn't. Falls back to the
+    /// newest readable image when nothing has matching modules.
+    ///
+    /// `scripts/mkinitramfs.sh` implements the same rule; keep them in step.
     pub fn host_kernel() -> Option<PathBuf> {
         let mut found: Vec<PathBuf> = std::fs::read_dir("/boot")
             .ok()?
@@ -327,7 +384,19 @@ impl BootConfig {
             .filter(|p| std::fs::File::open(p).is_ok())
             .collect();
         found.sort();
-        found.pop()
+        let with_modules = found
+            .iter()
+            .rev()
+            .find(|p| Self::modules_dir_for(p).is_some())
+            .cloned();
+        with_modules.or_else(|| found.last().cloned())
+    }
+
+    /// `/lib/modules/<version>` for a `/boot/vmlinuz-<version>` image.
+    pub fn modules_dir_for(kernel: &Path) -> Option<PathBuf> {
+        let ver = kernel.file_name()?.to_str()?.strip_prefix("vmlinuz-")?;
+        let dir = PathBuf::from("/lib/modules").join(ver);
+        dir.is_dir().then_some(dir)
     }
 }
 
@@ -475,6 +544,15 @@ pub struct LinuxCell {
     /// dropping it would unmap memory the guest is running out of.
     _mem: Mem,
     serial: Serial,
+    /// The PCI configuration address latch (port 0xcf8).
+    ///
+    /// We emulate no PCI devices, but the kernel must still *detect* a type-1
+    /// PCI config mechanism, and it detects it by writing this port and reading
+    /// it back. Without that, `pci_legacy_init()` concludes the system has no
+    /// PCI and returns before `pcibios_resource_survey()` — which is the only
+    /// caller of `e820__reserve_resources_late()`, which is what finally
+    /// inserts persistent-memory resources into iomem. No PCI, no pmem device.
+    pci_cf8: u32,
     tools: HashMap<Hash, (u32, u64, usize)>, // slot, gpa, len
     next_slot: u32,
     next_tool_gpa: u64,
@@ -495,6 +573,28 @@ impl LinuxCell {
                 image.init_size()
             )));
         }
+        let tool_end = (TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE) as usize;
+        if cfg.mem_size <= tool_end {
+            return Err(VmmError::Backend(format!(
+                "mem_size {} must exceed the tool window end {tool_end:#x}; RAM \
+                 has to continue above the hole for the kernel to register it",
+                cfg.mem_size
+            )));
+        }
+        if (needed as u64) > TOOL_WINDOW_GPA {
+            return Err(VmmError::Backend(format!(
+                "kernel needs {needed:#x}, which runs into the tool window at \
+                 {TOOL_WINDOW_GPA:#x}"
+            )));
+        }
+        if let Some(len) = cfg.pmem_bytes {
+            if len as u64 > TOOL_WINDOW_SIZE {
+                return Err(VmmError::Backend(format!(
+                    "pmem image of {len} bytes exceeds the tool window \
+                     ({TOOL_WINDOW_SIZE} bytes)"
+                )));
+            }
+        }
 
         let kvm = Kvm::new().map_err(|e| VmmError::Unsupported(format!("/dev/kvm: {e}")))?;
         let vm = kvm.create_vm().map_err(|e| kvm_err("create_vm", e))?;
@@ -510,15 +610,24 @@ impl LinuxCell {
             .map_err(|e| kvm_err("create_pit2", e))?;
 
         let mem = Mem::anon(cfg.mem_size)?;
-        let region = kvm_userspace_memory_region {
-            slot: RAM_SLOT,
-            flags: 0,
-            guest_phys_addr: 0,
-            memory_size: cfg.mem_size as u64,
-            userspace_addr: mem.ptr as u64,
-        };
-        unsafe { vm.set_user_memory_region(region) }
-            .map_err(|e| kvm_err("set_user_memory_region(RAM)", e))?;
+        // RAM in two memslots, with the sealed tool window as a hole between
+        // them. The host allocation stays contiguous, so a GPA is still an
+        // offset into it; the hole is simply never mapped as RAM.
+        let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+        for (slot, gpa, len) in [
+            (RAM_SLOT_LOW, 0u64, TOOL_WINDOW_GPA),
+            (RAM_SLOT_HIGH, tool_end, cfg.mem_size as u64 - tool_end),
+        ] {
+            let region = kvm_userspace_memory_region {
+                slot,
+                flags: 0,
+                guest_phys_addr: gpa,
+                memory_size: len,
+                userspace_addr: mem.ptr as u64 + gpa,
+            };
+            unsafe { vm.set_user_memory_region(region) }
+                .map_err(|e| kvm_err("set_user_memory_region(RAM)", e))?;
+        }
 
         // ---- lay out guest memory ----
         mem.write(KERNEL_GPA, image.protected_mode_kernel())?;
@@ -538,7 +647,10 @@ impl LinuxCell {
         let mut cmdline = cfg.cmdline.clone().into_bytes();
         cmdline.push(0);
         mem.write(CMDLINE_GPA, &cmdline)?;
-        mem.write(ZERO_PAGE_GPA, &zero_page(&image, cfg.mem_size, initrd))?;
+        mem.write(
+            ZERO_PAGE_GPA,
+            &zero_page(&image, cfg.mem_size, initrd, cfg.pmem_bytes),
+        )?;
         mem.write(GDT_GPA, &boot_gdt())?;
         write_page_tables(&mem)?;
 
@@ -565,6 +677,7 @@ impl LinuxCell {
             vcpu,
             _mem: mem,
             serial: Serial::default(),
+            pci_cf8: 0,
             tools: HashMap::new(),
             next_slot: FIRST_TOOL_SLOT,
             next_tool_gpa: TOOL_WINDOW_GPA,
@@ -661,6 +774,9 @@ impl LinuxCell {
                                     let _ = self.vm.set_irq_line(Serial::IRQ, true);
                                     let _ = self.vm.set_irq_line(Serial::IRQ, false);
                                 }
+                            } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
+                                self.pci_cf8 =
+                                    u32::from_le_bytes(data.try_into().unwrap_or([0; 4]));
                             }
                         }
                         VcpuExit::IoIn(port, data) => {
@@ -669,8 +785,14 @@ impl LinuxCell {
                                 for b in data.iter_mut() {
                                     *b = v;
                                 }
+                            } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
+                                // Read back what was written, so the kernel
+                                // concludes type-1 config access works.
+                                data.copy_from_slice(&self.pci_cf8.to_le_bytes());
                             } else {
-                                // no device answers: all ones, as on real hardware
+                                // no device answers: all ones, as on real
+                                // hardware. For PCI config data (0xcfc) that
+                                // reads as vendor ID 0xffff — "no device here".
                                 data.fill(0xff);
                             }
                         }
@@ -722,7 +844,12 @@ impl LinuxCell {
 /// `boot_params`: the setup header copied from the image, plus what a
 /// bootloader is responsible for filling in (loader type, cmdline, initrd,
 /// memory map).
-fn zero_page(image: &BzImage, mem_size: usize, initrd: Option<(u32, u32)>) -> Vec<u8> {
+fn zero_page(
+    image: &BzImage,
+    mem_size: usize,
+    initrd: Option<(u32, u32)>,
+    pmem_bytes: Option<usize>,
+) -> Vec<u8> {
     let mut zp = vec![0u8; PAGE];
     zp[HDR_START..HDR_END].copy_from_slice(&image.bytes[HDR_START..HDR_END]);
 
@@ -734,8 +861,13 @@ fn zero_page(image: &BzImage, mem_size: usize, initrd: Option<(u32, u32)>) -> Ve
         zp[HDR_RAMDISK_SIZE..HDR_RAMDISK_SIZE + 4].copy_from_slice(&size.to_le_bytes());
     }
 
-    // e820: low RAM below the EBDA, then everything from 1 MiB up. The tool
-    // window is deliberately absent — it is not memory the kernel may allocate.
+    // e820. RAM runs either side of the sealed tool window. The window itself
+    // is either declared persistent memory — so the nvdimm drivers claim it and
+    // a DAX filesystem can be mounted from it — or omitted entirely, in which
+    // case it is memory the kernel knows nothing about and never allocates.
+    //
+    // The PRAM entry must sit *inside* the RAM span for the kernel to register
+    // it as a resource; see the note on TOOL_WINDOW_GPA.
     let mut entries = 0u8;
     let push = |zp: &mut Vec<u8>, n: &mut u8, addr: u64, size: u64, kind: u32| {
         let off = BP_E820_TABLE + (*n as usize) * 20;
@@ -744,12 +876,29 @@ fn zero_page(image: &BzImage, mem_size: usize, initrd: Option<(u32, u32)>) -> Ve
         zp[off + 16..off + 20].copy_from_slice(&kind.to_le_bytes());
         *n += 1;
     };
+    let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
     push(&mut zp, &mut entries, 0, EBDA_GPA, E820_RAM);
     push(
         &mut zp,
         &mut entries,
         KERNEL_GPA,
-        mem_size as u64 - KERNEL_GPA,
+        TOOL_WINDOW_GPA - KERNEL_GPA,
+        E820_RAM,
+    );
+    if let Some(len) = pmem_bytes {
+        push(
+            &mut zp,
+            &mut entries,
+            TOOL_WINDOW_GPA,
+            len as u64,
+            E820_PRAM,
+        );
+    }
+    push(
+        &mut zp,
+        &mut entries,
+        tool_end,
+        mem_size as u64 - tool_end,
         E820_RAM,
     );
     zp[BP_E820_ENTRIES] = entries;
@@ -974,6 +1123,136 @@ mod tests {
             cell.tool_bytes(&h, tool.len()).unwrap(),
             tool,
             "sealed bytes changed"
+        );
+    }
+
+    /// The built tool filesystem image (`make toolfs`), if it is there.
+    fn built_toolfs() -> Option<PathBuf> {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|root| root.join("target/nous-toolfs.img"))?;
+        p.exists().then_some(p)
+    }
+
+    /// The join in its production shape: a guest opens a tool **by path** and
+    /// maps it, and the sealed pages are what it gets.
+    ///
+    /// The chain under test is the real one: the sealed region is declared to
+    /// the kernel as persistent memory, the nvdimm drivers turn it into
+    /// /dev/pmem0, and an ext2 image inside it is mounted with `dax=always` —
+    /// DAX meaning "map the file's pages directly, not through the page cache".
+    ///
+    /// The write is what separates direct from copied. A page-cache copy would
+    /// absorb it silently, leaving the byte changed and the host counting no
+    /// refusal; a direct mapping puts the store against a read-only memslot,
+    /// where hardware refuses it. Magic and execution alone pass either way.
+    #[test]
+    fn guest_opens_a_tool_by_path_and_gets_the_sealed_pages() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = BootConfig::built_initramfs() else {
+            eprintln!("skipping: no initramfs — run `make initramfs`");
+            return;
+        };
+        let Some(toolfs) = built_toolfs() else {
+            eprintln!("skipping: no target/nous-toolfs.img — run `make toolfs`");
+            return;
+        };
+        if BootConfig::modules_dir_for(&kernel).is_none() {
+            eprintln!("skipping: no /lib/modules for {}", kernel.display());
+            return;
+        }
+
+        let image = std::fs::read(&toolfs).unwrap();
+        assert!(
+            image.windows(8).any(|w| w == PROBE_MAGIC),
+            "tool filesystem image does not contain the probe magic"
+        );
+
+        let cfg = BootConfig::new(&kernel)
+            .with_initrd(initrd)
+            .with_pmem(image.len());
+        let mut cell = LinuxCell::boot(cfg).unwrap();
+        let h = Hash::of(&image);
+        let gpa = cell.seal_tool(&h, &image).unwrap();
+        assert_eq!(gpa, TOOL_WINDOW_GPA, "pmem cmdline names this address");
+
+        let r = cell.run().unwrap();
+        assert!(r.guest_init_ran(), "console tail:\n{}", r.tail(30));
+
+        // What the kernel itself said about the pmem chain. Captured because
+        // when this breaks, the guest can only report "no device" while the
+        // reason is always in the kernel log.
+        eprintln!("--- kernel, on the pmem chain ---");
+        for l in r.console.lines().filter(|l| {
+            let l = l.to_ascii_lowercase();
+            [
+                "pmem",
+                "nvdimm",
+                "e820",
+                "persistent",
+                "user:",
+                "trim",
+                "remov",
+                "last_pfn",
+            ]
+            .iter()
+            .any(|k| l.contains(k))
+        }) {
+            eprintln!("{l}");
+        }
+
+        // Each stage of the chain reports, so a failure says which link broke
+        // rather than just "the join does not work".
+        for (key, want) in [
+            ("dax_pmem", "present"),
+            ("dax_mount", "ok"),
+            ("dax_open", "ok"),
+            ("dax_mmap", "ok"),
+        ] {
+            let got = r.guest_report(key);
+            assert_eq!(
+                got,
+                Some(want),
+                "DAX chain broke at {key} (got {got:?}); guest said: {}",
+                r.console
+                    .lines()
+                    .filter(|l| l.contains("NOUS:"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+        }
+
+        assert_eq!(
+            r.guest_report("dax_magic"),
+            Some("match"),
+            "mapped the file, but not the sealed page-set"
+        );
+        assert_eq!(
+            r.guest_report("dax_exec"),
+            Some("ok"),
+            "could not execute out of the file mapping"
+        );
+        assert_eq!(
+            r.guest_report("dax_write_landed"),
+            Some("no"),
+            "A WRITE THROUGH THE FILE MAPPING MODIFIED LENT TOOL CODE — either \
+             the mapping is a page-cache copy, or the seal does not govern it"
+        );
+        assert!(
+            r.sealed_writes_blocked > 0,
+            "host counted no refused write; the mapping is not reaching the \
+             sealed memslot (a page-cache copy would look exactly like this)"
+        );
+        // The whole image, not its first bytes: an ext2 image opens with a
+        // 1024-byte boot block, so offset 0 is legitimately zeros and the
+        // magic lives inside the /probe file's data block.
+        assert_eq!(
+            cell.tool_bytes(&h, image.len()).unwrap(),
+            image,
+            "the sealed filesystem image changed"
         );
     }
 

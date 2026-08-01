@@ -32,7 +32,8 @@ make demo      # run the five-beat proof loop (mock, any host)
 make test-kvm  # run warden's hardware tests on REAL KVM (needs /dev/kvm)
 make demo-kvm  # run the five-beat proof on REAL KVM (needs /dev/kvm)
 make bench-kvm # measure the M1/M2 gates -> bench/results/ (needs /dev/kvm)
-make boot-kvm  # boot a STOCK Linux kernel in a microVM (needs /dev/kvm, gcc, cpio)
+make boot-kvm  # boot a STOCK kernel + prove the VFS<->memslot join by file path
+               #   (needs /dev/kvm, gcc, cpio, e2fsprogs)
 ```
 
 ## Measured on real hardware
@@ -64,8 +65,9 @@ make boot-kvm  # boot a STOCK Linux kernel in a microVM (needs /dev/kvm, gcc, cp
 | Sealing vs. a guest with its own page tables (claim C1); one shared copy per tool hash | **real, hardware-proven (M2 sealing half)** | `crates/warden` (`vmm/kvm.rs`), `docs/findings/m2.md` |
 | Stock Linux kernel boots on the substrate, to real guest userspace, with a sealed tool region in its address space | **real, hardware-tested** | `crates/warden` (`vmm/boot.rs`), `guest/init/init.c` |
 | Guest userspace maps a sealed tool, executes out of it, and cannot modify it | **real, hardware-proven** | `vmm/boot.rs` tests, `guest/init/init.c`, ADR-0005 |
+| **VFS↔memslot join**: guest `open()`s a tool by path under DAX and gets the sealed pages, not a copy | **real, hardware-proven** | `vmm/boot.rs` tests, `scripts/mktoolfs.sh`, ADR-0005 |
 | Hermetic build farm (real forging) | **simulated** | `forgectl::Forge::run_one_rebuild` |
-| A **file path** resolving to sealed pages with no page-cache copy (DAX / virtio-fs) | **not started — the remaining join work** | ADR-0005 |
+| Per-tool granularity through the DAX path (currently the unit is the filesystem image) | **not started** | ADR-0005 |
 | Stripped mote kernel, vsock transport, guest musl userland | **not started** | build plan M5 |
 
 The proof guests are hand-assembled real-mode / 32-bit programs (no kernel yet),
@@ -100,10 +102,9 @@ Full glossary: `docs/NAMES_AND_CONVENTIONS.md`.
 ## Status
 
 Pre-alpha, single-host. Working name pending trademark/domain clearance.
-M1 (fork path) and the sealing half of M2 are done and hardware-proven —
-**claim C1 holds** (`docs/findings/m2.md`). A stock Linux kernel boots on the
-substrate to real guest userspace, and a guest **process** can map a sealed
-tool, execute out of it, and not modify it. What remains of the VFS↔memslot
-join is plumbing a *file path* to those pages without a page-cache copy
-(ADR-0005). See `docs/NOUSCELL_BUILD_PLAN.md` for the milestone plan and
-`docs/decisions/` for ADRs 0001–0005.
+M1 (fork path) and M2's sealing work are done and hardware-proven — **claim C1
+holds end to end** (`docs/findings/m2.md`). A stock Linux kernel boots on the
+substrate, and a guest process **opens a tool by path**, executes out of it, and
+cannot modify it: the mapping reaches the sealed memslot, not a page-cache copy.
+See `docs/NOUSCELL_BUILD_PLAN.md` for the milestone plan, `docs/decisions/` for
+ADRs 0001–0005, and `docs/diary/` for how it actually went.

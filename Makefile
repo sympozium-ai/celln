@@ -41,8 +41,15 @@ bench-kvm: ## measure the M1/M2 exit criteria on REAL KVM -> bench/results/
 initramfs: ## build the guest initramfs (freestanding init, needs gcc + cpio)
 	@./scripts/mkinitramfs.sh
 
+.PHONY: toolfs
+toolfs: ## build the sealed tool filesystem image (needs e2fsprogs)
+	@./scripts/mktoolfs.sh
+
+.PHONY: guest
+guest: initramfs toolfs ## build everything the guest side needs
+
 .PHONY: boot-kvm
-boot-kvm: initramfs ## boot a STOCK Linux kernel in a microVM (needs /dev/kvm)
+boot-kvm: guest ## boot a STOCK kernel and prove the VFS<->memslot join (needs /dev/kvm)
 	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-boot-kvm
 
 .PHONY: fmt

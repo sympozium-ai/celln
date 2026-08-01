@@ -41,8 +41,10 @@ of the design corpus in `docs/`.
 - Ratchet + VMM trait/backends: `crates/warden` (`vmm/kvm.rs` real KVM,
   `vmm/boot.rs` stock-kernel boot)
 - Exec gate + lanes + explain + demos: `crates/pilot`
-- Guest-side code: `guest/init/init.c` (freestanding, no libc)
+- Guest-side code: `guest/init/init.c` (freestanding, no libc); guest images built
+  by `scripts/mkinitramfs.sh` and `scripts/mktoolfs.sh`
 - Verdicts and measurements: `docs/findings/`, `bench/results/`
+- Narrative history, including what failed: `docs/diary/`
 
 ## Proving things
 
