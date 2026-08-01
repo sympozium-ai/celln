@@ -142,3 +142,37 @@ the mote kernel will need to either keep PCI initialisation or carry pmem
 resource registration that doesn't route through the PCI survey. That is a
 finding about the mote kernel's config, arrived at the hard way, and worth
 having before M5 rather than during it.
+
+---
+
+## Postscript: taking it back
+
+Proving a guest can *reach* lent tool code is only half the bargain. The design
+also promises the host can take it away while the guest is using it — beat 5 of
+the five-beat proof. That had been demonstrated against the kernel-less proof
+guest, but never against a real kernel with the tool open and mapped, which is
+the case that actually matters.
+
+The mechanism: the guest opens the tool, maps it, executes it, then prints a
+marker saying it is holding it. The host watches the serial stream for that
+marker and deletes the memslot mid-run. The guest then reads its own existing
+mapping and reports what it sees.
+
+Triggering on a guest-printed marker rather than a timer matters more than it
+looks. A timer would revoke at a hopeful point; the marker revokes at a known
+one, with the guest demonstrably holding the mapping.
+
+It works — the guest finds the tool gone. Two things fell out:
+
+**ONLCR.** The first attempt never fired. The marker ended in `\n`, and the tty
+layer translates that to `\r\n`, so the serial buffer never ends with what I was
+matching. Matching on the text without the newline fixed it. A reminder that the
+console is not a pipe: there is a line discipline in the way, and it edits.
+
+**A `None` that was the right answer.** The next failure was
+`cell.tool_bytes(...)` returning `None` in the integrity check. That is not a
+bug — after revocation the cell genuinely no longer maps that hash, which is the
+entire point of revoking it. The check was asking the wrong object. It now reads
+the shared registry, where the lent page-set still lives, rather than the cell's
+mapping table. Worth noticing because the fix is to change the assertion, and
+the instinct when a test goes red is to change the code.

@@ -12,7 +12,7 @@ are not written down they get rediscovered.
 | Entry | Covers |
 |---|---|
 | [2026-08-01 — from a stub that refused to a guest that couldn't](2026-08-01-from-stub-to-real-hardware.md) | M1 fork path, claim C1 against a guest controlling its own page tables, the measurement harness, stock-kernel bring-up |
-| [2026-08-01 — four wrong turns to a file path](2026-08-01-hunting-the-vfs-join.md) | Closing the VFS↔memslot join: DAX over pmem, and the four silent failures on the way |
+| [2026-08-01 — four wrong turns to a file path](2026-08-01-hunting-the-vfs-join.md) | Closing the VFS↔memslot join: DAX over pmem, the four silent failures on the way, and revoking a tool from under a guest holding it |
 
 ## The ones worth knowing before you hit them
 
@@ -28,6 +28,8 @@ are not written down they get rediscovered.
 - **`pci=off` silently disables DAX.** PRAM resources are registered only from
   `pcibios_resource_survey()`. On a VM with no PCI devices, turning PCI off
   looks like obvious cleanup.
+- **The console is not a pipe.** The tty line discipline translates newlines
+  (ONLCR), so matching guest output on a marker ending in `\n` never fires.
 - **Trust your instrument before your theory.** Two of the four wrong turns in
   the join hunt were bad measurements — a single `read()` of a seq_file, and a
   `head -16` — not bad designs. Both times the conclusion "the feature is
