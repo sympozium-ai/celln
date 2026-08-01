@@ -25,6 +25,9 @@
 #define SYS_exit 60
 #define SYS_mount 165
 #define SYS_reboot 169
+#define SYS_umount2 166
+#define SYS_dup2 33
+#define SYS_execve 59
 #define SYS_finit_module 313
 #define SYS_iopl 172
 
@@ -336,6 +339,18 @@ static void probe_tool_by_path(void) {
 	report("dax_after_revoke", same(post, TOOL_MAGIC, 8) ? "STILL-READABLE" : "revoked");
 
 	sys(SYS_close, fd, 0, 0, 0, 0, 0);
+
+	/* Unmount before anything tries to shut down.
+	 *
+	 * We mounted read-write on purpose, because the write is what proves the
+	 * mapping is direct rather than a page-cache copy. But leaving a DAX
+	 * filesystem mounted read-write on a *read-only* memslot means the
+	 * kernel's writeback thread will eventually try to flush dirty pages into
+	 * memory it cannot write, which on this host dies with an invalid opcode
+	 * in arch_wb_cache_pmem. Production mounts tools read-only; here we simply
+	 * put it down once the proof is finished. MNT_DETACH because the mapping
+	 * and fd above may still be held. */
+	sys(SYS_umount2, (long) "/tools", 2 /* MNT_DETACH */, 0, 0, 0, 0);
 }
 
 void _start(void) {
@@ -379,6 +394,24 @@ void _start(void) {
 	}
 	report("cell", "live");
 
+	/* Hand the cell to pilot.
+	 *
+	 * Everything above is a hardware probe: this init exists to prove
+	 * properties of the substrate. pilot is the real occupant of the slot,
+	 * and it enforces the trust model from inside the cell. execve replaces
+	 * us, so pilot becomes PID 1 and owns the reboot.
+	 *
+	 * stdout and stderr have to point at the console first — pilot is a
+	 * normal Rust program using println!, and fd 1 is whatever the kernel
+	 * left us, not necessarily the console we opened. */
+	sys(SYS_dup2, console, 1, 0, 0, 0, 0);
+	sys(SYS_dup2, console, 2, 0, 0, 0, 0);
+	char *argv[] = {(char *)"/pilot", 0};
+	char *envp[] = {0};
+	sys(SYS_execve, (long) "/pilot", (long)argv, (long)envp, 0, 0, 0);
+
+	/* Only reached if pilot is absent; the substrate proofs above still ran. */
+	report("pilot", "absent");
 	out("NOUS:done\n");
 	sys(SYS_reboot, REBOOT_MAGIC1, REBOOT_MAGIC2, REBOOT_CMD_RESTART, 0, 0, 0);
 	sys(SYS_exit, 0, 0, 0, 0, 0, 0);

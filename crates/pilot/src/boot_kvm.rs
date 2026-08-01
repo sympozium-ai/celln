@@ -77,6 +77,10 @@ fn main() -> anyhow::Result<()> {
 
     let r = cell.run()?;
 
+    // Debugging a guest means reading all of it; head/tail hides the middle.
+    if std::env::var_os("NOUS_CONSOLE").is_some() {
+        println!("{}", r.console);
+    }
     println!("\x1b[1;36m── first 20 console lines\x1b[0m");
     println!("{}", r.head(20));
     println!("\n\x1b[1;36m── last 20 console lines\x1b[0m");

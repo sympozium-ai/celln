@@ -358,6 +358,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "forgectl",
+ "libc",
  "nous-manifest",
  "nous-store",
  "serde",

@@ -902,9 +902,10 @@ impl LinuxCell {
 
         // ---- vCPU ----
         let vcpu = vm.create_vcpu(0).map_err(|e| kvm_err("create_vcpu", e))?;
-        let cpuid = kvm
+        let mut cpuid = kvm
             .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
             .map_err(|e| kvm_err("get_supported_cpuid", e))?;
+        mask_unusable_features(&mut cpuid);
         vcpu.set_cpuid2(&cpuid)
             .map_err(|e| kvm_err("set_cpuid2", e))?;
         set_long_mode(&vcpu)?;
@@ -1378,6 +1379,26 @@ impl LinuxCell {
             revoked_live,
             live_signal_at,
         })
+    }
+}
+
+/// Take away CPUID bits the guest must not believe.
+///
+/// `KVM_GET_SUPPORTED_CPUID` reports what the *host* can do, and passing it
+/// through wholesale tells the guest it has instructions that then fault. CLWB
+/// is the one that bit: the guest kernel patches `arch_wb_cache_pmem` to use
+/// it, then dies with an invalid opcode the first time a DAX filesystem writes
+/// back — a kworker oops that looks nothing like a CPUID problem. Clearing the
+/// bit makes the kernel fall back to CLFLUSHOPT/CLFLUSH, which work.
+///
+/// The rule this encodes: advertise only what this VM can actually execute.
+fn mask_unusable_features(cpuid: &mut kvm_bindings::CpuId) {
+    const LEAF_STRUCTURED_EXT: u32 = 0x7;
+    const EBX_CLWB: u32 = 1 << 24;
+    for e in cpuid.as_mut_slice() {
+        if e.function == LEAF_STRUCTURED_EXT && e.index == 0 {
+            e.ebx &= !EBX_CLWB;
+        }
     }
 }
 
@@ -1864,6 +1885,43 @@ mod tests {
                 "cell {i} booted a kernel; this is supposed to be a fork"
             );
         }
+    }
+
+    /// pilot, running inside the cell, enforcing the trust model on real bytes.
+    ///
+    /// Not a host-side assertion about what pilot would decide: pilot is a
+    /// static binary in the guest, it hashes what it finds, and it reports
+    /// what it did.
+    #[test]
+    fn pilot_enforces_exec_by_hash_inside_the_cell() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = BootConfig::built_initramfs() else {
+            eprintln!("skipping: no initramfs — run `make guest`");
+            return;
+        };
+        let mut cell = LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)).unwrap();
+        let r = cell.run().unwrap();
+
+        if r.guest_report("pilot") != Some("alive") {
+            eprintln!("skipping: pilot not staged (needs the musl target)");
+            return;
+        }
+        // A manifest that does not verify is not a manifest.
+        assert_eq!(r.guest_report("pilot_manifest"), Some("signed"));
+        // Attested, not an interpreter: full tool-lane authority.
+        assert_eq!(r.guest_report("pilot_exec_ls"), Some("permitted:tool"));
+        // Attested interpreter fed agent-authored input: demoted. The
+        // laundering ban, enforced in-cell rather than asserted on the host.
+        assert_eq!(r.guest_report("pilot_exec_python"), Some("permitted:data"));
+        // Never attested: refused, whatever the filesystem says about it.
+        assert_eq!(r.guest_report("pilot_exec_agent-script"), Some("denied"));
+        assert_eq!(r.guest_report("pilot_unattested"), Some("refused"));
+        assert!(
+            r.console.contains("exec-by-hash"),
+            "a denial must carry a structured explain the agent can act on"
+        );
     }
 
     /// The sealed region must be present in a *real* kernel's physical address

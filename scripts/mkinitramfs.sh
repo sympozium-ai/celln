@@ -34,7 +34,42 @@ gcc -static -nostdlib -nostartfiles -ffreestanding -fno-stack-protector \
 
 # /dev must exist for init to mount devtmpfs onto it. Device nodes themselves
 # cannot be created without privilege, which is why init mounts devtmpfs.
-mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys"
+mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
+         "$work/nous/tools"
+
+# ---- pilot, and the manifest it enforces ----------------------------------
+#
+# pilot runs *inside* the cell. Built static against musl so the guest needs
+# nothing but this one file: no libc, no loader, no /lib. init hands control to
+# it, and it becomes PID 1.
+#
+# The manifest and the tools are staged together, deliberately: pilot hashes
+# the bytes it finds and checks them against the manifest rather than trusting
+# that they are what the host said. Three tools, to exercise all three
+# outcomes — an attested interpreter (demoted when fed agent-authored input),
+# an attested binary (not demoted), and one that is simply not in the manifest.
+if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
+  ( cd "$root" && cargo build --quiet --release \
+      --target x86_64-unknown-linux-musl -p pilot --bin nous-pilot )
+  cp "$root/target/x86_64-unknown-linux-musl/release/nous-pilot" "$work/pilot"
+
+  printf '#!/attested/python\nprint("attested interpreter")\n' > "$work/nous/tools/python"
+  printf 'attested binary bytes, not an interpreter\n'          > "$work/nous/tools/ls"
+  printf 'code the agent wrote, never attested\n'               > "$work/nous/tools/agent-script"
+
+  store="$(mktemp -d)"
+  ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
+      preforge /usr/bin/python "$work/nous/tools/python" --interpreter >/dev/null )
+  ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
+      preforge /usr/bin/ls "$work/nous/tools/ls" >/dev/null )
+  # `agent-script` is deliberately NOT preforged: pilot must refuse it.
+  cp "$store/manifest.json" "$work/nous/manifest.json"
+  rm -rf "$store"
+  printf 'pilot:    staged (static musl) with a %s-entry manifest\n' \
+    "$(grep -o '"alias"' "$work/nous/manifest.json" | wc -l)"
+else
+  printf 'pilot:    skipped (rustup target add x86_64-unknown-linux-musl)\n'
+fi
 
 # Stage the nvdimm modules the DAX probe needs. They ship xz-compressed;
 # decompress here so the guest init can finit_module() them directly instead of

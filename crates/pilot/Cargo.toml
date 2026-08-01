@@ -12,6 +12,10 @@ description = "In-cell supervisor: exec-by-hash, taint lanes, structured explain
 kvm = ["warden/kvm"]
 
 [[bin]]
+name = "nous-pilot"
+path = "src/guest.rs"
+
+[[bin]]
 name = "nous-demo"
 path = "src/demo.rs"
 
@@ -39,6 +43,7 @@ nous-manifest = { path = "../nous-manifest" }
 nous-store = { path = "../nous-store" }
 forgectl = { path = "../forgectl" }
 warden = { path = "../warden" }
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
