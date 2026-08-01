@@ -63,8 +63,9 @@ make boot-kvm  # boot a STOCK Linux kernel in a microVM (needs /dev/kvm, gcc, cp
 | Real KVM backend: CoW fork, stage-2 read-only tool sealing, live unmap revocation, dissolve freeze | **real, hardware-tested (M1)** | `crates/warden` (`vmm/kvm.rs`, feature `kvm`) |
 | Sealing vs. a guest with its own page tables (claim C1); one shared copy per tool hash | **real, hardware-proven (M2 sealing half)** | `crates/warden` (`vmm/kvm.rs`), `docs/findings/m2.md` |
 | Stock Linux kernel boots on the substrate, to real guest userspace, with a sealed tool region in its address space | **real, hardware-tested** | `crates/warden` (`vmm/boot.rs`), `guest/init/init.c` |
+| Guest userspace maps a sealed tool, executes out of it, and cannot modify it | **real, hardware-proven** | `vmm/boot.rs` tests, `guest/init/init.c`, ADR-0005 |
 | Hermetic build farm (real forging) | **simulated** | `forgectl::Forge::run_one_rebuild` |
-| VFS↔memslot join (guest `mmap` lands on the sealed page, not a copy) | **not proven — the gating risk; vehicle now exists** | `docs/findings/m2.md`, ADR-0005 |
+| A **file path** resolving to sealed pages with no page-cache copy (DAX / virtio-fs) | **not started — the remaining join work** | ADR-0005 |
 | Stripped mote kernel, vsock transport, guest musl userland | **not started** | build plan M5 |
 
 The proof guests are hand-assembled real-mode / 32-bit programs (no kernel yet),
@@ -100,8 +101,9 @@ Full glossary: `docs/NAMES_AND_CONVENTIONS.md`.
 
 Pre-alpha, single-host. Working name pending trademark/domain clearance.
 M1 (fork path) and the sealing half of M2 are done and hardware-proven —
-**claim C1 holds** (`docs/findings/m2.md`). A stock Linux kernel now boots on
-the substrate to real guest userspace, which is the vehicle for the remaining
-gating risk: the **VFS↔memslot join**, still unproven. See
-`docs/NOUSCELL_BUILD_PLAN.md` for the milestone plan and `docs/decisions/` for
-ADRs 0001–0004.
+**claim C1 holds** (`docs/findings/m2.md`). A stock Linux kernel boots on the
+substrate to real guest userspace, and a guest **process** can map a sealed
+tool, execute out of it, and not modify it. What remains of the VFS↔memslot
+join is plumbing a *file path* to those pages without a page-cache copy
+(ADR-0005). See `docs/NOUSCELL_BUILD_PLAN.md` for the milestone plan and
+`docs/decisions/` for ADRs 0001–0005.

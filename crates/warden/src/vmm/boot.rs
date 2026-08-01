@@ -10,11 +10,24 @@
 //!
 //! This module is the vehicle for that work: it boots an unmodified distro
 //! bzImage via the 64-bit Linux boot protocol, with a serial console so the
-//! boot is observable, and it can seal tool regions into the running guest the
-//! same way [`super::kvm::KvmVmm`] does. It does **not** yet prove the join —
-//! that needs a guest-side consumer (driver or DAX mapping), which is the next
-//! piece of work. What it proves is that our fork/seal substrate carries a real
-//! kernel at all.
+//! boot is observable, and it seals tool regions into the running guest the
+//! same way [`super::kvm::KvmVmm`] does.
+//!
+//! **What is now proven** (`guest_userspace_mapping_of_a_sealed_tool_is_the_real_thing`,
+//! and `make boot-kvm`): a real guest *userspace process* under a stock kernel
+//! maps the sealed region, verifies by magic that it is the sealed page-set
+//! rather than a copy, **executes code out of it**, and cannot modify it — its
+//! write is refused below the guest and the host counts the refusal. So the
+//! seal governs a userspace mapping, and sealed pages are genuinely r-x to a
+//! real process.
+//!
+//! **What is still open**: that probe reaches the pages through `/dev/mem`,
+//! which is deliberately the shortest unambiguously-direct mapping. It
+//! separates "does the seal survive a userspace mapping" (answered: yes) from
+//! "which mechanism gets a *file path* there without a page-cache copy" (open,
+//! ADR-0005: DAX over pmem, or a virtio-fs DAX window). The production shape is
+//! `open("/tools/python"); mmap(PROT_EXEC)`, and that plumbing does not exist
+//! yet.
 //!
 //! Deliberately kept separate from `KvmVmm`: that type is built around the
 //! 16 KiB CoW proof guest and its properties are load-bearing for M1/M2. This
@@ -50,7 +63,38 @@ pub const KERNEL_GPA: u64 = 0x10_0000;
 pub const EBDA_GPA: u64 = 0x9_fc00;
 /// Sealed tool regions live above RAM, so the kernel never treats them as
 /// ordinary memory: they are not in the e820 map at all.
+///
+/// `guest/init/init.c` hardcodes this address (`TOOL_GPA`). The coupling is
+/// deliberate and self-checking: the guest verifies [`PROBE_MAGIC`] before
+/// trusting anything it reads there, so drift shows up as a loud mismatch
+/// rather than a silent pass.
 pub const TOOL_WINDOW_GPA: u64 = 0x1_0000_0000; // 4 GiB
+
+/// Marker at the start of the probe tool, so the guest can tell "I mapped the
+/// sealed page-set" apart from "I mapped something plausible".
+pub const PROBE_MAGIC: &[u8; 8] = b"NOUSTOOL";
+/// Offset of the callable function within the probe tool.
+pub const PROBE_FN_OFF: usize = 16;
+/// What that function returns.
+pub const PROBE_FN_RETURNS: u8 = 0x5a;
+
+/// The probe "tool": a magic marker plus a real x86-64 function
+/// (`mov eax, 0x5a; ret`) for the guest to call. Executing this from a guest
+/// userspace mapping is what proves the sealed pages are genuinely r-x to a
+/// real process, not merely present.
+pub fn probe_tool() -> Vec<u8> {
+    let mut t = vec![0u8; PAGE];
+    t[..8].copy_from_slice(PROBE_MAGIC);
+    t[PROBE_FN_OFF..PROBE_FN_OFF + 6].copy_from_slice(&[
+        0xb8,
+        PROBE_FN_RETURNS,
+        0x00,
+        0x00,
+        0x00, // mov eax, 0x5a
+        0xc3, // ret
+    ]);
+    t
+}
 
 const RAM_SLOT: u32 = 0;
 const FIRST_TOOL_SLOT: u32 = 1;
@@ -124,6 +168,9 @@ pub struct BootReport {
     pub end: BootEnd,
     pub exits: u64,
     pub elapsed: Duration,
+    /// Guest writes into a sealed tool region that the hardware refused. The
+    /// host-side counterpart to the guest's own account of the same event.
+    pub sealed_writes_blocked: u64,
 }
 
 impl BootReport {
@@ -593,6 +640,7 @@ impl LinuxCell {
 
         let started = Instant::now();
         let mut exits = 0u64;
+        let mut sealed_writes_blocked = 0u64;
         let end = loop {
             if stop.load(Ordering::Relaxed) {
                 break BootEnd::TimedOut;
@@ -627,7 +675,18 @@ impl LinuxCell {
                             }
                         }
                         VcpuExit::MmioRead(_, data) => data.fill(0),
-                        VcpuExit::MmioWrite(_, _) => {}
+                        VcpuExit::MmioWrite(gpa, _) => {
+                            // A write that reached us instead of memory. If it
+                            // landed in a sealed tool region, stage-2 just
+                            // refused a guest write to lent tool code.
+                            if self
+                                .tools
+                                .values()
+                                .any(|&(_, base, len)| gpa >= base && gpa < base + len as u64)
+                            {
+                                sealed_writes_blocked += 1;
+                            }
+                        }
                         VcpuExit::Hlt => break BootEnd::Halted,
                         VcpuExit::Shutdown | VcpuExit::SystemEvent(_, _) => {
                             break BootEnd::Shutdown
@@ -655,6 +714,7 @@ impl LinuxCell {
             end,
             exits,
             elapsed: started.elapsed(),
+            sealed_writes_blocked,
         })
     }
 }
@@ -677,7 +737,7 @@ fn zero_page(image: &BzImage, mem_size: usize, initrd: Option<(u32, u32)>) -> Ve
     // e820: low RAM below the EBDA, then everything from 1 MiB up. The tool
     // window is deliberately absent — it is not memory the kernel may allocate.
     let mut entries = 0u8;
-    let mut push = |zp: &mut Vec<u8>, n: &mut u8, addr: u64, size: u64, kind: u32| {
+    let push = |zp: &mut Vec<u8>, n: &mut u8, addr: u64, size: u64, kind: u32| {
         let off = BP_E820_TABLE + (*n as usize) * 20;
         zp[off..off + 8].copy_from_slice(&addr.to_le_bytes());
         zp[off + 8..off + 16].copy_from_slice(&size.to_le_bytes());
@@ -844,6 +904,76 @@ mod tests {
             r.reached_userspace_handoff(),
             "kernel did not reach userspace hand-off; console tail:\n{}",
             r.console
+        );
+    }
+
+    /// The VFS↔memslot join, in the form that matters: a **guest userspace
+    /// process** maps the sealed region and tries to modify it.
+    ///
+    /// Three things have to be true at once, and each rules out a different
+    /// way of being fooled:
+    ///   * the magic matches — we mapped the sealed page-set, not a copy or
+    ///     a zero page;
+    ///   * the guest *executes* code out of the mapping — the pages are
+    ///     genuinely r-x to a real process, not merely readable;
+    ///   * the guest's write does not land, and the host counts the refusal —
+    ///     the seal governs the mapping, which is the whole claim.
+    #[test]
+    fn guest_userspace_mapping_of_a_sealed_tool_is_the_real_thing() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = BootConfig::built_initramfs() else {
+            eprintln!("skipping: no target/nous-initramfs.cpio — run `make initramfs`");
+            return;
+        };
+        let mut cell = LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)).unwrap();
+        let tool = probe_tool();
+        let h = Hash::of(&tool);
+        let gpa = cell.seal_tool(&h, &tool).unwrap();
+        assert_eq!(
+            gpa, TOOL_WINDOW_GPA,
+            "guest init hardcodes this address; keep them in step"
+        );
+
+        let r = cell.run().unwrap();
+        assert!(r.guest_init_ran(), "console tail:\n{}", r.tail(30));
+
+        match r.guest_report("seal_probe") {
+            Some("mapped") => {}
+            other => {
+                eprintln!(
+                    "guest could not map the sealed region ({other:?}); \
+                     this host's kernel may forbid the mapping path"
+                );
+                return;
+            }
+        }
+
+        assert_eq!(
+            r.guest_report("tool_magic"),
+            Some("match"),
+            "guest mapped something, but not the sealed page-set"
+        );
+        assert_eq!(
+            r.guest_report("tool_exec"),
+            Some("ok"),
+            "guest could not execute out of the sealed mapping"
+        );
+        assert_eq!(
+            r.guest_report("seal_write_landed"),
+            Some("no"),
+            "A GUEST USERSPACE WRITE MODIFIED LENT TOOL CODE — claim C1 does not \
+             survive this mapping path"
+        );
+        assert!(
+            r.sealed_writes_blocked > 0,
+            "host saw no refused write; the guest's account is unconfirmed"
+        );
+        assert_eq!(
+            cell.tool_bytes(&h, tool.len()).unwrap(),
+            tool,
+            "sealed bytes changed"
         );
     }
 
