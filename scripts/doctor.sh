@@ -43,9 +43,31 @@ else
   rc=1
 fi
 
+# --- stock-kernel boot testing (make boot-kvm) ---
+kernel=$(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v rescue | tail -1 || true)
+if [ -n "$kernel" ] && [ -r "$kernel" ]; then
+  pass "bootable kernel image readable ($(basename "$kernel"))"
+else
+  warn "no readable /boot/vmlinuz-* — boot tests will skip"
+fi
+
+missing=""
+for t in gcc cpio; do
+  command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+done
+if [ -z "$missing" ]; then
+  pass "guest initramfs toolchain present (gcc, cpio)"
+else
+  warn "missing:$missing — 'make initramfs' will fail, boot tests will skip"
+fi
+
 echo
 if [ "$rc" -eq 0 ]; then
-  echo "Ready to build. Run: make demo"
+  if [ -e /dev/kvm ]; then
+    echo "Ready to build. Run: make demo-kvm (real hardware) or make demo (mock)"
+  else
+    echo "Ready to build. Run: make demo"
+  fi
 else
   echo "Missing prerequisites above."
 fi

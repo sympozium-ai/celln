@@ -38,5 +38,16 @@ of the design corpus in `docs/`.
 - Trust core (no I/O): `crates/nous-manifest`
 - Store: `crates/nous-store`
 - Tiered resolution + CLI: `crates/forgectl`
-- Ratchet + VMM trait/backends: `crates/warden`
-- Exec gate + lanes + explain + demo: `crates/pilot`
+- Ratchet + VMM trait/backends: `crates/warden` (`vmm/kvm.rs` real KVM,
+  `vmm/boot.rs` stock-kernel boot)
+- Exec gate + lanes + explain + demos: `crates/pilot`
+- Guest-side code: `guest/init/init.c` (freestanding, no libc)
+- Verdicts and measurements: `docs/findings/`, `bench/results/`
+
+## Proving things
+
+Claims about what a guest can or cannot do are proven by **guest code that
+actually tries**, not by host-side assertion — see the hostile-guest test in
+`vmm/kvm.rs` and the `NOUS:key=value` reporting channel in `guest/init/init.c`.
+Hardware tests skip (not fail) when `/dev/kvm`, a readable kernel image, or the
+initramfs toolchain is absent, so `make ci` stays green on any host.
