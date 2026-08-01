@@ -7,16 +7,17 @@ is attested memory the host lends in and can revoke in microseconds.
 > This repository is the **proof-of-concept**. It builds the trust core and the
 > control-flow of the full design in Rust, and demonstrates the five-beat proof
 > loop end-to-end in a **mock backend that runs on any host** — no KVM required.
-> With the `kvm` feature on a host with `/dev/kvm`, **M1 and the sealing half of
-> M2 are real**: the cell is a genuine microVM (CoW-forked from a warm template),
-> tool pages are sealed read-only at stage-2, and revocation unmaps pages from a
-> running cell. **Claim C1 is proven** — a guest that enters protected mode and
-> maps the sealed page writable *in page tables it wrote itself* still cannot
-> write it. Run `make demo-kvm`, `make test-kvm`, `make bench-kvm` to see the
-> hardware say no and to reproduce the numbers. Remaining hardware work
-> (stripped mote kernel, the VFS↔memslot join, vsock, guest userland) is in
-> `docs/NOUSCELL_BUILD_PLAN.md`; the open risk is recorded in
-> `docs/findings/m2.md`.
+> With the `kvm` feature on a host with `/dev/kvm`, **M1 and M2 are real**. Cells
+> are genuine microVMs forked from a **booted** Linux kernel — they resume in
+> userspace having booted nothing. Tool pages are sealed read-only at stage-2,
+> reachable by file path under DAX, and revocable from a running cell.
+> **Claim C1 is proven**: a guest that enters protected mode and maps the sealed
+> page writable *in page tables it wrote itself* still cannot write it.
+> **The M1 latency gate is missed** — real cells spawn in 6.3 ms, not the ~1 ms
+> the design corpus assumes (`docs/findings/m1-spawn.md`). Run `make demo-kvm`,
+> `make boot-kvm`, `make bench-kvm` to reproduce all of it. Remaining hardware
+> work (stripped mote kernel, vsock, guest userland) is in
+> `docs/NOUSCELL_BUILD_PLAN.md`.
 
 Rust for code · Make for orchestration · shell for glue.
 
@@ -96,10 +97,11 @@ if it were:
 | Per-tool granularity through the DAX path (currently the unit is the filesystem image) | **not started** | ADR-0005 |
 | Stripped mote kernel, vsock transport, guest musl userland | **not started** | build plan M5 |
 
-The proof guests are hand-assembled real-mode / 32-bit programs (no kernel yet),
-so only tools mapped in the low 64 KiB are reachable by them; the sealing
-mechanism is size-independent and is the same one a real mote kernel will live
-under. Everything the backend can't do is an `Unsupported` error, not a fake.
+Two kinds of guest are used deliberately. Hand-assembled real-mode / 32-bit
+programs prove the hardware properties without a kernel in the way — a
+kernel-less guest can be made strictly *more* hostile than a stock one, which is
+what claim C1 needs. A stock Fedora kernel proves the properties survive a real
+guest. Everything the backend can't do is an `Unsupported` error, not a fake.
 
 ## Layout
 
@@ -110,11 +112,11 @@ crates/
   forgectl/        fleet daemon: tiered resolution + CLI  (where the distro lives)
   warden/          per-cell VMM: ratchet + VMM trait + mock/kvm backends + Linux boot
   pilot/           in-cell supervisor: exec-by-hash, lanes, explain + the demos
-guest/init/        freestanding guest init (no libc) for boot testing
+guest/init/        freestanding guest init (no libc): boot, join and spawn probes
 docs/              design corpus (proposal, build plan, conventions, diagrams)
-  decisions/       ADRs · findings/  milestone verdicts
+  decisions/       ADRs · findings/ verdicts · diary/ how it went
 bench/results/     committed measurements
-scripts/           doctor.sh, demo.sh, mkinitramfs.sh
+scripts/           doctor.sh, demo.sh, mkinitramfs.sh, mktoolfs.sh
 ```
 
 ## Vocabulary
