@@ -33,8 +33,11 @@ jobs:
           $BIN spec init > /tmp/agent.toml
           $BIN spec check /tmp/agent.toml --no-json
           $BIN demo --no-json
-          # exit 3 == "cannot seal cells", which is correct here, not a failure
-          $BIN doctor -q; test $? -eq 3 || test $? -eq 0
+          # exit 3 == "cannot seal cells", which is correct here, not a failure.
+          # Capture $? immediately: after the first `test` it is that test's
+          # result, not doctor's.
+          $BIN doctor -q; code=$?
+          test "$code" -eq 0 -o "$code" -eq 3
           # and the pipe contract holds
           $BIN demo --json | jq -e 'select(.event=="beat")' > /dev/null
 

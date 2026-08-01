@@ -193,7 +193,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "forgectl"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -296,7 +296,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "nous-cli"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "nous-manifest"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "serde",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "nous-spec"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "nous-store"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "blake3",
  "nous-manifest",
@@ -354,7 +354,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "pilot"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "forgectl",
@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "warden"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "kvm-bindings",
  "kvm-ioctls",

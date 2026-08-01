@@ -1,0 +1,72 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Refuse to tag something that does not build and pass.
+      - run: cargo test --workspace
+      - run: cargo build --release -p nous-cli
+
+      # The formula's sha256 must match the tarball GitHub will serve, and the
+      # only way to know it is to ask for the tarball. Doing this by hand is how
+      # formulae end up with a placeholder checksum that fails at install time.
+      - name: checksum the source tarball
+        id: sum
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          for i in 1 2 3 4 5; do
+            curl -fsSL "$URL" -o src.tar.gz && break || sleep 5
+          done
+          SHA=$(sha256sum src.tar.gz | cut -d' ' -f1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: update the formula in-tree
+        run: |
+          sed -i \
+            -e "s|url \".*\"|url \"${{ steps.sum.outputs.url }}\"|" \
+            -e "s|sha256 \".*\"|sha256 \"${{ steps.sum.outputs.sha }}\"|" \
+            Formula/nouscell.rb
+          grep -E 'url|sha256' Formula/nouscell.rb
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            target/release/nous
+            Formula/nouscell.rb
+          body: |
+            ## Install
+
+            ```sh
+            brew install sympozium-ai/tap/nouscell
+            ```
+
+            Then:
+
+            ```sh
+            nous doctor
+            nous spec init > agent.toml
+            nous run agent.toml
+            ```
+
+            Sealing cells needs Linux with `/dev/kvm`; `nous doctor` reports
+            what this machine can do.
+
+            **Formula maintainers:** copy the attached `nouscell.rb` into the
+            tap. Its `sha256` is computed from the tarball GitHub serves for
+            this tag.
