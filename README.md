@@ -1,7 +1,7 @@
 # Celln
 
-**Celln** — run agents in hardware-isolated **cells**, where
-every tool is attested memory the host lends in and can revoke in microseconds.
+**Celln** runs agents in isolated **cells** that borrow verified tools instead
+of rebuilding Linux environments.
 
 ## How is this different?
 
