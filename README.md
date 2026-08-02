@@ -8,6 +8,8 @@ of rebuilding Linux environments.
 Most agent runtimes give an agent a machine. Celln gives it a temporary,
 read-only lease on the tools it needs.
 
+[Read the documentation →](https://sympozium-ai.github.io/celln/)
+
 ```sh
 celln agent "Build me something dangerous that should only run in an isolated environment."
 ```
