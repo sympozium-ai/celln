@@ -1,7 +1,4 @@
-//! `celln` — run agents in hardware-isolated cells.
-//!
-//! One binary, subcommands, and output that behaves in a pipe. There is no
-//! build system in the user's way: everything a user does is `celln <verb>`.
+//! `celln` command-line interface.
 
 mod agent;
 mod cells;
@@ -16,14 +13,12 @@ use out::{bold, dim, green, red, Out};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Exit codes, so scripts can branch on *why* rather than parsing text.
+/// Stable process exit codes.
 pub mod exit {
     pub const OK: u8 = 0;
     pub const ERROR: u8 = 1;
     pub const SPEC_INVALID: u8 = 2;
     pub const HOST_INCAPABLE: u8 = 3;
-    /// The trust model said no. Distinct from ERROR: nothing malfunctioned,
-    /// a decision was made and the caller may want to act on it differently.
     pub const REFUSED: u8 = 4;
     pub const UNSUPPORTED: u8 = 5;
 }

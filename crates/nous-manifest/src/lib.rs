@@ -1,25 +1,14 @@
-//! Shared Celln types.
-//!
-//! This crate is the vocabulary of the system, in code form. It mirrors
-//! `NAMES_AND_CONVENTIONS.md`:
-//!   * a **mote** is the substrate at rest; a **cell** is a sealed, tool-loaned mote.
-//!   * the **tool lane** is attested (host-lent); the **agent lane** executes agent-authored work.
-//!   * trust **tiers** are Forged (1) / Verified (2) / Unsealed (3).
-//!
-//! Nothing here needs KVM, so it is fully unit-tested and is the trust core the
-//! rest of the POC is built on.
+//! Shared manifests, provenance, and execution-lane types.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// A content address. Exec-by-hash means the filesystem has no authority to run
-/// code — only a `Hash` present in a signed [`Manifest`] can be executed.
+/// BLAKE3 content address used by the execution gate.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Hash(pub String);
 
 impl Hash {
-    /// BLAKE3 of the given bytes, rendered as `blake3:<hex>`.
     pub fn of(bytes: &[u8]) -> Self {
         let h = blake3::hash(bytes);
         Hash(format!("blake3:{}", h.to_hex()))
@@ -38,19 +27,11 @@ impl fmt::Debug for Hash {
     }
 }
 
-/// Trust tier of an artifact. Higher assurance = lower number.
-///
-/// The rule the whole design turns on: **serve fast, upgrade trust async.**
-/// A cold request is served at `Verified` in seconds while a `Forged` rebuild
-/// runs in the background; the manifest records which tier a cell actually got.
+/// Artifact assurance tier; lower is stronger.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Tier {
-    /// Rebuilt from source and byte-compared. Earned when `Entry::recipe`
-    /// is set; merely asserted when it is not.
     Forged = 1,
-    /// Upstream binary hash-pinned, scanned, signed. Seconds; the cold path.
     Verified = 2,
-    /// No attestation, still hardware-isolated. Instant; onboarding / escape hatch.
     Unsealed = 3,
 }
 
@@ -65,12 +46,10 @@ impl fmt::Display for Tier {
     }
 }
 
-/// Provenance lane. The single bit tracked per file/exec.
+/// Execution provenance lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Lane {
-    /// Manifest-attested, hypervisor-sealed. Full (small) cell authority.
     Tool,
-    /// Born inside the cell. Runs in the bounded agent lane.
     Data,
 }
 
@@ -78,32 +57,16 @@ impl fmt::Display for Lane {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Lane::Tool => "tool",
-            // The internal variant is named `Data` because it is selected by
-            // agent-authored input provenance. The user-facing boundary is an
-            // execution lane, so call it what it is.
             Lane::Data => "agent",
         })
     }
 }
 
-/// Who wrote the source these bytes were built from.
-///
-/// This is **not** the same question as [`Tier`], and conflating the two is a
-/// laundering route. Tier asks *how were these bytes produced, and can we
-/// reproduce them* — provenance of the build. Author asks *whose intent do
-/// they encode* — authority to act.
-///
-/// A program an agent wrote and we then compiled hermetically is legitimately
-/// `Forged` **and** `Agent`-authored. Those are not in tension; they answer
-/// different questions. Reading authority off the tier alone means a compiler
-/// launders agent-authored code into the tool lane — the same move the
-/// laundering ban stops at runtime, done ahead of time instead.
+/// Source author; separate from build assurance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Author {
-    /// Supplied by the host operator: a distro binary, a vendored source tree.
     #[default]
     Host,
-    /// Written by an agent. Never carries tool-lane authority, at any tier.
     Agent,
 }
 
@@ -116,48 +79,24 @@ impl fmt::Display for Author {
     }
 }
 
-/// One attested artifact in a manifest: a name alias, its content hash, the
-/// tier at which it was admitted, who authored it, and whether it is an
-/// interpreter (relevant to the laundering ban — see [`resolve_exec_lane`]).
+/// An attested artifact and its execution-relevant provenance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
-    /// Path-style alias, e.g. `/usr/bin/python`. A naming convenience only —
-    /// authority comes from `hash`, never the path.
     pub alias: String,
     pub hash: Hash,
     pub tier: Tier,
-    /// True for interpreters (python, sh, node, …). An interpreter fed tainted
-    /// input is demoted for that invocation.
     pub interpreter: bool,
-    /// Defaulted so manifests written before this field existed still parse —
-    /// and default to the safe answer only because host-authored is what every
-    /// one of those entries actually was.
     #[serde(default)]
     pub author: Author,
-    /// Set only when [`Tier::Forged`] was **earned**: the hash of the recipe an
-    /// independent rebuild reproduced these exact bytes from.
-    ///
-    /// `None` at `Forged` means the tier was asserted by whoever admitted it
-    /// and nothing rebuilt anything — which is what every entry looked like
-    /// before a build plane existed. Keeping the distinction visible in the
-    /// manifest is the point: a reader can tell a checked claim from a stated
-    /// one without trusting the tool that wrote it.
     #[serde(default)]
     pub recipe: Option<Hash>,
 }
 
-/// A signed manifest: the set of hashes a cell is permitted to execute, plus a
-/// revocation set. Revocation is authoritative and immediate — a hash in
-/// `revoked` cannot run even if it is still listed in `entries`.
-///
-/// The signature here is a stand-in (a hash of the canonical body). A real
-/// system signs with an offline key held only by the build plane; that is out
-/// of scope for the local POC and called out in the build plan.
+/// Execution allowlist and revocation set.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Manifest {
     entries: BTreeMap<Hash, Entry>,
     revoked: std::collections::BTreeSet<Hash>,
-    /// Stand-in signature over the canonical body.
     pub signature: Option<String>,
 }
 

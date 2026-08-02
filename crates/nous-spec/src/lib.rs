@@ -1,19 +1,4 @@
-//! The **cell spec**: what a user writes to describe an agent's cell.
-//!
-//! This is the contract between someone who wants to run an agent and the
-//! machinery that isolates it. Everything else in Celln is an implementation
-//! detail behind it, so the spec is deliberately small and boring: a name, a
-//! cell size, the tools the agent may be lent, and what it intends to run.
-//!
-//! Design rules, learned the hard way from formats that got them wrong:
-//!
-//! * **TOML, not YAML.** No significant whitespace, no Norway problem, and it
-//!   is the format the Rust ecosystem already reads.
-//! * **Every error names the field and says what to do.** A spec is the first
-//!   thing a new user writes, and it is where they will make their mistakes.
-//! * **Unknown fields are an error, not a shrug.** A typo'd `tier` that gets
-//!   silently ignored would mean a cell quietly running at the wrong trust
-//!   level, which is the one class of bug this project exists to prevent.
+//! Strict TOML cell specifications.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -22,33 +7,24 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Spec {
-    /// Name for this cell. Shows up in output and in cell ids.
     pub name: String,
 
     #[serde(default)]
     pub cell: Cell,
 
-    /// Tools the agent may be lent. Anything not listed cannot execute —
-    /// that is the point.
     #[serde(default, rename = "tool")]
     pub tools: Vec<Tool>,
 
-    /// What the agent intends to run.
     #[serde(default)]
     pub run: Option<Run>,
 }
 
-/// Cell-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Cell {
-    /// Guest memory, e.g. `256MiB`. Note that a cell's *cost* is the pages it
-    /// dirties, not the size it is given — see `docs/findings/m1-spawn.md`.
     #[serde(default = "default_memory")]
     pub memory: String,
 
-    /// The weakest trust tier a tool may be admitted at and still carry
-    /// tool-lane authority. Tools below it run in the agent lane.
     #[serde(default = "default_tier")]
     pub require_tier: Tier,
 }
@@ -69,15 +45,11 @@ fn default_tier() -> Tier {
     Tier::Verified
 }
 
-/// Trust tier, lowest number is highest assurance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
-    /// Rebuilt hermetically from source and signed. Minutes; background only.
     Forged,
-    /// Upstream binary hash-pinned, scanned, signed. Seconds; the cold path.
     Verified,
-    /// No attestation, still hardware-isolated. Instant; never tool-lane.
     Unsealed,
 }
 

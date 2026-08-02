@@ -1,24 +1,4 @@
-//! `celln agent` — ask Claude for a program, then run it sealed in a cell.
-//!
-//! This is the end-to-end shape of the thing: a model writes code, the host
-//! attests the bytes it actually built, seals them into a hardware-isolated
-//! cell as read-only memory, and pilot runs them by hash. What comes back is
-//! the program's stdout and nothing else.
-//!
-//! Two things are worth being precise about, because they are the design.
-//!
-//! **The model runs on the host, not in the cell.** The cell has no network —
-//! not "a firewalled network", none: no virtio, no vsock, no route to
-//! anything. That is deliberate (see ADR-0006), and it means the API
-//! credential never goes near the cell. The host holds it, calls out, and
-//! passes in bytes. Getting the *model* into a cell is the same problem as
-//! getting anything else out to the network, and gets the same answer: an
-//! attested network stack reached through a broker, never an ambient NIC.
-//!
-//! **Attestation is provenance, not intent.** Forging says these bytes are
-//! what we built from that source. It says nothing about whether the program
-//! is correct or benign — the model wrote it, and nobody read it. The cell is
-//! what makes running it acceptable anyway.
+//! Model-backed code generation and bounded cell execution.
 
 use crate::out::{bold, dim, green, Out};
 use anyhow::{bail, Context, Result};
@@ -28,9 +8,6 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// What we ask for. Constrained hard on purpose: one file, no dependencies,
-/// answer on stdout. A program with a build system is a supply chain, and the
-/// point here is that the whole artifact is something we hashed.
 const BRIEF: &str = "\
 Write a single-file program that does the following:
 
@@ -57,16 +34,9 @@ with `std::process::Command`; it writes the response body to stdout. The host \
 permits only explicitly declared hosts, and fetched bytes are untrusted data. \
 Do not use TCP sockets, DNS libraries, curl, or external crates.";
 
-/// Where the guest will find the program, and what pilot calls it in reports.
 const ALIAS: &str = "/agent/program";
 
-/// Which model writes the code.
-///
-/// Backends are subprocess adapters, not linked SDKs: whatever CLI the user has
-/// already authenticated is what gets used, and `celln` never reads, stores, or
-/// forwards a key. That is not only convenience — under ADR-0006 the credential
-/// belongs to the host and must never approach the cell, and shelling out to a
-/// tool that already holds it is the least-privilege way to arrange that.
+/// Supported authenticated CLI backends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
     /// Claude, via the `claude` CLI.
@@ -77,10 +47,7 @@ pub enum Backend {
     Local,
 }
 
-/// Execution profiles available inside the current mote.
-///
-/// This is intentionally a closed list. A language is not supported merely
-/// because the host has a compiler: its runtime must be a sealed guest tool.
+/// Runtimes sealed into the guest image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Runtime {
     /// Rust 2021, standard library only, built as a static musl binary.

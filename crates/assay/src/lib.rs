@@ -1,16 +1,4 @@
-//! `assay` — the fleet daemon, POC core.
-//!
-//! Owns the content-addressed [`Store`] and the signed [`Manifest`]. Implements
-//! the piece that makes launch never-slow: **tiered resolution**. A request for
-//! a tool resolves warm → Verified (seconds) → Forged (async, background), and
-//! the tier actually served is recorded.
-//!
-//! The assayer grades; it does not build. When a caller wants the `Forged`
-//! tier it must bring a [`forge::Proof`] that an independent rebuild produced
-//! the same bytes, and the assayer checks that proof is about the bytes in
-//! hand before recording anything. A rebuild that did not reproduce is graded
-//! `Verified` instead — we still hold the artifact, we just cannot claim it
-//! was reproduced. No KVM, fully tested.
+//! Content-addressed tool store and tiered resolution.
 
 use nous_manifest::{Author, Entry, Hash, Manifest, Tier};
 use nous_store::Store;
@@ -21,19 +9,15 @@ pub struct Assayer {
     store: Store,
     manifest: Manifest,
     manifest_path: PathBuf,
-    /// Simulated background rebuild queue (hashes awaiting Forged upgrade).
     rebuild_queue: VecDeque<Hash>,
 }
 
-/// The outcome of resolving a tool request — what the caller would map into a
-/// cell right now, and whether a better tier is being produced behind it.
+/// Resolved tool and any deferred upgrade.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub hash: Hash,
     pub tier: Tier,
-    /// True when this was already present (warm) — a page-map, not a build.
     pub warm: bool,
-    /// True when a Forged rebuild was queued behind this response.
     pub upgrade_queued: bool,
 }
 
@@ -64,7 +48,6 @@ impl Assayer {
         })
     }
 
-    /// Persist the manifest to disk so warm hits survive across processes.
     fn persist(&self) -> Result<(), AssayError> {
         let bytes = serde_json::to_vec_pretty(&self.manifest).expect("manifest serializes");
         std::fs::write(&self.manifest_path, bytes).map_err(nous_store::StoreError::Io)?;
@@ -75,11 +58,7 @@ impl Assayer {
         &self.manifest
     }
 
-    /// Admit bytes we did **not** build, at `Verified`.
-    ///
-    /// This is the honest tier for an upstream binary: we have it, we hashed
-    /// it, nobody rebuilt it. It used to be spelled `admit_forged`, which
-    /// claimed a rebuild that never happened.
+    /// Admit externally built bytes at `Verified`.
     pub fn admit_verified(
         &mut self,
         alias: &str,
@@ -100,19 +79,7 @@ impl Assayer {
         Ok(hash)
     }
 
-    /// Admit an artifact the build plane actually rebuilt.
-    ///
-    /// The assayer does not take the caller's word for the tier. It checks the
-    /// proof is about *these* bytes, then grades on what the proof says
-    /// happened: a rebuild that reproduced earns `Forged` and records the
-    /// recipe it reproduced from; one that did not is admitted at `Verified`,
-    /// because we still hold the bytes but can no longer claim they were
-    /// reproduced.
-    ///
-    /// Forging agent-authored source is a normal thing to do — it is how a
-    /// reproducible artifact comes out of something a model wrote. It just must
-    /// not also grant tool-lane authority, which is why the author rides along
-    /// in the manifest rather than being forgotten at the build step.
+    /// Admit a rebuilt artifact after validating its proof.
     pub fn admit_forged_authored(
         &mut self,
         alias: &str,
@@ -121,9 +88,6 @@ impl Assayer {
         author: Author,
         proof: &forge::Proof,
     ) -> Result<Hash, AssayError> {
-        // A proof about other bytes proves nothing about these. Without this
-        // the mechanism is decorative: anyone could carry a good proof
-        // alongside a different binary.
         if proof.artifact != Hash::of(bytes) {
             return Err(AssayError::ProofMismatch);
         }
@@ -146,18 +110,13 @@ impl Assayer {
         Ok(hash)
     }
 
-    /// Resolve a tool request by alias.
-    ///
-    /// * If it's already attested (warm), return it as a page-map — no build.
-    /// * Otherwise admit `upstream_bytes` at **Verified** (scan+sign; seconds in
-    ///   reality) and queue a background **Forged** rebuild. Serve fast now.
+    /// Resolve warm tools directly; queue a rebuild for cold tools.
     pub fn resolve(
         &mut self,
         alias: &str,
         upstream_bytes: &[u8],
         interpreter: bool,
     ) -> Result<Resolved, AssayError> {
-        // Warm path: alias already attested and not revoked.
         if let Some(entry) = self.manifest.resolve_alias(alias) {
             if !self.manifest.is_revoked(&entry.hash) {
                 return Ok(Resolved {
@@ -169,7 +128,6 @@ impl Assayer {
             }
         }
 
-        // Cold path: admit at Verified, queue Forged rebuild behind the traffic.
         let hash = self.store.put(upstream_bytes)?;
         self.manifest.admit(Entry {
             alias: alias.into(),
