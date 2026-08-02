@@ -480,7 +480,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     // unattested, which is exec-by-hash doing precisely its job.
     // Into this run's own scratch, not target/. Those paths are the demo and
     // boot-test fixtures; writing there made `cargo test` depend on whether
-    // anyone had run `nous agent` first, and would race two concurrent runs.
+    // anyone had run `celln agent` first, and would race two concurrent runs.
     let toolfs = work.join("toolfs.img");
     sh(
         &runtime_root,
@@ -634,7 +634,7 @@ fn run_in_cell(
         .with_initrd(initrd);
 
     // Agent-created cells are just as real as spec-created cells. Record them
-    // before the VMM owns the live fd so `nous ps -a` retains the policy
+    // before the VMM owns the live fd so `celln ps -a` retains the policy
     // verdict after this short-lived process exits.
     let mut record = crate::cells::begin(
         state_root,

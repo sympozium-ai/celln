@@ -1,4 +1,4 @@
-//! `nous-bench-kvm` — the M1/M2 exit criteria, measured on real hardware.
+//! `celln-bench-kvm` — the M1/M2 exit criteria, measured on real hardware.
 //!
 //! The build plan states numeric gates, not adjectives. This harness produces
 //! them and writes the raw results to `bench/results/`:

@@ -1,4 +1,4 @@
-//! The cell registry behind `nous ps`.
+//! The cell registry behind `celln ps`.
 //!
 //! A KVM VM has no identity outside the process that made it — it is a file
 //! descriptor, and there is no `/proc/kvm` to enumerate. `virsh list` will
@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Records kept before the oldest are pruned. Enough to be useful, small
-/// enough that `nous ps -a` stays instant and the directory stays readable.
+/// enough that `celln ps -a` stays instant and the directory stays readable.
 const KEEP: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,7 +158,7 @@ pub fn finish(root: &Path, rec: &mut Record, backend: &str, error: Option<String
 
 /// Close a run which intentionally stopped at a policy boundary. A refusal is
 /// neither a VM failure nor a successful tool execution; keeping it distinct
-/// makes `nous ps -a` useful after the short-lived cell is gone.
+/// makes `celln ps -a` useful after the short-lived cell is gone.
 pub fn refuse(root: &Path, rec: &mut Record, backend: &str, reason: String) {
     rec.finished_ms = Some(now_ms());
     rec.backend = backend.to_string();
@@ -171,7 +171,7 @@ fn save(root: &Path, rec: &Record) -> std::io::Result<()> {
     let d = dir(root);
     std::fs::create_dir_all(&d)?;
     let path = d.join(format!("{}.json", rec.id));
-    // Write-then-rename: `nous ps` in another shell never sees half a record.
+    // Write-then-rename: `celln ps` in another shell never sees half a record.
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(rec).unwrap_or_default())?;
     std::fs::rename(tmp, path)

@@ -37,8 +37,8 @@ bench() {
   local label="$1"; shift
   printf '\n\033[1;36m═══ %s\033[0m\n' "$label"
   sudo -u "$run_as" --preserve-env=NOUS_HUGEPAGE,NOUS_HUGETLB,PATH,HOME \
-    env "$@" cargo run --quiet --release -p pilot --features kvm \
-    --bin nous-bench-kvm 2>&1 |
+    env "$@" cargo run --quiet --release -p celln-pilot --features kvm \
+    --bin celln-bench-kvm 2>&1 |
     sed -n '/THESIS/,/memslot budget/p' |
     grep -vE 'memslot budget|^$' || true
 }

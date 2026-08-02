@@ -2,7 +2,7 @@
 //! genuine microVM via `/dev/kvm`.
 //!
 //! What is REAL here — enforced by hardware, below the guest, verifiable by the
-//! feature-gated tests, `nous-demo-kvm` and `nous-bench-kvm`:
+//! feature-gated tests, `celln-demo-kvm` and `celln-bench-kvm`:
 //!
 //! * **fork_from_snapshot** — guest RAM is a `MAP_PRIVATE` (copy-on-write)
 //!   mapping of a shared per-snapshot template memfd. Forked cells share clean

@@ -1,6 +1,6 @@
-//! `nous-demo-kvm` — the five-beat proof loop on REAL KVM.
+//! `celln-demo-kvm` — the five-beat proof loop on REAL KVM.
 //!
-//! Same control-flow as `nous-demo`, but every hardware claim is now enforced
+//! Same control-flow as `celln-demo`, but every hardware claim is now enforced
 //! by the CPU via `/dev/kvm` and *demonstrated*, not asserted:
 //!
 //!   * the cell is a genuine microVM, forked CoW from a warm template (timed);
@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let tmp = std::env::temp_dir().join(format!("nous-demo-kvm-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("celln-demo-kvm-{}", std::process::id()));
     let mut assayer = Assayer::open(&tmp)?;
 
     println!("\x1b[1mCelln M1 — five-beat proof on REAL KVM\x1b[0m");

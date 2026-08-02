@@ -8,7 +8,7 @@ repository.workspace = true
 description = "In-cell supervisor: exec-by-hash, taint lanes, structured explain."
 
 [features]
-# Build the real-KVM demo binary (`nous-demo-kvm`). Needs /dev/kvm to run.
+# Build the real-KVM demo binary (`celln-demo-kvm`). Needs /dev/kvm to run.
 kvm = ["celln-warden/kvm"]
 
 [[bin]]

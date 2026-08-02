@@ -1,4 +1,4 @@
-//! `nous-demo` — the five-beat proof loop, in mock mode (no KVM required).
+//! `celln-demo` — the five-beat proof loop, in mock mode (no KVM required).
 //!
 //! This is the POC's headline: it drives assay (tiered resolution), warden
 //! (the ratchet + mock VMM), and pilot (exec-by-hash + taint) through the exact
@@ -21,7 +21,7 @@ fn note(s: &str) {
 }
 
 fn main() -> anyhow::Result<()> {
-    let tmp = std::env::temp_dir().join(format!("nous-demo-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("celln-demo-{}", std::process::id()));
     let mut assayer = Assayer::open(&tmp)?;
 
     println!("\x1b[1mCelln POC — five-beat proof (mock mode)\x1b[0m");

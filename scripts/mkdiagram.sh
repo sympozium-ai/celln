@@ -172,7 +172,7 @@ ffmpeg -y -loglevel error -framerate 10 -i "$work/f%03d.png" \
 ffmpeg -y -loglevel error -framerate 10 -i "$work/f%03d.png" -i "$work/pal.png" \
   -lavfi "paletteuse=dither=none" -loop 0 "$out/stack.gif"
 
-# The still is the frame where the story has landed: sealed, demoted, refused.
+# The still shows the key refusal: a sealed tool cannot be rewritten by the guest.
 cp "$work/f072.png" "$out/stack.png"
 
 printf 'gif:     %s (%s)\n' "$out/stack.gif" "$(du -h "$out/stack.gif" | cut -f1)"

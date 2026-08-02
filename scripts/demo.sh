@@ -7,7 +7,7 @@ echo "==> building"
 cargo build --quiet
 
 echo "==> five-beat proof (mock mode)"
-cargo run --quiet --bin nous-demo
+cargo run --quiet -p celln-pilot --bin celln-demo
 
 echo
 echo "==> assay CLI smoke test"

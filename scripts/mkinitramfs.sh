@@ -51,7 +51,7 @@ mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
 pilot_dir="${NOUS_PILOT_DIR:-$root/pilot}"
 if [ -x "$pilot_dir/celln-pilot" ] && [ -x "$pilot_dir/pilot-fetch" ]; then
   # An installed distribution ships these two static guest binaries. Keeping
-  # them out of the host's PATH prevents an installed `nous agent` from needing
+  # them out of the host's PATH prevents an installed `celln agent` from needing
   # a checkout or Cargo merely to construct an initramfs.
   cp "$pilot_dir/celln-pilot" "$work/pilot"
   cp "$pilot_dir/pilot-fetch" "$work/pilot-fetch"
@@ -71,7 +71,7 @@ if [ -x "$work/pilot" ]; then
 
   # A caller that has already attested its own artifacts hands us the manifest
   # and the run request, and we only pack them. Attestation is not a packaging
-  # step: doing it here would mean `nous agent` needed a cargo toolchain and a
+  # step: doing it here would mean `celln agent` needed a cargo toolchain and a
   # source tree at run time, which is not something an installed binary has.
   if [ -n "${NOUS_MANIFEST:-}" ]; then
     cp "$NOUS_MANIFEST" "$work/nous/manifest.json"

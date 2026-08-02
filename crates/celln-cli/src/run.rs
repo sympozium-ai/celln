@@ -589,7 +589,7 @@ pub fn verify(o: &Out) -> Result<u8> {
 
 /// `celln demo` — the five-beat loop, no hardware required.
 pub fn demo(o: &Out) -> Result<u8> {
-    let tmp = std::env::temp_dir().join(format!("nous-demo-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("celln-demo-{}", std::process::id()));
     let mut assayer = Assayer::open(&tmp)?;
     let py = assayer.admit_verified("/usr/bin/python", b"cpython-bytes", true)?;
 
