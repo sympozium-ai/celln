@@ -28,15 +28,18 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "revision=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          SOURCE_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          curl --fail --location --silent --show-error "$SOURCE_URL" --output celln.tar.gz
+          echo "source_url=$SOURCE_URL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum celln.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: update the formula in-tree
         run: |
           sed -i \
-            -e "s|tag:[[:space:]]*\"v[^\"]*\"|tag:      \"${GITHUB_REF_NAME}\"|" \
-            -e "s|revision: \"[0-9a-f]*\"|revision: \"${{ steps.release.outputs.revision }}\"|" \
+            -e "s|^  url \".*\"|  url \"${{ steps.release.outputs.source_url }}\"|" \
+            -e "s|^  sha256 \"[0-9a-f]*\"|  sha256 \"${{ steps.release.outputs.sha256 }}\"|" \
             Formula/celln.rb
-          grep -E 'url|tag:|revision:' Formula/celln.rb
+          grep -E 'url|sha256' Formula/celln.rb
 
       - name: publish
         uses: softprops/action-gh-release@v2
@@ -64,4 +67,4 @@ jobs:
             what this machine can do.
 
             **Formula maintainers:** copy the attached `celln.rb` into the
-            private tap. It pins this release's SSH Git tag and commit.
+            public tap. It pins this release's public source archive and digest.

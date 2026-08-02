@@ -1,16 +1,9 @@
-# Homebrew formula template for the private sympozium-ai tap.
-#
-# The release workflow replaces TAG and REVISION before publishing this file to
-# the tap. A private repository must be fetched over the caller's authenticated
-# SSH Git transport; a public GitHub tarball URL would make `brew install` fail
-# even when the user can clone the repository.
+# Homebrew formula for the public sympozium-ai tap.
 class Celln < Formula
   desc "Run agents in hardware-isolated cells with attested, revocable tools"
   homepage "https://github.com/sympozium-ai/celln"
-  url "git@github.com:sympozium-ai/celln.git",
-      using:    :git,
-      tag:      "v0.3.0",
-      revision: "0000000000000000000000000000000000000000"
+  url "https://github.com/sympozium-ai/celln/archive/refs/tags/v0.4.0.tar.gz"
+  sha256 "fa32455e0a07cad2894629ef3da32651b3cc02bce4f3280d531d6f5248616d3b"
   license "Apache-2.0"
 
   depends_on "cpio"
