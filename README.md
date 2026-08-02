@@ -1,5 +1,8 @@
 <p>
-  <img src="docs/assets/celln-lockup.svg" width="360" alt="Celln">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/celln-lockup-dark.svg">
+    <img src="docs/assets/celln-lockup.svg" width="360" alt="Celln">
+  </picture>
 </p>
 
 **Celln** runs agents in isolated **cells** that borrow verified tools instead
