@@ -83,10 +83,20 @@ enum Cmd {
     /// Prove the isolation properties on this machine.
     Verify,
 
-    /// Ask a model for a program, then run it sealed in a cell.
+    /// Have a model write a program, then run it sealed in a cell.
+    ///
+    /// This is for computations, not questions. It asks a model for a
+    /// single-file Rust program, attests the binary, and runs it in a cell —
+    /// so it is worth doing when there is code you would rather not run
+    /// unsealed. For "what is the capital of France", ask the model directly;
+    /// a cell has nothing to protect you from when no code runs.
     Agent {
-        /// What the program should do, in plain english.
+        /// What the program should DO — a computation, not a question.
         task: String,
+
+        /// Print the source the model wrote.
+        #[arg(long)]
+        show_source: bool,
 
         /// Which model writes it. See `nous agents`.
         #[arg(long, value_enum, default_value = "anthropic")]
@@ -165,7 +175,15 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             agent,
             model,
             trust_agent_code,
-        } => agent::agent(task, *agent, model.as_deref(), *trust_agent_code, o),
+            show_source,
+        } => agent::agent(
+            task,
+            *agent,
+            model.as_deref(),
+            *trust_agent_code,
+            *show_source,
+            o,
+        ),
         Cmd::Agents => agent::agents(o),
     }
 }

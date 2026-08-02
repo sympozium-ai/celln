@@ -96,6 +96,11 @@ proving isolation on this machine
 
 ## End to end: a model writes code, a cell runs it
 
+This is for **computations, not questions**. A cell exists to contain code you
+would rather not run unsealed — if nothing executes, it has nothing to protect
+you from, and asking the model directly is the right tool. `--show-source`
+prints what it wrote.
+
 ```sh
 $ nous agent "print the first 100 primes, space separated"
 ● asking anthropic (claude-opus-5) for a program

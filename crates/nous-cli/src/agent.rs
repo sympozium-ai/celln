@@ -171,6 +171,7 @@ pub fn agent(
     backend: Backend,
     model: Option<&str>,
     trust_agent_code: bool,
+    show_source: bool,
     o: &Out,
 ) -> Result<u8> {
     let root = repo_root()?;
@@ -190,20 +191,25 @@ pub fn agent(
         "agent_brief",
         serde_json::json!({ "task": task, "backend": backend.label(), "model": model }),
         format!(
-            "{} asking {} ({}) for a program",
+            "{} asking {} ({}) for a rust program that: {}",
             bold("●"),
             backend.label(),
-            model.unwrap_or("cli default")
+            model.unwrap_or("cli default"),
+            task
         ),
     );
     let source = ask_model(backend, model, &BRIEF.replace("%TASK%", task))?;
     let src_path = work.join("program.rs");
     std::fs::write(&src_path, &source)?;
     o.note(format!(
-        "  {} {} lines of rust",
+        "  {} {} lines of rust  {}",
         dim("·"),
-        source.lines().count()
+        source.lines().count(),
+        dim(&src_path.display().to_string())
     ));
+    if show_source {
+        println!("{source}");
+    }
 
     // ── 2. build it, and attest what we built ────────────────────────────
     //
@@ -346,7 +352,7 @@ fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
                 refused.unwrap_or_default()
             ));
             o.note(format!(
-                "  {} a model wrote this, so it is agent-authored at any tier and\n  {} belongs in the collared lane. The collar does not exist yet.\n  {} --trust-agent-code runs it anyway.",
+                "  {} a model wrote this, so it is agent-authored at any tier and\n  {} belongs in the collared lane. The collar does not exist yet.\n  {} --trust-agent-code runs it anyway; --show-source prints what it wrote.",
                 dim("·"),
                 dim("·"),
                 dim("·")
