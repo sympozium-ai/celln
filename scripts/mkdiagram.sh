@@ -58,7 +58,7 @@ frame() {
   <rect width="$W" height="$H" fill="$BG"/>
 
   <!-- wordmark -->
-  <text x="40" y="52" font-family="DejaVu Sans Mono" font-size="21" fill="$INK" letter-spacing="1.5">nouscell</text>
+  <text x="40" y="52" font-family="DejaVu Sans Mono" font-size="21" fill="$INK" letter-spacing="1.5">cellulose</text>
   <text x="40" y="74" font-family="DejaVu Sans Mono" font-size="12.5" fill="$DIM">every tool is memory the host lends in — and can take back</text>
 
   <!-- ── host ─────────────────────────────────────────── -->

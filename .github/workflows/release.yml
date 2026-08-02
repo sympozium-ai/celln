@@ -18,7 +18,7 @@ jobs:
 
       # Refuse to tag something that does not build and pass.
       - run: cargo test --workspace
-      - run: cargo build --release -p nous-cli
+      - run: cargo build --release -p cell-cli
 
       # The source repo is private. The tap therefore fetches the signed tag
       # through the caller's SSH Git credentials rather than an unauthenticated
@@ -35,33 +35,33 @@ jobs:
           sed -i \
             -e "s|tag:[[:space:]]*\"v[^\"]*\"|tag:      \"${GITHUB_REF_NAME}\"|" \
             -e "s|revision: \"[0-9a-f]*\"|revision: \"${{ steps.release.outputs.revision }}\"|" \
-            Formula/nouscell.rb
-          grep -E 'url|tag:|revision:' Formula/nouscell.rb
+            Formula/cellulose.rb
+          grep -E 'url|tag:|revision:' Formula/cellulose.rb
 
       - name: publish
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
-            target/release/nous
-            Formula/nouscell.rb
+            target/release/cell
+            Formula/cellulose.rb
           body: |
             ## Install
 
             ```sh
-            brew install sympozium-ai/tap/nouscell
+            brew install sympozium-ai/tap/cellulose
             ```
 
             Then:
 
             ```sh
-            nous doctor
-            nous spec init > agent.toml
-            nous run agent.toml
+            cell doctor
+            cell spec init > agent.toml
+            cell run agent.toml
             ```
 
-            Sealing cells needs Linux with `/dev/kvm`; `nous doctor` reports
+            Sealing cells needs Linux with `/dev/kvm`; `cell doctor` reports
             what this machine can do.
 
-            **Formula maintainers:** copy the attached `nouscell.rb` into the
+            **Formula maintainers:** copy the attached `cellulose.rb` into the
             private tap. It pins this release's SSH Git tag and commit.

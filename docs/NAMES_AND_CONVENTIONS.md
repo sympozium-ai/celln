@@ -1,4 +1,4 @@
-# Nouscell — Names & Conventions
+# Cellulose — Names & Conventions
 
 The canonical glossary. When a term is used in the build plan, the proposal, the diagrams, or the code, it means what it means here. If a document drifts from these definitions, this document wins.
 
@@ -21,7 +21,7 @@ State it this way whenever the relationship matters, so the two terms stay a hie
 
 | Term | Pronunciation | Meaning |
 |------|---------------|---------|
-| **Nouscell** | NOWSS-cell | The product. _Nous_ (Greek νοῦς, mind/intellect) + _cell_ (sealed right-sized unit) → "a sealed cell of intelligence." Names the thesis, not the trend; says nothing about "agents." Working name, pending trademark/domain clearance. |
+| **Cellulose** | SELL-you-lohs | The product. A biological structural material made of cells: the substrate that gives cells form and strength. Working name, pending trademark/domain clearance. |
 
 Thesis line: _software is a service the host provides to the process, not property the machine owns._
 

@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join(format!("nous-demo-{}", std::process::id()));
     let mut assayer = Assayer::open(&tmp)?;
 
-    println!("\x1b[1mNouscell POC — five-beat proof (mock mode)\x1b[0m");
+    println!("\x1b[1mCellulose POC — five-beat proof (mock mode)\x1b[0m");
     println!("store: {}", tmp.display());
 
     // Shipped inventory: python is pre-forged (Tier 1). This is what makes the

@@ -1,4 +1,4 @@
-//! `nous-boot-kvm` — boot a stock Linux kernel in a Nouscell microVM.
+//! `nous-boot-kvm` — boot a stock Linux kernel in a Cellulose microVM.
 //!
 //! M1/M2 proved the enforcement layer against hand-assembled guests. This
 //! carries a real, unmodified distro kernel on the same substrate: the 64-bit
@@ -32,7 +32,7 @@ fn main() -> anyhow::Result<()> {
         },
     };
 
-    println!("\x1b[1mNouscell — stock Linux kernel on the microVM substrate\x1b[0m");
+    println!("\x1b[1mCellulose — stock Linux kernel on the microVM substrate\x1b[0m");
     println!("kernel: {}", kernel.display());
 
     let mut cfg = BootConfig::new(&kernel);

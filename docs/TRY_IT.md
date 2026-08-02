@@ -3,7 +3,7 @@
 Five commands, about five minutes. Each proves something specific, and this page
 says what to look for so you can read it without running anything.
 
-> **The honest part first.** `nous run` does not yet execute your command inside
+> **The honest part first.** `cell run` does not yet execute your command inside
 > the cell. There is no toolplane, no vsock, no in-cell shell — that is build
 > plan M5. What exists today is the **isolation substrate**: a real
 > hardware-isolated microVM, your tools sealed into it as memory the guest
@@ -15,7 +15,7 @@ says what to look for so you can read it without running anything.
 ## 1. What can this machine do?
 
 ```sh
-nous doctor
+cell doctor
 ```
 
 ```
@@ -32,7 +32,7 @@ Every failed check prints what to do about it. Exit code `3` means "cannot seal
 cells", so a script can branch without parsing text:
 
 ```sh
-nous doctor -q || echo "no hardware isolation here"
+cell doctor -q || echo "no hardware isolation here"
 ```
 
 ---
@@ -40,7 +40,7 @@ nous doctor -q || echo "no hardware isolation here"
 ## 2. Write a spec
 
 ```sh
-nous spec init > agent.toml
+cell spec init > agent.toml
 ```
 
 The template is commented in place — it is meant to be read, not just filled
@@ -56,7 +56,7 @@ interpreter = true
 `interpreter = true` is the most consequential line in the file. An interpreter
 fed something the agent wrote is moved to the agent lane *for that
 invocation*, so an agent cannot launder its own code into full authority by
-handing it to `python`. Mark interpreters as interpreters; `nous spec check`
+handing it to `python`. Mark interpreters as interpreters; `cell spec check`
 warns if you forget on a name it recognises.
 
 ---
@@ -64,7 +64,7 @@ warns if you forget on a name it recognises.
 ## 3. Check it before running it
 
 ```sh
-nous spec check agent.toml
+cell spec check agent.toml
 ```
 
 ```
@@ -102,7 +102,7 @@ wrong trust level.
 ## 4. Seal a cell
 
 ```sh
-nous run agent.toml
+cell run agent.toml
 ```
 
 ```
@@ -135,7 +135,7 @@ would pull in.
 ## 5. Prove the isolation, on your machine
 
 ```sh
-nous verify
+cell verify
 ```
 
 ```
@@ -160,17 +160,17 @@ Nothing in the guest is enforcing this. The guest is root.
 
 Steps 2–4 stop at sealing. This is the path that actually executes something.
 
-First, choose the already-authenticated agent CLI `nous` should use:
+First, choose the already-authenticated agent CLI `cell` should use:
 
 ```sh
-nous setup
+cell setup
 ```
 
 Then ask it to build a computation. The current build plane emits static musl
 artifacts, so a source install needs `rustup target add x86_64-unknown-linux-musl`.
 
 ```sh
-nous agent "print the first 100 primes, space separated"
+cell agent "print the first 100 primes, space separated"
 ```
 
 ```
@@ -195,24 +195,24 @@ syscall filter.
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier.
 
-`--trust-agent-code` remains an unsafe debugging override; normal `nous agent`
+`--trust-agent-code` remains an unsafe debugging override; normal `cell agent`
 already runs in the agent lane.
 
 **This is for computations, not questions.** A cell exists to contain code you
 would rather not run unsealed; if nothing executes, it has nothing to protect
 you from. It also has **no network at all**, so anything needing one will build
-and then do nothing — `nous agent` warns up front when a task looks like that.
+and then do nothing — `cell agent` warns up front when a task looks like that.
 
 Pick who writes it, and see what this host can use:
 
 ```sh
-nous agents
-nous agent --agent openai "…"        # or --agent local
-nous agent --show-source "…"         # print the program it wrote
+cell agents
+cell agent --agent openai "…"        # or --agent local
+cell agent --show-source "…"         # print the program it wrote
 ```
 
 Backends are subprocess adapters over CLIs you have already authenticated —
-`nous` never reads, stores, or forwards a key.
+`cell` never reads, stores, or forwards a key.
 
 ---
 
@@ -222,13 +222,13 @@ Human on a terminal, NDJSON when not. No flag required:
 
 ```sh
 # which tools went cold?
-nous run agent.toml | jq -r 'select(.event=="tool_resolved" and .warm==false) | .alias'
+cell run agent.toml | jq -r 'select(.event=="tool_resolved" and .warm==false) | .alias'
 
 # fail a build if a spec would run something in the tool lane
-nous spec check agent.toml | jq -e 'select(.event=="run_plan") | .lane=="data"'
+cell spec check agent.toml | jq -e 'select(.event=="run_plan") | .lane=="data"'
 
 # just the proofs
-nous verify | jq -c 'select(.event=="proof")'
+cell verify | jq -c 'select(.event=="proof")'
 ```
 
 Diagnostics and warnings go to **stderr**, so `| jq` never chokes on prose.
@@ -239,12 +239,12 @@ Diagnostics and warnings go to **stderr**, so `| jq` never chokes on prose.
 ## Also
 
 ```sh
-nous demo     # the five-beat proof loop; works without KVM
-nous tools    # what this host has attested so far
-nous agents   # which model backends this host can use
+cell demo     # the five-beat proof loop; works without KVM
+cell tools    # what this host has attested so far
+cell agents   # which model backends this host can use
 ```
 
-`nous demo` is the fastest way to see the whole idea, and it runs anywhere —
+`cell demo` is the fastest way to see the whole idea, and it runs anywhere —
 laptop, container, CI runner with no virtualization at all.
 
 ---
@@ -255,9 +255,9 @@ laptop, container, CI runner with no virtualization at all.
 |---|---|
 | `/dev/kvm not present` | Virtualization off in firmware, or a VM without nested virt |
 | `/dev/kvm present but not readable` | `sudo usermod -aG kvm $USER`, then log out and in |
-| `no readable /boot/vmlinuz-*` | Only affects the boot-path demos, not `nous run` |
-| `anthropic needs \`claude\` on PATH` | `nous agent` drives a CLI you have already logged into — see `nous agents` |
-| `reported error_during_execution` | The model CLI failed, not nous. Some prompts trigger it every time; rewording helps more than retrying |
+| `no readable /boot/vmlinuz-*` | Only affects the boot-path demos, not `cell run` |
+| `anthropic needs \`claude\` on PATH` | `cell agent` drives a CLI you have already logged into — see `cell agents` |
+| `reported error_during_execution` | The model CLI failed, not Cellulose. Some prompts trigger it every time; rewording helps more than retrying |
 
 ---
 
@@ -268,4 +268,4 @@ laptop, container, CI runner with no virtualization at all.
 | What is proven, and what is not | [findings/m2.md](findings/m2.md) |
 | A gate we miss, and why | [findings/m1-spawn.md](findings/m1-spawn.md) |
 | Why each design choice was made | [decisions/](decisions/) |
-| Working on nouscell itself | [../AGENTS.md](../AGENTS.md), then `make help` |
+| Working on Cellulose itself | [../AGENTS.md](../AGENTS.md), then `make help` |

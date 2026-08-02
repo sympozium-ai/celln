@@ -1,6 +1,6 @@
-# nouscell
+# Cellulose
 
-**Nouscell** ( _NOWSS-cell_ ) — run agents in hardware-isolated **cells**, where
+**Cellulose** — run agents in hardware-isolated **cells**, where
 every tool is attested memory the host lends in and can revoke in microseconds.
 
 > *Software is a service the host provides to the process, not property the
@@ -15,7 +15,7 @@ every tool is attested memory the host lends in and can revoke in microseconds.
 
 ```sh
 brew tap sympozium-ai/tap
-brew install sympozium-ai/tap/nouscell
+brew install sympozium-ai/tap/cellulose
 ```
 
 The tap and source repository are private: this uses the SSH Git key you
@@ -30,23 +30,23 @@ rustup target add x86_64-unknown-linux-musl
 <summary>or from source</summary>
 
 ```sh
-git clone git@github.com:sympozium-ai/nouscell.git
-cd nouscell
-cargo build --release -p nous-cli
-./target/release/nous doctor
+git clone git@github.com:sympozium-ai/cellulose.git
+cd cellulose
+cargo build --release -p cell-cli
+./target/release/cell doctor
 ```
 </details>
 
 Sealing cells needs Linux with `/dev/kvm`; generated-program cells additionally
-need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `nous` still validates
-specs and runs `nous demo`, and `nous doctor` says which you have.
+need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `cell` still validates
+specs and runs `cell demo`, and `cell doctor` says which you have.
 
 ## Use it
 
 **1. Write a spec** — what your agent may be lent, and what it intends to run.
 
 ```sh
-nous spec init > agent.toml
+cell spec init > agent.toml
 ```
 
 ```toml
@@ -70,7 +70,7 @@ input = "data"                # the agent wrote it
 **2. Check it** — validation, plus what the trust model will decide.
 
 ```sh
-$ nous spec check agent.toml
+$ cell spec check agent.toml
 ✔ code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
 
 tools
@@ -88,7 +88,7 @@ fed something the agent wrote, *that invocation* moves to the agent lane — inc
 **3. Run it.**
 
 ```sh
-$ nous run agent.toml
+$ cell run agent.toml
 ● sealing cell code-reviewer
   + /usr/bin/python        tier=verified cold — verified now, forged queued
   · microVM sealed, phase=Materialise
@@ -101,7 +101,7 @@ $ nous run agent.toml
 **4. Prove it.** Not a claim in a README — run it on your machine.
 
 ```sh
-$ nous verify
+$ cell verify
 proving isolation on this machine
   ✔ a ring-0 guest with its own page tables cannot write lent tool code
   ✔ revoking a tool stops it in an already-running cell
@@ -115,7 +115,7 @@ you from, and asking the model directly is the right tool. `--show-source`
 prints what it wrote.
 
 ```sh
-$ nous agent "print the first 100 primes, space separated"
+$ cell agent "print the first 100 primes, space separated"
 ● asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
   · waiting for claude (up to 90s; --timeout changes it)
   · replied in 5s
@@ -167,33 +167,33 @@ Under DAX there is no page-cache copy, so the instructions the guest executes
 > toolchain*, not that anyone anywhere gets the same bytes
 > ([ADR-0008](docs/decisions/0008-the-forged-tier-is-earned.md)).
 
-Pick who writes it — `nous agents` shows what this host can use:
+Pick who writes it — `cell agents` shows what this host can use:
 
 ```sh
-$ nous setup                         # discovers codex, claude, or ollama
-✔ default agent: openai (~/.config/nous/config.toml)
+$ cell setup                         # discovers codex, claude, or ollama
+✔ default agent: openai (~/.config/cell/config.toml)
 
-$ nous agents
+$ cell agents
   ✔ anthropic  claude-opus-5          claude
   ✔ openai     (cli default)          codex  default
   ✔ local      qwen2.5-coder          ollama
 
-$ nous agents --set-default anthropic # change the saved default
-$ nous agent --agent openai "…"       # override it for one invocation
-$ NOUS_AGENT=local nous agent "…"     # override it for one shell command
+$ cell agents --set-default anthropic # change the saved default
+$ cell agent --agent openai "…"       # override it for one invocation
+$ CELL_AGENT=local cell agent "…"     # override it for one shell command
 ```
 
 The saved setting is deliberately small and credential-free:
 
 ```toml
-# ~/.config/nous/config.toml (or $XDG_CONFIG_HOME/nous/config.toml)
+# ~/.config/cell/config.toml (or $XDG_CONFIG_HOME/cell/config.toml)
 [agent]
 default = "openai"
 ```
 
-Use `nous ask "…"` for a question: it asks the selected agent directly on the
-host because no program runs and there is nothing to contain. Use `nous agent
-"…"` for work that generates code to run; that path is where Nouscell seals
+Use `cell ask "…"` for a question: it asks the selected agent directly on the
+host because no program runs and there is nothing to contain. Use `cell agent
+"…"` for work that generates code to run; that path is where Cellulose seals
 and governs the resulting program. The agent selects a runtime from the cell's
 sealed capability set; today that set contains one static Rust runtime. Adding
 a runtime is a capability change—not a prompt convention—because its bytes
@@ -203,14 +203,14 @@ Network-shaped work must declare exactly where it may reach before a model is
 called:
 
 ```sh
-nous agent --allow-host example.com "crawl https://example.com/ …"
+cell agent --allow-host example.com "crawl https://example.com/ …"
 ```
 
-Without `--allow-host`, Nouscell returns `Unsupported`; it does not generate a
+Without `--allow-host`, Cellulose returns `Unsupported`; it does not generate a
 crawler that can never connect.
 
 Backends are subprocess adapters over CLIs you have already authenticated, not
-linked SDKs — `nous` never reads, stores, or forwards a key. That is not just
+linked SDKs — `cell` never reads, stores, or forwards a key. That is not just
 convenience: under ADR-0006 the credential belongs to the host and must never
 approach the cell.
 
@@ -230,9 +230,9 @@ Human-readable on a terminal, NDJSON the moment it is not. No flag needed,
 though `--json` and `--no-json` force it either way.
 
 ```sh
-nous run agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
-nous ps -a --json | jq -r "select(.status==\"failed\") | .id"
-nous doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can seal"
+cell run agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
+cell ps -a --json | jq -r "select(.status==\"failed\") | .id"
+cell doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can seal"
 ```
 
 Diagnostics go to stderr, so they never land in the data. Exit codes mean
@@ -241,16 +241,16 @@ something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells
 
 ## What is real
 
-`nous run` seals a **real** hardware-isolated microVM and lends it your tools as
+`cell run` seals a **real** hardware-isolated microVM and lends it your tools as
 read-only memory that the guest cannot modify — proven against a guest that
 enters protected mode and maps the page writable in page tables it wrote itself.
 Revocation reaches a cell that is already running.
 
-**In-cell execution works for the tool lane** — that is what `nous agent` does
-above. **Agent-lane exec is still refused**, deliberately: it needs an explicit
-capability boundary (Landlock + seccomp), and running agent code before that
-boundary exists would be exactly backwards. `nous run` still stops at sealing; `nous agent` is
-the path that reaches execution.
+**In-cell execution works in the agent lane** — `cell agent` runs agent-authored
+programs behind a Landlock filesystem boundary and a seccomp syscall filter.
+The guest may execute `/tools/program` and write only to `/nous/work`; network,
+mounting, tracing, and privilege gain are refused. `cell run` remains the
+spec-driven sealing path.
 
 Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 
@@ -262,7 +262,7 @@ Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 | What is proven, and what is not | [docs/findings/](docs/findings/) |
 | Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0008 |
 | Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
-| Working on nouscell itself | [AGENTS.md](AGENTS.md), then `make help` |
+| Working on Cellulose itself | [AGENTS.md](AGENTS.md), then `make help` |
 
 ## Vocabulary
 
@@ -272,4 +272,4 @@ Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
   agent-authored execution is bounded in the agent lane; data never gains
   authority by crossing into a tool.
 
-Pre-alpha, single-host. Working name pending trademark/domain clearance.
+Pre-alpha, single-host. Name pending formal trademark/domain clearance.

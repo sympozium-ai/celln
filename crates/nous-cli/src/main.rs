@@ -1,7 +1,7 @@
-//! `nous` — run agents in hardware-isolated cells.
+//! `cell` — run agents in hardware-isolated cells.
 //!
 //! One binary, subcommands, and output that behaves in a pipe. There is no
-//! build system in the user's way: everything a user does is `nous <verb>`.
+//! build system in the user's way: everything a user does is `cell <verb>`.
 
 mod agent;
 mod cells;
@@ -30,12 +30,12 @@ pub mod exit {
 
 #[derive(Parser)]
 #[command(
-    name = "nous",
+    name = "cell",
     version,
     about = "Run agents in hardware-isolated cells.",
     long_about = "Run agents in hardware-isolated cells, where every tool is attested \
                   memory the host lends in and can revoke.\n\n\
-                  Start with `nous spec init > agent.toml`, then `nous spec check agent.toml`.",
+                  Start with `cell spec init > agent.toml`, then `cell spec check agent.toml`.",
     after_help = "Output is human-readable on a terminal and NDJSON when piped.\n\
                   Exit codes: 0 ok · 1 error · 2 spec invalid · 3 host cannot seal cells · 5 unsupported."
 )]
@@ -50,7 +50,7 @@ struct Cli {
     #[arg(short, long, global = true)]
     quiet: bool,
     /// Where cell state and the tool store live.
-    #[arg(long, global = true, default_value = ".nous", env = "NOUS_ROOT")]
+    #[arg(long, global = true, default_value = ".cell", env = "CELL_ROOT")]
     root: PathBuf,
 
     #[command(subcommand)]
@@ -111,7 +111,7 @@ enum Cmd {
         #[arg(long, default_value = "90")]
         timeout: u64,
 
-        /// Which model writes it. Overrides NOUS_AGENT and the saved default.
+        /// Which model writes it. Overrides CELL_AGENT and the saved default.
         #[arg(long, value_enum)]
         agent: Option<agent::Backend>,
 
@@ -140,7 +140,7 @@ enum Cmd {
         #[arg(required = true, num_args = 1..)]
         question: Vec<String>,
 
-        /// Which agent answers. Overrides NOUS_AGENT and the saved default.
+        /// Which agent answers. Overrides CELL_AGENT and the saved default.
         #[arg(long, value_enum)]
         agent: Option<agent::Backend>,
 
@@ -155,7 +155,7 @@ enum Cmd {
 
     /// Find agent CLIs and manage the saved default.
     Agents {
-        /// Save the backend `nous agent` uses unless overridden.
+        /// Save the backend `cell agent` uses unless overridden.
         #[arg(long, value_enum)]
         set_default: Option<agent::Backend>,
     },
@@ -207,7 +207,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     match &cli.cmd {
         Cmd::Doctor => Ok(doctor(o)),
         Cmd::Spec(SpecCmd::Init) => {
-            // Straight to stdout, unstyled, so `nous spec init > agent.toml`
+            // Straight to stdout, unstyled, so `cell spec init > agent.toml`
             // produces a file and not a screenshot of one.
             print!("{}", nous_spec::TEMPLATE);
             Ok(exit::OK)
@@ -282,11 +282,11 @@ fn doctor(o: &Out) -> u8 {
                 green("✔")
             ));
             o.say(dim(
-                "  try: nous spec init > agent.toml && nous run agent.toml",
+                "  try: cell spec init > agent.toml && cell run agent.toml",
             ));
         } else {
             o.say(format!(
-                "{} no hardware isolation here — `nous demo` and `nous spec check` still work.",
+                "{} no hardware isolation here — `cell demo` and `cell spec check` still work.",
                 red("✘")
             ));
         }

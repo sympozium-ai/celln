@@ -28,8 +28,8 @@ jobs:
       # most people will meet it there first.
       - name: cli works without /dev/kvm
         run: |
-          cargo build -p nous-cli
-          BIN=target/debug/nous
+          cargo build -p cell-cli
+          BIN=target/debug/cell
           $BIN --version
           $BIN spec init > /tmp/agent.toml
           $BIN spec check /tmp/agent.toml --no-json
@@ -64,9 +64,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y gcc cpio e2fsprogs
           make guest
           cargo test -p warden --features kvm
-          cargo run -p nous-cli -- verify --no-json
+          cargo run -p cell-cli -- verify --no-json
       - name: no /dev/kvm on this runner
         if: steps.kvm.outputs.have == 'no'
         run: |
           echo "::warning::No /dev/kvm — the hardware proofs did not run."
-          echo "Run 'nous verify' on a machine with KVM to check them."
+          echo "Run 'cell verify' on a machine with KVM to check them."

@@ -15,20 +15,37 @@ struct Agent {
     default: Option<String>,
 }
 
-/// `NOUS_CONFIG` is useful for automation; otherwise follow XDG on every host.
+/// `CELL_CONFIG` is useful for automation; otherwise follow XDG on every host.
 pub fn path() -> PathBuf {
-    if let Some(path) = std::env::var_os("NOUS_CONFIG") {
+    if let Some(path) = std::env::var_os("CELL_CONFIG") {
         return PathBuf::from(path);
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"));
-    base.join("nous").join("config.toml")
+    base.join("cell").join("config.toml")
+}
+
+fn legacy_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("NOUS_CONFIG") {
+        return Some(PathBuf::from(path));
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
+    Some(base.join("nous").join("config.toml"))
 }
 
 pub fn default_agent() -> Result<Option<String>> {
     let path = path();
+    let path = if path.exists() {
+        path
+    } else {
+        legacy_path()
+            .filter(|legacy| legacy.exists())
+            .unwrap_or(path)
+    };
     if !path.exists() {
         return Ok(None);
     }
@@ -50,7 +67,7 @@ pub fn set_default_agent(agent: &str) -> Result<PathBuf> {
             default: Some(agent.to_owned()),
         },
     };
-    let source = toml::to_string_pretty(&config).context("encoding nous config")?;
+    let source = toml::to_string_pretty(&config).context("encoding cell config")?;
     std::fs::write(&path, source).with_context(|| format!("writing config {}", path.display()))?;
     Ok(path)
 }
