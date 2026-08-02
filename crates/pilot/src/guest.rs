@@ -26,6 +26,200 @@
 use nous_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
 use pilot::{exec, ExecOutcome};
 use serde::Deserialize;
+use std::ffi::CString;
+use std::io;
+use std::os::unix::process::CommandExt;
+
+const WORKSPACE: &str = "/nous/work";
+
+#[repr(C)]
+struct LandlockRulesetAttr {
+    handled_access_fs: u64,
+}
+
+#[repr(C)]
+struct LandlockPathBeneathAttr {
+    allowed_access: u64,
+    parent_fd: i32,
+    _reserved: i32,
+}
+
+// Linux UAPI values, kept here rather than inferred from the host libc: these
+// instructions execute in the static x86_64 guest, where this ABI is fixed.
+const LANDLOCK_CREATE_RULESET: libc::c_long = 444;
+const LANDLOCK_ADD_RULE: libc::c_long = 445;
+const LANDLOCK_RESTRICT_SELF: libc::c_long = 446;
+const LANDLOCK_RULE_PATH_BENEATH: libc::c_long = 1;
+const LANDLOCK_ACCESS_FS_EXECUTE: u64 = 1 << 0;
+const LANDLOCK_ACCESS_FS_WRITE_FILE: u64 = 1 << 1;
+const LANDLOCK_ACCESS_FS_READ_FILE: u64 = 1 << 2;
+const LANDLOCK_ACCESS_FS_READ_DIR: u64 = 1 << 3;
+const LANDLOCK_ACCESS_FS_REMOVE_DIR: u64 = 1 << 4;
+const LANDLOCK_ACCESS_FS_REMOVE_FILE: u64 = 1 << 5;
+const LANDLOCK_ACCESS_FS_MAKE_CHAR: u64 = 1 << 6;
+const LANDLOCK_ACCESS_FS_MAKE_DIR: u64 = 1 << 7;
+const LANDLOCK_ACCESS_FS_MAKE_REG: u64 = 1 << 8;
+const LANDLOCK_ACCESS_FS_MAKE_SOCK: u64 = 1 << 9;
+const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
+const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
+const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
+const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
+
+const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
+    | LANDLOCK_ACCESS_FS_WRITE_FILE
+    | LANDLOCK_ACCESS_FS_READ_FILE
+    | LANDLOCK_ACCESS_FS_READ_DIR
+    | LANDLOCK_ACCESS_FS_REMOVE_DIR
+    | LANDLOCK_ACCESS_FS_REMOVE_FILE
+    | LANDLOCK_ACCESS_FS_MAKE_CHAR
+    | LANDLOCK_ACCESS_FS_MAKE_DIR
+    | LANDLOCK_ACCESS_FS_MAKE_REG
+    | LANDLOCK_ACCESS_FS_MAKE_SOCK
+    | LANDLOCK_ACCESS_FS_MAKE_FIFO
+    | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+    | LANDLOCK_ACCESS_FS_MAKE_SYM
+    | LANDLOCK_ACCESS_FS_REFER;
+
+/// Apply the agent lane immediately before `execve`. The parent stays pilot and
+/// retains its narrow supervisory authority; the child can read/execute tools,
+/// write only its workspace, and cannot create a network socket.
+fn enter_agent_lane() -> io::Result<()> {
+    unsafe {
+        if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let rules = LandlockRulesetAttr {
+            handled_access_fs: FS_ALL,
+        };
+        let ruleset = libc::syscall(
+            LANDLOCK_CREATE_RULESET,
+            &rules as *const LandlockRulesetAttr,
+            std::mem::size_of::<LandlockRulesetAttr>(),
+            0,
+        ) as i32;
+        if ruleset < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let add = |path: &str, access: u64| -> io::Result<()> {
+            let path = CString::new(path).expect("constant path");
+            let fd = libc::open(path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let rule = LandlockPathBeneathAttr {
+                allowed_access: access,
+                parent_fd: fd,
+                _reserved: 0,
+            };
+            let rc = libc::syscall(
+                LANDLOCK_ADD_RULE,
+                ruleset,
+                LANDLOCK_RULE_PATH_BENEATH,
+                &rule as *const LandlockPathBeneathAttr,
+                0,
+            );
+            libc::close(fd);
+            if rc != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        };
+        // The generated executable is the only tool the agent lane receives.
+        // Do not grant the `/tools` directory: that would let it discover and
+        // read every future host-lent tool by name.
+        add(
+            "/tools/program",
+            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+        )?;
+        add(WORKSPACE, FS_ALL)?;
+        if libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        libc::close(ruleset);
+        let work = CString::new(WORKSPACE).expect("constant path");
+        if libc::chdir(work.as_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    install_network_seccomp()
+}
+
+#[repr(C)]
+struct SockFilter {
+    code: u16,
+    jt: u8,
+    jf: u8,
+    k: u32,
+}
+#[repr(C)]
+struct SockFprog {
+    len: u16,
+    filter: *const SockFilter,
+}
+
+fn install_network_seccomp() -> io::Result<()> {
+    const BPF_LD_W_ABS: u16 = 0x20;
+    const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_RET_K: u16 = 0x06;
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+    const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
+    const EPERM: u32 = 1;
+    let denied = [
+        libc::SYS_socket,
+        libc::SYS_socketpair,
+        libc::SYS_connect,
+        libc::SYS_bind,
+        libc::SYS_listen,
+        libc::SYS_accept,
+        libc::SYS_accept4,
+        libc::SYS_sendto,
+        libc::SYS_sendmsg,
+        libc::SYS_recvfrom,
+        libc::SYS_recvmsg,
+        libc::SYS_shutdown,
+        libc::SYS_mount,
+        libc::SYS_umount2,
+        libc::SYS_ptrace,
+        libc::SYS_bpf,
+    ];
+    let mut filter = Vec::with_capacity(2 + denied.len() * 2);
+    filter.push(SockFilter {
+        code: BPF_LD_W_ABS,
+        jt: 0,
+        jf: 0,
+        k: 0,
+    });
+    for syscall in denied {
+        filter.push(SockFilter {
+            code: BPF_JMP_JEQ_K,
+            jt: 0,
+            jf: 1,
+            k: syscall as u32,
+        });
+        filter.push(SockFilter {
+            code: BPF_RET_K,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_ERRNO | EPERM,
+        });
+    }
+    filter.push(SockFilter {
+        code: BPF_RET_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ALLOW,
+    });
+    let program = SockFprog {
+        len: filter.len() as u16,
+        filter: filter.as_ptr(),
+    };
+    unsafe {
+        if libc::syscall(libc::SYS_seccomp, 1, 0, &program as *const SockFprog) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
 
 /// Report an observation the host can assert on, same protocol the guest init
 /// uses: one `NOUS:key=value` line per fact, on the console.
@@ -186,24 +380,17 @@ fn run_requested(manifest: &Manifest) {
                 &format!("permitted:{lane}"),
             );
 
-            // The honest line: the tool lane is code we attested and did not
-            // feed anything the agent wrote, so it runs with authority. The
-            // agent lane needs its explicit capability boundary, and until that exists,
-            // refusing is the only defensible answer.
-            if lane != Lane::Tool {
-                report(
-                    &format!("pilot_run_{}", req.alias),
-                    "refused:agent-lane-unavailable",
-                );
-                return;
-            }
-
             // Everything between these markers is the program's own output.
             // The host slices on them so a cell can be piped like any process.
             println!("NOUS:out-begin");
-            let status = std::process::Command::new(&req.path)
-                .args(&req.args)
-                .status();
+            let mut command = std::process::Command::new(&req.path);
+            command.args(&req.args);
+            if lane != Lane::Tool {
+                unsafe {
+                    command.pre_exec(enter_agent_lane);
+                }
+            }
+            let status = command.status();
             println!("NOUS:out-end");
 
             match status {

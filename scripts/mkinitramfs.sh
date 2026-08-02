@@ -35,7 +35,7 @@ gcc -static -nostdlib -nostartfiles -ffreestanding -fno-stack-protector \
 # /dev must exist for init to mount devtmpfs onto it. Device nodes themselves
 # cannot be created without privilege, which is why init mounts devtmpfs.
 mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
-         "$work/nous/tools"
+         "$work/nous/tools" "$work/nous/work"
 
 # ---- pilot, and the manifest it enforces ----------------------------------
 #

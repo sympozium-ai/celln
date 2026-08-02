@@ -124,21 +124,23 @@ $ nous agent "print the first 100 primes, space separated"
   + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:agent
-  ✔ pilot: /agent/program refused:agent-lane-unavailable
-warning: pilot refused to run it: refused:agent-lane-unavailable
+
+2 3 5 7 11 13 17 19 23 29 31 ...
 ```
 
-**That refusal is the correct answer**, and it is worth reading carefully. The
+The program ran in the **agent lane**. The
 program was graded `forged` — we compiled it ourselves from source we hold. It
 is still `author=agent`, and agent-authored code never carries tool-lane
-authority at any tier. Running it needs the agent-lane boundary, which does not
-exist yet.
+authority at any tier. Pilot gives it only its own executable plus a writable
+workspace; Landlock rejects other filesystem access and seccomp rejects network
+and privileged syscalls.
 
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier; if the
 laundering ban stops one it has to stop both.
 
-To watch it actually run while the agent lane is being built:
+`--trust-agent-code` is an explicitly unsafe debugging override. It is not
+needed for normal agent work:
 
 ```sh
 $ nous agent --trust-agent-code "print the first 100 primes, space separated"
@@ -151,7 +153,7 @@ warning: --trust-agent-code: running agent-authored code in the tool lane
 ## The model, in three lines
 
 - **Tool lane**: host-provided, attested tools use only the authority the cell loans them.
-- **Agent lane**: agent-authored code gets only explicitly loaned capabilities; today it is safely refused until that boundary exists.
+- **Agent lane**: agent-authored code gets only explicitly loaned capabilities: its executable and workspace by default, with no network.
 - **Data**: bytes the agent produced or fetched. Data never gains authority by being handed to an attested tool.
 
 That last rule is the point: `python` is trusted tooling, but `python` fed an
