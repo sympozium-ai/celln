@@ -21,6 +21,7 @@
 #define SYS_open 2
 #define SYS_close 3
 #define SYS_mmap 9
+#define SYS_munmap 11
 #define SYS_nanosleep 35
 #define SYS_exit 60
 #define SYS_mount 165
@@ -339,6 +340,10 @@ static void probe_tool_by_path(void) {
 	report("dax_after_revoke", same(post, TOOL_MAGIC, 8) ? "STILL-READABLE" : "revoked");
 
 	sys(SYS_close, fd, 0, 0, 0, 0, 0);
+	/* Drop the mapping too. A live mmap pins the superblock, and a pinned
+	 * read-write superblock is why the read-only remount below would other-
+	 * wise fail with "would change RO state". */
+	sys(SYS_munmap, (long) p, 4096, 0, 0, 0, 0);
 
 	/* Unmount before anything tries to shut down.
 	 *
@@ -348,9 +353,24 @@ static void probe_tool_by_path(void) {
 	 * kernel's writeback thread will eventually try to flush dirty pages into
 	 * memory it cannot write, which on this host dies with an invalid opcode
 	 * in arch_wb_cache_pmem. Production mounts tools read-only; here we simply
-	 * put it down once the proof is finished. MNT_DETACH because the mapping
-	 * and fd above may still be held. */
-	sys(SYS_umount2, (long) "/tools", 2 /* MNT_DETACH */, 0, 0, 0, 0);
+	 * put it down once the proof is finished. A real unmount, not MNT_DETACH:
+	 * lazy leaves the read-write superblock alive, and the read-only mount
+	 * that follows would be refused as an RO-state change. */
+	sys(SYS_umount2, (long) "/tools", 0, 0, 0, 0, 0);
+
+	/* Re-mount read-only and leave it up for pilot.
+	 *
+	 * This is the shape production actually wants: tools are read-only, so
+	 * there are no dirty pages and no writeback to fault on. It also means
+	 * pilot can execve straight out of the sealed mapping — with DAX there is
+	 * no page-cache copy, so the instructions the guest runs are the host's
+	 * pages, and revoking them stops the program mid-execution. */
+	rc = sys(SYS_mount, (long) "/dev/pmem0", (long) "/tools", (long) "ext2",
+	         1 /* MS_RDONLY */, (long) "dax=always", 0);
+	if (rc != 0)
+		rc = sys(SYS_mount, (long) "/dev/pmem0", (long) "/tools", (long) "ext4",
+		         1 /* MS_RDONLY */, (long) "dax=always", 0);
+	report("dax_ro_mount", rc == 0 ? "ok" : "failed");
 }
 
 void _start(void) {

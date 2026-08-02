@@ -3,6 +3,7 @@
 //! One binary, subcommands, and output that behaves in a pipe. There is no
 //! build system in the user's way: everything a user does is `nous <verb>`.
 
+mod agent;
 mod cells;
 mod host;
 mod out;
@@ -82,6 +83,12 @@ enum Cmd {
     /// Prove the isolation properties on this machine.
     Verify,
 
+    /// Ask Claude for a program, then run it sealed in a cell.
+    Agent {
+        /// What the program should do, in plain english.
+        task: String,
+    },
+
     /// Walk the five-beat proof loop. Works without KVM.
     Demo,
 }
@@ -133,6 +140,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Tools => run::tools(&cli.root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
+        Cmd::Agent { task } => agent::agent(&task, o),
     }
 }
 

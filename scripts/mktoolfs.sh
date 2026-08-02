@@ -16,9 +16,16 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="${1:-$root/target/nous-toolfs.img}"
-# 16 MiB: comfortably above the pmem namespace minimum, and 2 MiB-aligned
-# sizing keeps the DAX mapping path happy.
-size_mb="${2:-16}"
+# 32 MiB: comfortably above the pmem namespace minimum, 2 MiB-aligned sizing
+# keeps the DAX mapping path happy, and it leaves room for a real binary — a
+# static musl Rust program is a few MiB before it has done anything.
+size_mb="${2:-32}"
+# Anything further on the command line is a real tool to seal in, copied to the
+# image root under its own basename. This is how a program the host attested
+# gets into the cell: as bytes in a filesystem that is lent read-only, never as
+# something written from inside.
+shift 2 2>/dev/null || true
+extras=("$@")
 
 command -v mke2fs >/dev/null 2>&1 || { echo "mke2fs not found (e2fsprogs)" >&2; exit 1; }
 
@@ -38,6 +45,11 @@ mkdir -p "$work/root"
 } > "$work/root/probe"
 # Pad to a full page so the mapping covers allocated blocks.
 truncate -s 4096 "$work/root/probe"
+
+for f in ${extras[@]+"${extras[@]}"}; do
+  [ -r "$f" ] || { echo "mktoolfs: cannot read $f" >&2; exit 1; }
+  install -m 0755 "$f" "$work/root/$(basename "$f")"
+done
 
 mkdir -p "$(dirname "$out")"
 rm -f "$out"

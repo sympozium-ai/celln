@@ -16,12 +16,16 @@
 //!   4. Refuse with a structured record rather than an error string, because
 //!      the failure surface is how an agent corrects itself.
 //!
-//! What it does not do yet: actually `execve` anything. That needs the
-//! collar (Landlock + seccomp per exec) to exist first, and running code
-//! before the thing that constrains it would be exactly backwards.
+//! It will `execve` a program, but **only into the tool lane** — code whose
+//! bytes hash to an attested entry and which was not fed anything the agent
+//! wrote. Data-lane exec stays refused until the collar (Landlock + seccomp
+//! per exec) exists, because running collared code before the collar exists
+//! would be exactly backwards. The lane split is what makes that a principled
+//! line rather than a missing feature.
 
 use nous_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
 use pilot::{exec, ExecOutcome};
+use serde::Deserialize;
 
 /// Report an observation the host can assert on, same protocol the guest init
 /// uses: one `NOUS:key=value` line per fact, on the console.
@@ -32,6 +36,26 @@ fn report(key: &str, val: &str) {
 /// Where the host stages the cell's manifest and the tools it attested.
 const MANIFEST: &str = "/nous/manifest.json";
 const TOOLS_DIR: &str = "/nous/tools";
+
+/// What the host asked this cell to run, if anything. Staged next to the
+/// manifest rather than passed on the kernel cmdline: a request to run
+/// something is data, and it goes through the same hash check as everything
+/// else regardless of how it arrived.
+const RUN_REQUEST: &str = "/nous/run.json";
+
+#[derive(Deserialize)]
+struct RunRequest {
+    /// Where the bytes live in the cell — normally on the sealed DAX mount.
+    path: String,
+    /// What the agent calls it. Only used for reporting; authority comes from
+    /// the hash, never from the name or the path.
+    alias: String,
+    #[serde(default)]
+    args: Vec<String>,
+    /// Whether the input this invocation is being fed was written by the agent.
+    #[serde(default)]
+    agent_authored_input: bool,
+}
 
 fn main() {
     report("pilot", "alive");
@@ -111,8 +135,81 @@ fn main() {
         ExecOutcome::Run { .. } => report("pilot_unattested", "PERMITTED"),
     }
 
+    run_requested(&manifest);
+
     report("pilot", "done");
     finish(0)
+}
+
+/// Run what the host asked for, if it asked for anything.
+///
+/// The path is where to find the bytes; it carries no authority. Authority
+/// comes from hashing what is actually at that path and finding that hash in
+/// the manifest. A tool swapped after attestation hashes differently and never
+/// runs, which is the only reason a filesystem is safe to exec out of at all.
+fn run_requested(manifest: &Manifest) {
+    let Ok(bytes) = std::fs::read(RUN_REQUEST) else {
+        return; // nothing asked of this cell
+    };
+    let req: RunRequest = match serde_json::from_slice(&bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            report("pilot_run", "unparseable");
+            eprintln!("pilot: {RUN_REQUEST}: {e}");
+            return;
+        }
+    };
+
+    let Ok(code) = std::fs::read(&req.path) else {
+        report(&format!("pilot_run_{}", req.alias), "absent");
+        return;
+    };
+    let hash = Hash::of(&code);
+
+    // Anything the agent wrote demotes this invocation, per the laundering ban.
+    let input = if req.agent_authored_input {
+        Input::File(Lane::Data)
+    } else {
+        Input::None
+    };
+
+    match exec(manifest, &hash, input) {
+        ExecOutcome::Denied(e) => {
+            report(&format!("pilot_run_{}", req.alias), "denied");
+            for line in e.to_json().lines() {
+                println!("NOUS:explain {line}");
+            }
+        }
+        ExecOutcome::Run { lane, .. } => {
+            report(&format!("pilot_run_{}", req.alias), &format!("permitted:{lane}"));
+
+            // The honest line: the tool lane is code we attested and did not
+            // feed anything the agent wrote, so it runs with authority. The
+            // data lane needs the per-exec collar, and until that exists,
+            // refusing is the only defensible answer.
+            if lane != Lane::Tool {
+                report(&format!("pilot_run_{}", req.alias), "refused:collar-absent");
+                return;
+            }
+
+            // Everything between these markers is the program's own output.
+            // The host slices on them so a cell can be piped like any process.
+            println!("NOUS:out-begin");
+            let status = std::process::Command::new(&req.path).args(&req.args).status();
+            println!("NOUS:out-end");
+
+            match status {
+                Ok(s) => report(
+                    &format!("pilot_run_{}_exit", req.alias),
+                    &s.code().unwrap_or(-1).to_string(),
+                ),
+                Err(e) => {
+                    report(&format!("pilot_run_{}", req.alias), "exec-failed");
+                    eprintln!("pilot: exec {}: {e}", req.path);
+                }
+            }
+        }
+    }
 }
 
 /// Pilot is PID 1 in a cell, so returning is not an option — the kernel panics

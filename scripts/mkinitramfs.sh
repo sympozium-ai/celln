@@ -63,6 +63,34 @@ if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-mus
   ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
       preforge /usr/bin/ls "$work/nous/tools/ls" >/dev/null )
   # `agent-script` is deliberately NOT preforged: pilot must refuse it.
+
+  # A program for the cell to actually run, if one was staged. It is attested
+  # here on the host and sealed into the tool filesystem separately, so the
+  # only thing crossing into the cell is bytes plus a hash to check them
+  # against — pilot re-hashes whatever it finds at that path before running it.
+  if [ -n "${NOUS_RUN_PROG:-}" ]; then
+    prog_alias="${NOUS_RUN_ALIAS:-/$(basename "$NOUS_RUN_PROG")}"
+    ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
+        preforge "$prog_alias" "$NOUS_RUN_PROG" >/dev/null )
+
+    args_json="[]"
+    if [ -n "${NOUS_RUN_ARGS:-}" ]; then
+      args_json="["; sep=""
+      for a in $NOUS_RUN_ARGS; do args_json="$args_json$sep\"$a\""; sep=","; done
+      args_json="$args_json]"
+    fi
+    cat > "$work/nous/run.json" <<JSON
+{
+  "path": "/tools/$(basename "$NOUS_RUN_PROG")",
+  "alias": "$prog_alias",
+  "args": $args_json,
+  "agent_authored_input": ${NOUS_RUN_TAINTED:-false}
+}
+JSON
+    printf 'run:      %s (sealed at /tools/%s)\n' \
+      "$prog_alias" "$(basename "$NOUS_RUN_PROG")"
+  fi
+
   cp "$store/manifest.json" "$work/nous/manifest.json"
   rm -rf "$store"
   printf 'pilot:    staged (static musl) with a %s-entry manifest\n' \

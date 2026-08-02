@@ -94,6 +94,35 @@ proving isolation on this machine
   ✔ revoking a tool stops it in an already-running cell
 ```
 
+## End to end: a model writes code, a cell runs it
+
+```sh
+$ nous agent "print the first 100 primes, space separated"
+● asking claude for a program
+  · 16 lines of rust
+  + forged  blake3:c76fdc66321d6990def93a9e130d7b273acc1bcca5a9716973eb01ce336cdaa4  436 KiB
+  · cell sealed, tools lent read-only
+  ✔ pilot: /agent/program permitted:tool
+
+2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
+```
+
+Claude writes the program **on the host**; `rustc` builds it static; forgectl
+attests the bytes it actually built; the binary is sealed into the cell as
+read-only memory; and pilot re-hashes it in the guest and execs it by hash out
+of the sealed mapping. Under DAX there is no page-cache copy, so the
+instructions the guest executes *are* the host's pages.
+
+Two things this is careful about. **The cell has no network** — not a
+firewalled one, none — so the API credential never goes near it; only bytes
+cross. **Attestation is provenance, not intent**: forging says these bytes are
+what we built, not that the program is correct or benign. Nobody read it. The
+cell is what makes running it acceptable anyway.
+
+Getting the *model itself* into a cell is the same problem as any other egress,
+and gets the same answer — an attested network stack behind a broker, never an
+ambient NIC ([ADR-0006](docs/decisions/0006-hermetic-cells-network-as-a-tool.md)).
+
 ## It pipes
 
 Human-readable on a terminal, NDJSON the moment it is not. No flag needed,
@@ -115,10 +144,11 @@ read-only memory that the guest cannot modify — proven against a guest that
 enters protected mode and maps the page writable in page tables it wrote itself.
 Revocation reaches a cell that is already running.
 
-**In-cell execution of your command is not wired yet** (build plan M5: stripped
-mote kernel + `pilot`). Today `nous run` provisions the cell, attests and seals
-the tools, and applies every trust decision — the isolation substrate, not yet a
-place to run arbitrary work.
+**In-cell execution works for the tool lane** — that is what `nous agent` does
+above. **Data-lane exec is still refused**, deliberately: it needs the per-exec
+collar (Landlock + seccomp), and running collared code before the collar exists
+would be exactly backwards. `nous run` still stops at sealing; `nous agent` is
+the path that reaches execution.
 
 Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 

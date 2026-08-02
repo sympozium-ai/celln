@@ -67,7 +67,15 @@ fn main() -> anyhow::Result<()> {
     let gpa = cell.seal_tool(&h, &payload)?;
     // Beat 5, against a real kernel: the guest tells us when it is holding the
     // tool, and we pull the pages out from under it mid-run.
-    cell.revoke_when_guest_prints(&h, "NOUS:dax_revoke_ready=now");
+    //
+    // Revocation is the whole point here, but it also ends the cell's access to
+    // the tool filesystem — so anything that wants to *run* a sealed program
+    // afterwards needs the pages left in place. NOUS_NO_REVOKE keeps them.
+    if std::env::var_os("NOUS_NO_REVOKE").is_none() {
+        cell.revoke_when_guest_prints(&h, "NOUS:dax_revoke_ready=now");
+    } else {
+        println!("(NOUS_NO_REVOKE set — the revocation beat is skipped)");
+    }
     println!("sealed: {sealed_what}");
     println!("  {h}");
     println!(
