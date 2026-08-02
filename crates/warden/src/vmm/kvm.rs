@@ -761,13 +761,17 @@ mod tests {
     use crate::{Cell, CellError, Phase, Verb};
 
     fn has_kvm() -> bool {
-        std::path::Path::new("/dev/kvm").exists()
+        // Device-node presence is not enough in CI containers: `/dev/kvm` can
+        // exist while cgroup/device policy denies opening it. Hardware proofs
+        // are meaningful only after the real backend has opened KVM and
+        // confirmed the readonly-memslot capability it needs to seal pages.
+        KvmVmm::new().is_ok()
     }
 
     macro_rules! require_kvm {
         () => {
             if !has_kvm() {
-                eprintln!("skipping: /dev/kvm not present on this host");
+                eprintln!("skipping: real KVM sealing is unavailable on this host");
                 return;
             }
         };
