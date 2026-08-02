@@ -53,7 +53,7 @@ pub fn exec(manifest: &Manifest, target: &Hash, input: Input) -> ExecOutcome {
         Err(ExecDenied::Unattested(h)) => ExecOutcome::Denied(Explain {
             denied: format!("exec {h}"),
             reason: "hash is not attested in the manifest (exec-by-hash)".into(),
-            instead: "request the tool via forgectl so it is forged/verified and attested".into(),
+            instead: "request the tool via assay so it is forged/verified and attested".into(),
         }),
         Err(ExecDenied::Revoked(h)) => ExecOutcome::Denied(Explain {
             denied: format!("exec {h}"),

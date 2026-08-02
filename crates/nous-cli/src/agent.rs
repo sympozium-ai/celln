@@ -261,11 +261,11 @@ pub fn agent(
     };
     let store = work.join("store");
     std::fs::create_dir_all(&store)?;
-    let mut forge = forgectl::Forge::open(&store).context("opening the tool store")?;
-    let hash = forge
-        .preforge_authored(ALIAS, &code, false, author)
+    let mut assayer = assay::Assayer::open(&store).context("opening the tool store")?;
+    let hash = assayer
+        .admit_forged_authored(ALIAS, &code, false, author)
         .context("forging the generated program")?;
-    let entry = forge
+    let entry = assayer
         .manifest()
         .get(&hash)
         .context("forged entry missing from the manifest")?;

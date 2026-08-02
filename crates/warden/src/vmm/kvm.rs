@@ -77,7 +77,7 @@ fn kvm_err(what: &str, e: kvm_ioctls::Error) -> VmmError {
 }
 
 /// Process-global registry of warm mote templates, one memfd per snapshot
-/// name. In the full design this image is produced by forgectl (stripped
+/// name. In the full design this image is produced by assay (stripped
 /// kernel + pilot, pre-booted and parked); here it is a deterministic RAM
 /// image so the CoW fork mechanics are real while the content is minimal.
 fn registry() -> &'static Mutex<HashMap<String, Arc<OwnedFd>>> {

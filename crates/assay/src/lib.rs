@@ -1,4 +1,4 @@
-//! `forgectl` — the fleet daemon, POC core.
+//! `assay` — the fleet daemon, POC core.
 //!
 //! Owns the content-addressed [`Store`] and the signed [`Manifest`]. Implements
 //! the piece that makes launch never-slow: **tiered resolution**. A request for
@@ -14,7 +14,7 @@ use nous_store::Store;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-pub struct Forge {
+pub struct Assayer {
     store: Store,
     manifest: Manifest,
     manifest_path: PathBuf,
@@ -35,13 +35,13 @@ pub struct Resolved {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ForgeError {
+pub enum AssayError {
     #[error(transparent)]
     Store(#[from] nous_store::StoreError),
 }
 
-impl Forge {
-    pub fn open(root: impl AsRef<Path>) -> Result<Self, ForgeError> {
+impl Assayer {
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, AssayError> {
         let root = root.as_ref();
         let store = Store::open(root)?;
         let manifest_path = root.join("manifest.json");
@@ -51,7 +51,7 @@ impl Forge {
         } else {
             Manifest::new()
         };
-        Ok(Forge {
+        Ok(Assayer {
             store,
             manifest,
             manifest_path,
@@ -60,7 +60,7 @@ impl Forge {
     }
 
     /// Persist the manifest to disk so warm hits survive across processes.
-    fn persist(&self) -> Result<(), ForgeError> {
+    fn persist(&self) -> Result<(), AssayError> {
         let bytes = serde_json::to_vec_pretty(&self.manifest).expect("manifest serializes");
         std::fs::write(&self.manifest_path, bytes).map_err(nous_store::StoreError::Io)?;
         Ok(())
@@ -70,30 +70,30 @@ impl Forge {
         &self.manifest
     }
 
-    /// Pre-forge an artifact (Tier 1). Models shipped inventory + completed
+    /// Pre-assayer an artifact (Tier 1). Models shipped inventory + completed
     /// background builds. Stores the bytes and admits a Forged manifest entry.
-    pub fn preforge(
+    pub fn admit_forged(
         &mut self,
         alias: &str,
         bytes: &[u8],
         interpreter: bool,
-    ) -> Result<Hash, ForgeError> {
-        self.preforge_authored(alias, bytes, interpreter, Author::Host)
+    ) -> Result<Hash, AssayError> {
+        self.admit_forged_authored(alias, bytes, interpreter, Author::Host)
     }
 
-    /// Pre-forge, naming who wrote the source.
+    /// Pre-assayer, naming who wrote the source.
     ///
     /// Forging agent-authored source is a normal thing to do — it is how we get
     /// a reproducible artifact out of something a model wrote. It just must not
     /// also grant tool-lane authority, which is why the author rides along in
     /// the manifest rather than being forgotten at the build step.
-    pub fn preforge_authored(
+    pub fn admit_forged_authored(
         &mut self,
         alias: &str,
         bytes: &[u8],
         interpreter: bool,
         author: Author,
-    ) -> Result<Hash, ForgeError> {
+    ) -> Result<Hash, AssayError> {
         let hash = self.store.put(bytes)?;
         self.manifest.admit(Entry {
             alias: alias.into(),
@@ -117,7 +117,7 @@ impl Forge {
         alias: &str,
         upstream_bytes: &[u8],
         interpreter: bool,
-    ) -> Result<Resolved, ForgeError> {
+    ) -> Result<Resolved, AssayError> {
         // Warm path: alias already attested and not revoked.
         if let Some(entry) = self.manifest.resolve_alias(alias) {
             if !self.manifest.is_revoked(&entry.hash) {
@@ -158,7 +158,7 @@ impl Forge {
         alias: &str,
         bytes: &[u8],
         interpreter: bool,
-    ) -> Result<Hash, ForgeError> {
+    ) -> Result<Hash, AssayError> {
         let hash = self.store.put(bytes)?;
         self.manifest.admit(Entry {
             alias: alias.into(),
@@ -199,7 +199,7 @@ impl Forge {
     }
 
     /// Fetch attested bytes for mapping (integrity-checked by the store).
-    pub fn fetch(&self, hash: &Hash) -> Result<Vec<u8>, ForgeError> {
+    pub fn fetch(&self, hash: &Hash) -> Result<Vec<u8>, AssayError> {
         Ok(self.store.get(hash)?)
     }
 }
@@ -212,12 +212,12 @@ mod tests {
     #[test]
     fn warm_hit_is_a_pagemap_not_a_build() {
         let dir = tempdir().unwrap();
-        let mut forge = Forge::open(dir.path()).unwrap();
-        forge
-            .preforge("/usr/bin/python", b"python-bytes", true)
+        let mut assayer = Assayer::open(dir.path()).unwrap();
+        assayer
+            .admit_forged("/usr/bin/python", b"python-bytes", true)
             .unwrap();
 
-        let r = forge
+        let r = assayer
             .resolve("/usr/bin/python", b"python-bytes", true)
             .unwrap();
         assert!(r.warm);
@@ -228,9 +228,9 @@ mod tests {
     #[test]
     fn cold_serves_verified_and_queues_forged() {
         let dir = tempdir().unwrap();
-        let mut forge = Forge::open(dir.path()).unwrap();
+        let mut assayer = Assayer::open(dir.path()).unwrap();
 
-        let r = forge
+        let r = assayer
             .resolve("/usr/lib/leftpad", b"leftpad-bytes", false)
             .unwrap();
         assert!(!r.warm);
@@ -240,12 +240,12 @@ mod tests {
             "cold path serves Verified in seconds"
         );
         assert!(r.upgrade_queued);
-        assert_eq!(forge.pending_rebuilds(), 1);
+        assert_eq!(assayer.pending_rebuilds(), 1);
 
         // background rebuild lands -> future resolves are Forged
-        forge.run_one_rebuild();
-        assert_eq!(forge.pending_rebuilds(), 0);
-        let r2 = forge
+        assayer.run_one_rebuild();
+        assert_eq!(assayer.pending_rebuilds(), 0);
+        let r2 = assayer
             .resolve("/usr/lib/leftpad", b"leftpad-bytes", false)
             .unwrap();
         assert!(r2.warm);
@@ -259,22 +259,22 @@ mod tests {
     #[test]
     fn revoked_hash_is_not_served_warm() {
         let dir = tempdir().unwrap();
-        let mut forge = Forge::open(dir.path()).unwrap();
-        let h = forge.preforge("/usr/bin/curl", b"curl", false).unwrap();
-        forge.revoke(&h);
+        let mut assayer = Assayer::open(dir.path()).unwrap();
+        let h = assayer.admit_forged("/usr/bin/curl", b"curl", false).unwrap();
+        assayer.revoke(&h);
         // resolving again must not return the revoked warm entry; it re-admits
         // fresh bytes at Verified instead.
-        let r = forge.resolve("/usr/bin/curl", b"curl", false).unwrap();
+        let r = assayer.resolve("/usr/bin/curl", b"curl", false).unwrap();
         assert!(!r.warm);
     }
 
     #[test]
     fn manifest_stays_signed_after_mutations() {
         let dir = tempdir().unwrap();
-        let mut forge = Forge::open(dir.path()).unwrap();
-        forge.preforge("/usr/bin/python", b"py", true).unwrap();
-        assert!(forge.manifest().verify_standin());
-        forge.resolve("/x", b"xbytes", false).unwrap();
-        assert!(forge.manifest().verify_standin());
+        let mut assayer = Assayer::open(dir.path()).unwrap();
+        assayer.admit_forged("/usr/bin/python", b"py", true).unwrap();
+        assert!(assayer.manifest().verify_standin());
+        assayer.resolve("/x", b"xbytes", false).unwrap();
+        assert!(assayer.manifest().verify_standin());
     }
 }

@@ -44,11 +44,11 @@ Plain, humble, lowercase role-names. They can be renamed into a themed set at br
 
 | Component | Role | Runs where |
 |-----------|------|------------|
-| **forgectl** | Fleet daemon. Owns the snapshot forest, content-addressed store, manifests, page cache. The only component that touches the outside world. **This is where "the distro" lives** — the curated software moved off the guest and onto the host, into forgectl's store. | host · privileged · one per host |
+| **assay** | Fleet daemon. Grades bytes and admits them: content-addressed store, manifests, tiers, authorship, revocation, page cache. The only component that touches the outside world. **This is where "the distro" lives** — the curated software moved off the guest and onto the host, into assay's store. Named for the assay office, which determines what a metal *is* and stamps a grade on it; it deliberately does not claim to have built anything. | host · privileged · one per host |
 | **warden** | Per-cell VMM. A thin, jailed userspace process that wraps and drives exactly one microVM (one cell). Holds the KVM fds, vsock, and sealed page maps; enforces the authority ratchet. Jailed so an escaped agent lands inside a process that has nothing. | host · unprivileged · one per cell |
 | **pilot** | Cell supervisor. PID 1 inside the mote. The tool-call ABI, the shell-as-parser, the taint tracker, and the toolplane binary — one static binary that replaces init, shell, coreutils, and package manager. | guest · baked into every mote |
 
-Relationship: **forgectl** owns the motes and the tools; **warden** turns one mote into one cell and steers its microVM; **pilot** runs inside and speaks to the workload. One warden : one microVM : one cell, always 1:1:1.
+Relationship: **assay** owns the motes and the tools; **warden** turns one mote into one cell and steers its microVM; **pilot** runs inside and speaks to the workload. One warden : one microVM : one cell, always 1:1:1.
 
 ---
 

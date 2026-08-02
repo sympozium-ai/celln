@@ -41,7 +41,7 @@ path = "src/lib.rs"
 [dependencies]
 nous-manifest = { path = "../nous-manifest" }
 nous-store = { path = "../nous-store" }
-forgectl = { path = "../forgectl" }
+assay = { path = "../assay" }
 warden = { path = "../warden" }
 libc.workspace = true
 serde.workspace = true

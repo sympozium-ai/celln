@@ -103,9 +103,11 @@ prints what it wrote.
 
 ```sh
 $ nous agent "print the first 100 primes, space separated"
-● asking anthropic (claude-opus-5) for a program
-  · 20 lines of rust
-  + forged  blake3:6ab98015c7a62942ea8b367afb654cbdf3501563c659cc4ffcb9799818acdc2d  436 KiB
+● asking anthropic (claude-opus-5) for a rust program that: print the first 100 primes, space separated
+  · waiting for claude (up to 300s; --timeout changes it)
+  · replied in 5s
+  · 23 lines of rust  /tmp/nous-agent-1844068/program.rs
+  + forged  blake3:df56aae49f18114d8f0ae57f9e6ec03b3dc6670c664191cb35733bec4d7e4949  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:data
   ✔ pilot: /agent/program refused:collar-absent
@@ -113,9 +115,10 @@ warning: pilot refused to run it: refused:collar-absent
 ```
 
 **That refusal is the correct answer**, and it is worth reading carefully. The
-program was forged — we built it hermetically from source we hold. It is still
-*agent-authored*, and agent-authored code never carries tool-lane authority at
-any tier. Running it needs the per-exec collar, which does not exist yet.
+program was graded `forged` — we compiled it ourselves from source we hold. It
+is still `author=agent`, and agent-authored code never carries tool-lane
+authority at any tier. Running it needs the per-exec collar, which does not
+exist yet.
 
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier; if the
@@ -131,11 +134,17 @@ warning: --trust-agent-code: running agent-authored code in the tool lane
 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
 ```
 
-The model writes the program **on the host**; `rustc` builds it static;
-forgectl attests the bytes it actually built and records who wrote them; the
-binary is sealed into the cell as read-only memory; and pilot re-hashes it in
-the guest and decides for itself. Under DAX there is no page-cache copy, so the
+The model writes the program **on the host**; `rustc` builds it static; `assay`
+grades the bytes it actually built and records who wrote them; the binary is
+sealed into the cell as read-only memory; and pilot re-hashes it in the guest
+and decides for itself. Under DAX there is no page-cache copy, so the
 instructions the guest executes *are* the host's pages.
+
+> **The `forged` tier is asserted, not earned.** The hermetic build plane is
+> simulated in this POC — nothing rebuilds an artifact from source and compares.
+> `assay` records the grade it was told; it does not verify it. That is why the
+> component is named for an assay office rather than a forge: it determines what
+> bytes *are* and stamps a grade, and claims nothing about having made them.
 
 Pick who writes it — `nous agents` shows what this host can use:
 
@@ -155,9 +164,9 @@ approach the cell.
 
 Two things this is careful about. **The cell has no network** — not a
 firewalled one, none — so the API credential never goes near it; only bytes
-cross. **Attestation is provenance, not intent**: forging says these bytes are
-what we built, not that the program is correct or benign. Nobody read it. The
-cell is what makes running it acceptable anyway.
+cross. **Grading is provenance, not intent**: a tier says where these bytes came
+from, not that the program is correct or benign. Nobody read it. The cell is
+what makes running it acceptable anyway.
 
 Getting the *model itself* into a cell is the same problem as any other egress,
 and gets the same answer — an attested network stack behind a broker, never an
@@ -199,7 +208,7 @@ Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 |---|---|
 | The five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) |
 | What is proven, and what is not | [docs/findings/](docs/findings/) |
-| Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0005 |
+| Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0007 |
 | Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
 | Working on nouscell itself | [AGENTS.md](AGENTS.md), then `make help` |
 

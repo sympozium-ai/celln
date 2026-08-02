@@ -64,8 +64,8 @@ frame() {
   <!-- ── host ─────────────────────────────────────────── -->
   <text x="40" y="126" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">HOST</text>
   <rect x="40" y="140" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="167" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">forgectl</text>
-  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">content store · tiers</text>
+  <text x="58" y="167" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">assay</text>
+  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">content store · grades · tiers</text>
 
   <rect x="40" y="216" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
   <text x="58" y="243" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">warden</text>

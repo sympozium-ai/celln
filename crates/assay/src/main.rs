@@ -1,15 +1,20 @@
-//! `forgectl` CLI — a thin front end over the [`forgectl::Forge`] library so the
+//! `assay` CLI — a thin front end over the [`assay::Assayer`] library so the
 //! store and tiered resolution can be driven from shell scripts and the Makefile
 //! demo. State lives under `--root` (default `./.nous`).
+//!
+//! Named for what it does: an assay office determines what a piece of metal
+//! actually is and stamps it with a grade. This does the same for bytes — hash
+//! them, grade them, record who wrote them — and, importantly, claims no more
+//! than that. It does not build anything.
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use forgectl::Forge;
+use assay::Assayer;
 use nous_manifest::Hash;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "forgectl", version, about = "Nouscell fleet daemon (POC CLI)")]
+#[command(name = "assay", version, about = "Grade and admit artifacts into a Nouscell manifest")]
 struct Cli {
     /// Store root.
     #[arg(long, default_value = ".nous")]
@@ -22,8 +27,8 @@ struct Cli {
 enum Cmd {
     /// Initialise an empty store.
     Init,
-    /// Pre-forge (Tier 1) a tool from a file: `preforge /usr/bin/python ./python [--interpreter]`.
-    Preforge {
+    /// Admit a tool at the Forged tier: `admit /usr/bin/python ./python [--interpreter]`.
+    Admit {
         alias: String,
         file: PathBuf,
         #[arg(long)]
@@ -50,13 +55,13 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let mut forge = Forge::open(&cli.root)?;
+    let mut assayer = Assayer::open(&cli.root)?;
 
     match cli.cmd {
         Cmd::Init => {
             println!("initialised store at {}", cli.root.display());
         }
-        Cmd::Preforge {
+        Cmd::Admit {
             alias,
             file,
             interpreter,
@@ -68,8 +73,14 @@ fn main() -> Result<()> {
                 nous_manifest::Author::Host
             };
             let bytes = std::fs::read(&file)?;
-            let h = forge.preforge_authored(&alias, &bytes, interpreter, author)?;
-            println!("forged {alias}\n  {h}\n  tier=forged author={author}");
+            let h = assayer.admit_forged_authored(&alias, &bytes, interpreter, author)?;
+            println!("admitted {alias}\n  {h}\n  tier=forged author={author}");
+            // The tier is a claim about how these bytes were produced. In this
+            // POC nothing rebuilt them, so say so where the claim is made
+            // rather than only in a document nobody has open.
+            eprintln!(
+                "note: the hermetic build plane is simulated — Forged is asserted here, not earned"
+            );
         }
         Cmd::Resolve {
             alias,
@@ -77,7 +88,7 @@ fn main() -> Result<()> {
             interpreter,
         } => {
             let bytes = std::fs::read(&file)?;
-            let r = forge.resolve(&alias, &bytes, interpreter)?;
+            let r = assayer.resolve(&alias, &bytes, interpreter)?;
             let kind = if r.warm {
                 "WARM (page-map)"
             } else {
@@ -95,24 +106,24 @@ fn main() -> Result<()> {
                 }
             );
         }
-        Cmd::Rebuild => match forge.run_one_rebuild() {
+        Cmd::Rebuild => match assayer.run_one_rebuild() {
             Some(h) => println!(
                 "rebuilt -> forged: {h}\n  pending={}",
-                forge.pending_rebuilds()
+                assayer.pending_rebuilds()
             ),
             None => println!("no pending rebuilds"),
         },
         Cmd::Revoke { hash } => {
-            forge.revoke(&Hash(hash.clone()));
+            assayer.revoke(&Hash(hash.clone()));
             println!("revoked {hash} (halts in all running cells)");
         }
         Cmd::Status => {
-            let m = forge.manifest();
+            let m = assayer.manifest();
             println!(
                 "manifest: {} entries  signed={}  pending_rebuilds={}",
                 m.len(),
                 m.verify_standin(),
-                forge.pending_rebuilds()
+                assayer.pending_rebuilds()
             );
         }
     }

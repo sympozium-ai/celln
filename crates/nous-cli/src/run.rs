@@ -4,7 +4,7 @@ use crate::exit;
 use crate::host::Host;
 use crate::out::{bold, dim, green, red, Out};
 use anyhow::{Context, Result};
-use forgectl::Forge;
+use assay::Assayer;
 use nous_manifest::{Hash, Input, Lane, Tier};
 use nous_spec::Spec;
 use std::path::Path;
@@ -176,8 +176,8 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
         return Ok(exit::HOST_INCAPABLE);
     }
 
-    let mut forge =
-        Forge::open(root).with_context(|| format!("opening store {}", root.display()))?;
+    let mut assayer =
+        Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
 
     // Write the cell down before it exists, so `nous ps` can see it while it
     // runs and still has a record if this process is killed mid-cell.
@@ -202,7 +202,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     for t in &spec.tools {
         let bytes = std::fs::read(&t.path)
             .with_context(|| format!("reading tool {} from {}", t.alias, t.path.display()))?;
-        let r = forge.resolve(&t.alias, &bytes, t.interpreter)?;
+        let r = assayer.resolve(&t.alias, &bytes, t.interpreter)?;
         o.event(
             "tool_resolved",
             serde_json::json!({
@@ -262,7 +262,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
             .map(|(_, h, _)| h.clone());
         if let Some(hash) = entry_hash {
             let lane_if_data = Lane::Data;
-            match pilot::exec(forge.manifest(), &hash, input_of(r.input, lane_if_data)) {
+            match pilot::exec(assayer.manifest(), &hash, input_of(r.input, lane_if_data)) {
                 pilot::ExecOutcome::Run { lane, .. } => {
                     o.event(
                         "exec_permitted",
@@ -452,8 +452,8 @@ fn visible_len(s: &str) -> usize {
 
 /// `nous tools` — what this host has attested.
 pub fn tools(root: &Path, o: &Out) -> Result<u8> {
-    let forge = Forge::open(root).with_context(|| format!("opening store {}", root.display()))?;
-    let m = forge.manifest();
+    let assayer = Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
+    let m = assayer.manifest();
     if m.is_empty() {
         o.note(dim(
             "no tools attested yet — `nous run` admits them as it resolves",
@@ -588,8 +588,8 @@ pub fn verify(o: &Out) -> Result<u8> {
 /// `nous demo` — the five-beat loop, no hardware required.
 pub fn demo(o: &Out) -> Result<u8> {
     let tmp = std::env::temp_dir().join(format!("nous-demo-{}", std::process::id()));
-    let mut forge = Forge::open(&tmp)?;
-    let py = forge.preforge("/usr/bin/python", b"cpython-bytes", true)?;
+    let mut assayer = Assayer::open(&tmp)?;
+    let py = assayer.admit_forged("/usr/bin/python", b"cpython-bytes", true)?;
 
     let beat = |n: u8, title: &str| {
         o.event(
@@ -610,7 +610,7 @@ pub fn demo(o: &Out) -> Result<u8> {
         2,
         "loan a warm tool — install is a page map, not a download",
     );
-    let r = forge.resolve("/usr/bin/python", b"cpython-bytes", true)?;
+    let r = assayer.resolve("/usr/bin/python", b"cpython-bytes", true)?;
     o.event(
         "resolved",
         serde_json::json!({"alias": "/usr/bin/python", "tier": r.tier.to_string(), "warm": r.warm}),
@@ -621,13 +621,13 @@ pub fn demo(o: &Out) -> Result<u8> {
         3,
         "cold tool, still fast — verified in seconds, forged behind it",
     );
-    let r = forge.resolve("/usr/lib/leftpad", b"leftpad-bytes", false)?;
+    let r = assayer.resolve("/usr/lib/leftpad", b"leftpad-bytes", false)?;
     o.event(
         "resolved",
         serde_json::json!({"alias": "/usr/lib/leftpad", "tier": r.tier.to_string(), "warm": r.warm, "upgrade_queued": r.upgrade_queued}),
         format!("   leftpad → tier={} upgrade_queued={}", r.tier, r.upgrade_queued),
     );
-    forge.run_one_rebuild();
+    assayer.run_one_rebuild();
 
     beat(4, "demote on exec — the laundering ban");
     for (what, input) in [
@@ -637,7 +637,7 @@ pub fn demo(o: &Out) -> Result<u8> {
             Input::ArgString(Lane::Data),
         ),
     ] {
-        if let pilot::ExecOutcome::Run { lane, .. } = pilot::exec(forge.manifest(), &py, input) {
+        if let pilot::ExecOutcome::Run { lane, .. } = pilot::exec(assayer.manifest(), &py, input) {
             o.event(
                 "lane",
                 serde_json::json!({"exec": what, "lane": lane.to_string()}),
@@ -647,8 +647,8 @@ pub fn demo(o: &Out) -> Result<u8> {
     }
 
     beat(5, "kill fleet-wide — revoke, and it stops everywhere");
-    forge.revoke(&py);
-    if let pilot::ExecOutcome::Denied(e) = pilot::exec(forge.manifest(), &py, Input::None) {
+    assayer.revoke(&py);
+    if let pilot::ExecOutcome::Denied(e) = pilot::exec(assayer.manifest(), &py, Input::None) {
         o.event(
             "denied",
             serde_json::to_value(&e).unwrap_or_default(),

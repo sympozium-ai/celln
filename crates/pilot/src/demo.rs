@@ -1,12 +1,12 @@
 //! `nous-demo` — the five-beat proof loop, in mock mode (no KVM required).
 //!
-//! This is the POC's headline: it drives forgectl (tiered resolution), warden
+//! This is the POC's headline: it drives assay (tiered resolution), warden
 //! (the ratchet + mock VMM), and pilot (exec-by-hash + taint) through the exact
 //! sequence the build plan's §7 defines, and prints each beat. Everything the
 //! hardware would enforce is enforced here in software so the *control flow* is
 //! demonstrable today; the hardware guarantees (sealing, real fork) are M1/M2.
 
-use forgectl::Forge;
+use assay::Assayer;
 use nous_manifest::{Hash, Input, Lane};
 use pilot::{exec, ExecOutcome};
 use warden::vmm::MockVmm;
@@ -22,14 +22,14 @@ fn note(s: &str) {
 
 fn main() -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join(format!("nous-demo-{}", std::process::id()));
-    let mut forge = Forge::open(&tmp)?;
+    let mut assayer = Assayer::open(&tmp)?;
 
     println!("\x1b[1mNouscell POC — five-beat proof (mock mode)\x1b[0m");
     println!("store: {}", tmp.display());
 
     // Shipped inventory: python is pre-forged (Tier 1). This is what makes the
     // common path never cold.
-    let py_hash = forge.preforge("/usr/bin/python", b"cpython-3.13-bytes", true)?;
+    let py_hash = assayer.admit_forged("/usr/bin/python", b"cpython-3.13-bytes", true)?;
 
     // ---- beat 1: seal from intent ----
     beat(
@@ -49,12 +49,12 @@ fn main() -> anyhow::Result<()> {
         2,
         "loan a warm tool — pip install of a seen package is a page-map",
     );
-    let r = forge.resolve("/usr/bin/python", b"cpython-3.13-bytes", true)?;
+    let r = assayer.resolve("/usr/bin/python", b"cpython-3.13-bytes", true)?;
     note(&format!(
         "resolve python -> {} tier={} warm={}",
         r.hash, r.tier, r.warm
     ));
-    let bytes = forge.fetch(&r.hash)?;
+    let bytes = assayer.fetch(&r.hash)?;
     cell.map_tool(&r.hash, &bytes)?;
     note("mapped python pages r-x into the cell");
 
@@ -63,14 +63,14 @@ fn main() -> anyhow::Result<()> {
         3,
         "cold tool, still fast — unseen package served Verified, Forged queued",
     );
-    let r = forge.resolve("/usr/lib/leftpad", b"leftpad-upstream-bytes", false)?;
+    let r = assayer.resolve("/usr/lib/leftpad", b"leftpad-upstream-bytes", false)?;
     note(&format!(
         "resolve leftpad -> {} tier={} warm={} upgrade_queued={}",
         r.hash, r.tier, r.warm, r.upgrade_queued
     ));
-    let bytes = forge.fetch(&r.hash)?;
+    let bytes = assayer.fetch(&r.hash)?;
     cell.map_tool(&r.hash, &bytes)?;
-    forge.run_one_rebuild();
+    assayer.run_one_rebuild();
     note("background rebuild landed -> future cells get Forged");
 
     // ---- beat 4: demote on exec ----
@@ -79,7 +79,7 @@ fn main() -> anyhow::Result<()> {
         "demote on exec — attested python fed a data-lane script runs collared",
     );
     // The agent writes its own script (data lane) and runs it with python.
-    match exec(forge.manifest(), &py_hash, Input::File(Lane::Data)) {
+    match exec(assayer.manifest(), &py_hash, Input::File(Lane::Data)) {
         ExecOutcome::Run { lane, .. } => {
             note(&format!("python evil.py -> runs in {lane} lane (demoted)"));
             assert_eq!(lane, Lane::Data);
@@ -87,7 +87,7 @@ fn main() -> anyhow::Result<()> {
         ExecOutcome::Denied(e) => panic!("unexpected denial: {}", e.to_json()),
     }
     // And the sharp channel: python -c "<tainted>"
-    match exec(forge.manifest(), &py_hash, Input::ArgString(Lane::Data)) {
+    match exec(assayer.manifest(), &py_hash, Input::ArgString(Lane::Data)) {
         ExecOutcome::Run { lane, .. } => {
             note(&format!(
                 "python -c \"<tainted>\" -> runs in {lane} lane (demoted)"
@@ -113,8 +113,8 @@ fn main() -> anyhow::Result<()> {
         5,
         "kill fleet-wide — revoke a hash; it stops executing everywhere",
     );
-    forge.revoke(&py_hash);
-    match exec(forge.manifest(), &py_hash, Input::None) {
+    assayer.revoke(&py_hash);
+    match exec(assayer.manifest(), &py_hash, Input::None) {
         ExecOutcome::Denied(e) => {
             note("python revoked; exec now refused with a structured explain:");
             for line in e.to_json().lines() {

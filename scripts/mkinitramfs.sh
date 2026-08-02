@@ -74,10 +74,10 @@ if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-mus
 
   store="$(mktemp -d)"
   if [ -z "${packed_manifest:-}" ]; then
-  ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
-      preforge /usr/bin/python "$work/nous/tools/python" --interpreter >/dev/null )
-  ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
-      preforge /usr/bin/ls "$work/nous/tools/ls" >/dev/null )
+  ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
+      admit /usr/bin/python "$work/nous/tools/python" --interpreter >/dev/null )
+  ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
+      admit /usr/bin/ls "$work/nous/tools/ls" >/dev/null )
   # `agent-script` is deliberately NOT preforged: pilot must refuse it.
 
   # A program for the cell to actually run, if one was staged. It is attested
@@ -89,8 +89,8 @@ if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-mus
     # Agent-authored source stays agent-authored through the compiler. Forging
     # it is fine and gives a reproducible artifact; granting it the tool lane
     # is not, so the author rides into the manifest with the hash.
-    ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
-        preforge "$prog_alias" "$NOUS_RUN_PROG" \
+    ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
+        admit "$prog_alias" "$NOUS_RUN_PROG" \
         ${NOUS_RUN_AGENT_AUTHORED:+--agent-authored} >/dev/null )
 
     args_json="[]"

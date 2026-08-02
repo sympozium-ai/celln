@@ -1,5 +1,5 @@
 [package]
-name = "forgectl"
+name = "assay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,11 +8,11 @@ repository.workspace = true
 description = "Fleet daemon: store, manifests, tiered resolution. Where the distro lives."
 
 [[bin]]
-name = "forgectl"
+name = "assay"
 path = "src/main.rs"
 
 [lib]
-name = "forgectl"
+name = "assay"
 path = "src/lib.rs"
 
 [dependencies]

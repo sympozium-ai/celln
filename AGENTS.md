@@ -8,7 +8,7 @@ of the design corpus in `docs/`.
 - **mote** = the substrate at rest (stripped kernel + `pilot`). **cell** = a
   live, sealed, tool-loaned mote. *Every cell is a sealed mote.* Never use the
   two interchangeably. Full glossary: `docs/NAMES_AND_CONVENTIONS.md`.
-- Components: `forgectl` (host daemon, where the distro lives), `warden` (per-cell
+- Components: `assay` (host daemon, where the distro lives), `warden` (per-cell
   VMM), `pilot` (in-cell supervisor). 1 warden : 1 microVM : 1 cell.
 
 ## Constraints (from the build plan §1)
@@ -37,7 +37,7 @@ of the design corpus in `docs/`.
 
 - Trust core (no I/O): `crates/nous-manifest`
 - Store: `crates/nous-store`
-- Tiered resolution + CLI: `crates/forgectl`
+- Tiered resolution + CLI: `crates/assay`
 - Ratchet + VMM trait/backends: `crates/warden` (`vmm/kvm.rs` real KVM,
   `vmm/boot.rs` stock-kernel boot)
 - Exec gate + lanes + explain + demos: `crates/pilot`

@@ -1,4 +1,4 @@
-//! The content-addressed store — the on-disk half of `forgectl`, where the
+//! The content-addressed store — the on-disk half of `assay`, where the
 //! "distro" actually lives. Blobs are keyed by their BLAKE3 hash, so:
 //!
 //!   * storing the same bytes twice dedups to one object (the density story), and

@@ -12,7 +12,7 @@
 //!
 //! Requires /dev/kvm. Run with: make demo-kvm
 
-use forgectl::Forge;
+use assay::Assayer;
 use nous_manifest::{Input, Lane};
 use pilot::{exec, ExecOutcome};
 use std::time::Instant;
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let tmp = std::env::temp_dir().join(format!("nous-demo-kvm-{}", std::process::id()));
-    let mut forge = Forge::open(&tmp)?;
+    let mut assayer = Assayer::open(&tmp)?;
 
     println!("\x1b[1mNouscell M1 — five-beat proof on REAL KVM\x1b[0m");
     println!("store: {}", tmp.display());
@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     // Shipped inventory: "python" is pre-forged. Its bytes are real guest code
     // (write 0x99 to scratch, halt) so the cell can execute the sealed page.
     let py_bytes = guest::tool_stub(kvm::SCRATCH, 0x99);
-    let py_hash = forge.preforge("/usr/bin/python", &py_bytes, true)?;
+    let py_hash = assayer.admit_forged("/usr/bin/python", &py_bytes, true)?;
     let snapshot = "mote:bare+python";
 
     // ---- beat 1: seal from intent — fork a real microVM, timed ----
@@ -75,8 +75,8 @@ fn main() -> anyhow::Result<()> {
         2,
         "loan a warm tool — attested python sealed in as stage-2 read-only pages",
     );
-    let r = forge.resolve("/usr/bin/python", &py_bytes, true)?;
-    let bytes = forge.fetch(&r.hash)?;
+    let r = assayer.resolve("/usr/bin/python", &py_bytes, true)?;
+    let bytes = assayer.fetch(&r.hash)?;
     cell.map_tool(&r.hash, &bytes)?;
     let py_gpa = cell.vmm().tool_gpa(&r.hash).expect("python just mapped");
     note(&format!(
@@ -96,14 +96,14 @@ fn main() -> anyhow::Result<()> {
         3,
         "cold tool, still fast — unseen package served Verified, Forged queued",
     );
-    let r = forge.resolve("/usr/lib/leftpad", b"leftpad-upstream-bytes", false)?;
+    let r = assayer.resolve("/usr/lib/leftpad", b"leftpad-upstream-bytes", false)?;
     note(&format!(
         "resolve leftpad -> tier={} warm={} upgrade_queued={}",
         r.tier, r.warm, r.upgrade_queued
     ));
-    let bytes = forge.fetch(&r.hash)?;
+    let bytes = assayer.fetch(&r.hash)?;
     cell.map_tool(&r.hash, &bytes)?;
-    forge.run_one_rebuild();
+    assayer.run_one_rebuild();
     note("mapped; background rebuild landed -> future cells get Forged");
 
     // ---- beat 4: the hardware seal, attacked ----
@@ -126,7 +126,7 @@ fn main() -> anyhow::Result<()> {
         "guest write to {py_gpa:#x} exited to host (KVM_EXIT_MMIO) — page byte intact, guest kept running"
     ));
     // lane policy on top of the hardware: attested python fed tainted input is demoted
-    match exec(forge.manifest(), &py_hash, Input::File(Lane::Data)) {
+    match exec(assayer.manifest(), &py_hash, Input::File(Lane::Data)) {
         ExecOutcome::Run { lane, .. } => {
             assert_eq!(lane, Lane::Data);
             note("pilot: python evil.py -> demoted to data lane (laundering ban)");
@@ -144,7 +144,7 @@ fn main() -> anyhow::Result<()> {
         5,
         "kill fleet-wide — revoke python; pages vanish from the RUNNING cell",
     );
-    forge.revoke(&py_hash);
+    assayer.revoke(&py_hash);
     cell.revoke_tool(&py_hash)?;
     let probe = guest::prog_copy_byte(py_gpa as u16, kvm::SCRATCH);
     cell.vmm_mut().write_ram(kvm::ENTRY as usize, &probe)?;
@@ -154,7 +154,7 @@ fn main() -> anyhow::Result<()> {
         .contains(&GuestEvent::UnmappedRead { gpa: py_gpa }));
     assert_eq!(cell.vmm().read_ram(kvm::SCRATCH as usize, 1)?, [0x00]);
     note("guest probe of the old python GPA reads unmapped zeros — revocation reached a live cell");
-    match exec(forge.manifest(), &py_hash, Input::None) {
+    match exec(assayer.manifest(), &py_hash, Input::None) {
         ExecOutcome::Denied(e) => {
             note("and the manifest gate refuses it everywhere:");
             for line in e.to_json().lines() {
