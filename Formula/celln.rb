@@ -20,14 +20,14 @@ class Celln < Formula
            "--target", "x86_64-unknown-linux-musl"
     system "cargo", "+stable", "install", "--path", "crates/celln-cli", "--root", prefix,
            "--locked"
-    guest_bin = buildpath/"guest-bin"
-    system "cargo", "+stable", "install", "--path", "crates/celln-pilot", "--root", guest_bin,
+    system "cargo", "+stable", "build", "--release", "--package", "celln-pilot",
            "--target", "x86_64-unknown-linux-musl", "--bin", "celln-pilot", "--bin", "pilot-fetch",
            "--locked"
 
     pkgshare.install "scripts", "guest"
-    (pkgshare/"pilot").install guest_bin/"bin/celln-pilot"
-    (pkgshare/"pilot").install guest_bin/"bin/pilot-fetch"
+    guest_bin = buildpath/"target/x86_64-unknown-linux-musl/release"
+    (pkgshare/"pilot").install guest_bin/"celln-pilot"
+    (pkgshare/"pilot").install guest_bin/"pilot-fetch"
   end
 
   def caveats

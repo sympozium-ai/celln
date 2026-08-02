@@ -737,7 +737,25 @@ fn run_in_cell(
                     Some("program produced no output".into()),
                 );
             }
-            o.warn("the program produced no output — see the cell's console");
+            let detail = r
+                .console
+                .lines()
+                .find(|line| line.starts_with("pilot: exec "))
+                .unwrap_or("no pilot execution diagnostic");
+            o.warn(format!("the program produced no output — {detail}"));
+            o.note(format!(
+                "  {} guest console: {}",
+                dim("·"),
+                r.console
+                    .lines()
+                    .rev()
+                    .take(12)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
             Ok(crate::exit::ERROR)
         }
     }
