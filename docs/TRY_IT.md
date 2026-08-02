@@ -156,6 +156,63 @@ Nothing in the guest is enforcing this. The guest is root.
 
 ---
 
+## 6. Have a model write the code, and run it sealed
+
+Steps 2–4 stop at sealing. This is the path that actually executes something.
+
+```sh
+nous agent "print the first 100 primes, space separated"
+```
+
+```
+● asking anthropic (claude-opus-5) for a rust program that: print the first 100 primes, space separated
+  · waiting for claude (up to 90s; --timeout changes it)
+  · replied in 5s
+  · 23 lines of rust  /tmp/nous-agent-1844068/program.rs
+  + rebuilt, reproduced  blake3:c0d7ceb8…  436 KiB  tier=forged author=agent
+  · cell sealed, tools lent read-only
+  ✔ pilot: /agent/program permitted:data
+  ✔ pilot: /agent/program refused:collar-absent
+warning: pilot refused to run it: refused:collar-absent
+```
+
+**The refusal is the correct answer, and it is the interesting part.** The
+program was graded `forged` — `forge` rebuilt it twice and the bytes matched,
+so the tier was earned rather than asserted. It is still `author=agent`, and
+agent-authored code never carries tool-lane authority at any tier. Running it
+needs the per-exec collar, which does not exist yet.
+
+Compiling is not a way around that. `rustc` fed model-written source is
+`python` fed model-written source with the interpretation moved earlier.
+
+To watch it actually run while the collar is being built:
+
+```sh
+nous agent --trust-agent-code "print the first 100 primes, space separated"
+```
+
+```
+2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
+```
+
+**This is for computations, not questions.** A cell exists to contain code you
+would rather not run unsealed; if nothing executes, it has nothing to protect
+you from. It also has **no network at all**, so anything needing one will build
+and then do nothing — `nous agent` warns up front when a task looks like that.
+
+Pick who writes it, and see what this host can use:
+
+```sh
+nous agents
+nous agent --agent openai "…"        # or --agent local
+nous agent --show-source "…"         # print the program it wrote
+```
+
+Backends are subprocess adapters over CLIs you have already authenticated —
+`nous` never reads, stores, or forwards a key.
+
+---
+
 ## Piping
 
 Human on a terminal, NDJSON when not. No flag required:
@@ -181,6 +238,7 @@ Diagnostics and warnings go to **stderr**, so `| jq` never chokes on prose.
 ```sh
 nous demo     # the five-beat proof loop; works without KVM
 nous tools    # what this host has attested so far
+nous agents   # which model backends this host can use
 ```
 
 `nous demo` is the fastest way to see the whole idea, and it runs anywhere —
@@ -195,6 +253,8 @@ laptop, container, CI runner with no virtualization at all.
 | `/dev/kvm not present` | Virtualization off in firmware, or a VM without nested virt |
 | `/dev/kvm present but not readable` | `sudo usermod -aG kvm $USER`, then log out and in |
 | `no readable /boot/vmlinuz-*` | Only affects the boot-path demos, not `nous run` |
+| `anthropic needs \`claude\` on PATH` | `nous agent` drives a CLI you have already logged into — see `nous agents` |
+| `reported error_during_execution` | The model CLI failed, not nous. Some prompts trigger it every time; rewording helps more than retrying |
 
 ---
 

@@ -37,7 +37,10 @@ of the design corpus in `docs/`.
 
 - Trust core (no I/O): `crates/nous-manifest`
 - Store: `crates/nous-store`
-- Tiered resolution + CLI: `crates/assay`
+- Cell spec parsing + validation: `crates/nous-spec`
+- Grading, tiered resolution + CLI: `crates/assay`
+- Build plane (rebuild + reproduce): `crates/forge`
+- The `nous` CLI users actually run: `crates/nous-cli`
 - Ratchet + VMM trait/backends: `crates/warden` (`vmm/kvm.rs` real KVM,
   `vmm/boot.rs` stock-kernel boot)
 - Exec gate + lanes + explain + demos: `crates/pilot`
