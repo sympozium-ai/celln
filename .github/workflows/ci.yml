@@ -35,9 +35,9 @@ jobs:
           $BIN spec check /tmp/agent.toml --no-json
           $BIN demo --no-json
           # exit 3 == "cannot seal cells", which is correct here, not a failure.
-          # Capture $? immediately: after the first `test` it is that test's
-          # result, not doctor's.
-          $BIN doctor -q; code=$?
+          # `if` is deliberate: GitHub invokes bash with `-e`, while exit 3
+          # correctly means this runner cannot seal cells.
+          if $BIN doctor -q; then code=0; else code=$?; fi
           test "$code" -eq 0 -o "$code" -eq 3
           # and the pipe contract holds
           $BIN demo --json | jq -e 'select(.event=="beat")' > /dev/null
