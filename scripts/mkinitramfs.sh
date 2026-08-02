@@ -57,7 +57,23 @@ if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-mus
   printf 'attested binary bytes, not an interpreter\n'          > "$work/nous/tools/ls"
   printf 'code the agent wrote, never attested\n'               > "$work/nous/tools/agent-script"
 
+  # A caller that has already attested its own artifacts hands us the manifest
+  # and the run request, and we only pack them. Attestation is not a packaging
+  # step: doing it here would mean `nous agent` needed a cargo toolchain and a
+  # source tree at run time, which is not something an installed binary has.
+  if [ -n "${NOUS_MANIFEST:-}" ]; then
+    cp "$NOUS_MANIFEST" "$work/nous/manifest.json"
+    [ -n "${NOUS_RUN_JSON:-}" ] && cp "$NOUS_RUN_JSON" "$work/nous/run.json"
+    # The demo tools below belong to the demo, not to a real agent cell.
+    rm -f "$work/nous/tools/python" "$work/nous/tools/ls" "$work/nous/tools/agent-script"
+    printf 'manifest: supplied by caller (%s entr%s)\n' \
+      "$(grep -c '"alias"' "$work/nous/manifest.json")" \
+      "$([ "$(grep -c '"alias"' "$work/nous/manifest.json")" = 1 ] && echo y || echo ies)"
+    packed_manifest=1
+  fi
+
   store="$(mktemp -d)"
+  if [ -z "${packed_manifest:-}" ]; then
   ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
       preforge /usr/bin/python "$work/nous/tools/python" --interpreter >/dev/null )
   ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
@@ -96,6 +112,7 @@ JSON
   fi
 
   cp "$store/manifest.json" "$work/nous/manifest.json"
+  fi
   rm -rf "$store"
   printf 'pilot:    staged (static musl) with a %s-entry manifest\n' \
     "$(grep -o '"alias"' "$work/nous/manifest.json" | wc -l)"

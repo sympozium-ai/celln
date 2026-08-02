@@ -98,6 +98,10 @@ enum Cmd {
         #[arg(long)]
         show_source: bool,
 
+        /// Seconds to wait for the model before giving up.
+        #[arg(long, default_value = "300")]
+        timeout: u64,
+
         /// Which model writes it. See `nous agents`.
         #[arg(long, value_enum, default_value = "anthropic")]
         agent: agent::Backend,
@@ -176,12 +180,14 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             model,
             trust_agent_code,
             show_source,
+            timeout,
         } => agent::agent(
             task,
             *agent,
             model.as_deref(),
             *trust_agent_code,
             *show_source,
+            *timeout,
             o,
         ),
         Cmd::Agents => agent::agents(o),

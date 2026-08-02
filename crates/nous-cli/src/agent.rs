@@ -23,7 +23,9 @@
 use crate::out::{bold, dim, green, Out};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// What we ask for. Constrained hard on purpose: one file, no dependencies,
 /// answer on stdout. A program with a build system is a supply chain, and the
@@ -172,6 +174,7 @@ pub fn agent(
     model: Option<&str>,
     trust_agent_code: bool,
     show_source: bool,
+    timeout: u64,
     o: &Out,
 ) -> Result<u8> {
     let root = repo_root()?;
@@ -198,7 +201,19 @@ pub fn agent(
             task
         ),
     );
-    let source = ask_model(backend, model, &BRIEF.replace("%TASK%", task))?;
+    o.note(format!(
+        "  {} waiting for {} (up to {}s; --timeout changes it)",
+        dim("·"),
+        backend.program(),
+        timeout
+    ));
+    let started = Instant::now();
+    let source = ask_model(backend, model, &BRIEF.replace("%TASK%", task), timeout)?;
+    o.note(format!(
+        "  {} replied in {:.0}s",
+        dim("·"),
+        started.elapsed().as_secs_f32()
+    ));
     let src_path = work.join("program.rs");
     std::fs::write(&src_path, &source)?;
     o.note(format!(
@@ -233,18 +248,58 @@ pub fn agent(
         eprintln!("{}", String::from_utf8_lossy(&out.stderr));
         return Ok(1);
     }
-    let bytes = std::fs::metadata(&bin)?.len();
-    let hash = nous_manifest::Hash::of(&std::fs::read(&bin)?);
+    // Forge it here, with the library, rather than reporting an attestation a
+    // shell script performs later. Printing "forged" from a bare hash of the
+    // file was a claim about work that had not happened yet, and nothing would
+    // have caught the two disagreeing.
+    let code = std::fs::read(&bin)?;
+    let bytes = code.len() as u64;
+    let author = if trust_agent_code {
+        nous_manifest::Author::Host
+    } else {
+        nous_manifest::Author::Agent
+    };
+    let store = work.join("store");
+    std::fs::create_dir_all(&store)?;
+    let mut forge = forgectl::Forge::open(&store).context("opening the tool store")?;
+    let hash = forge
+        .preforge_authored(ALIAS, &code, false, author)
+        .context("forging the generated program")?;
+    let entry = forge
+        .manifest()
+        .get(&hash)
+        .context("forged entry missing from the manifest")?;
     o.event(
         "agent_forged",
-        serde_json::json!({ "hash": hash.0, "bytes": bytes, "tier": "forged" }),
+        serde_json::json!({
+            "hash": hash.0,
+            "bytes": bytes,
+            "tier": entry.tier.to_string(),
+            "author": entry.author.to_string(),
+        }),
         format!(
-            "  {} forged  {}  {} KiB",
+            "  {} forged  {}  {} KiB  tier={} author={}",
             green("+"),
             dim(&hash.0),
-            bytes / 1024
+            bytes / 1024,
+            entry.tier,
+            entry.author
         ),
     );
+
+    // What the cell is asked to run. Written here for the same reason: the
+    // request and the manifest it is checked against should come from one
+    // place.
+    let run_json = work.join("run.json");
+    std::fs::write(
+        &run_json,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "path": format!("/tools/{}", bin.file_name().unwrap().to_string_lossy()),
+            "alias": ALIAS,
+            "args": [],
+            "agent_authored_input": false,
+        }))?,
+    )?;
 
     // ── 3. seal it into a tool filesystem, and stage the manifest ────────
     //
@@ -256,19 +311,23 @@ pub fn agent(
         "32".into(),
         bin.display().to_string(),
     ])?;
-    let mut env = vec![
-        ("NOUS_RUN_PROG", bin.display().to_string()),
-        ("NOUS_RUN_ALIAS", ALIAS.into()),
-    ];
     if trust_agent_code {
         // Explicit, and named for what it actually does. The default is the
         // correct one; this exists so the substrate stays demonstrable while
         // the collar is being built, not as a convenience.
         o.warn("--trust-agent-code: running agent-authored code in the tool lane");
-    } else {
-        env.push(("NOUS_RUN_AGENT_AUTHORED", "1".into()));
     }
-    sh_env(&root, "scripts/mkinitramfs.sh", &[], &env)?;
+    // The script now only packs what it is handed. Attestation is not a
+    // packaging step, and it should not need a cargo toolchain at run time.
+    sh_env(
+        &root,
+        "scripts/mkinitramfs.sh",
+        &[],
+        &[
+            ("NOUS_MANIFEST", store.join("manifest.json").display().to_string()),
+            ("NOUS_RUN_JSON", run_json.display().to_string()),
+        ],
+    )?;
 
     // ── 4. seal a cell and run it ────────────────────────────────────────
     run_in_cell(&root, o)
@@ -381,13 +440,68 @@ fn slice_output(console: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.replace("\r\n", "\n"))
 }
 
+/// Run a child with a wall-clock deadline, draining both pipes as it goes.
+///
+/// `Command::output()` blocks forever, which is how "write a web crawler" looked
+/// like a deadlock: these CLIs run a full agent loop and can take minutes. The
+/// pipes are drained on threads rather than after exit, because a chatty CLI
+/// (codex echoes the whole prompt) can fill a 64 KiB pipe buffer and deadlock
+/// against a parent that is waiting to reap it first.
+fn output_deadline(mut cmd: Command, limit: Duration) -> Result<std::process::Output> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("could not start it — is it installed and on PATH?")?;
+    let mut so = child.stdout.take().expect("piped");
+    let mut se = child.stderr.take().expect("piped");
+    let t_out = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = so.read_to_end(&mut v);
+        v
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = se.read_to_end(&mut v);
+        v
+    });
+
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if start.elapsed() >= limit {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "no answer after {}s — it may still have been working. \
+                 Raise the ceiling with --timeout, or ask for something smaller",
+                limit.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: t_out.join().unwrap_or_default(),
+        stderr: t_err.join().unwrap_or_default(),
+    })
+}
+
 /// Shell out to whichever provider CLI was selected.
-fn ask_model(backend: Backend, model: Option<&str>, prompt: &str) -> Result<String> {
+fn ask_model(
+    backend: Backend,
+    model: Option<&str>,
+    prompt: &str,
+    timeout: u64,
+) -> Result<String> {
     let program = backend.program();
-    let out = backend
-        .command(prompt, model)
-        .output()
-        .with_context(|| format!("running `{program}` — is it installed and logged in?"))?;
+    // Context names the program; the inner error says what went wrong. Wrapping
+    // a timeout in "is it installed?" sends you to debug the wrong thing.
+    let out = output_deadline(backend.command(prompt, model), Duration::from_secs(timeout))
+        .with_context(|| format!("`{program}`"))?;
     if !out.status.success() {
         bail!(
             "{program} exited {}: {}",
