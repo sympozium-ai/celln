@@ -16,7 +16,7 @@ mock = []
 kvm = ["dep:kvm-ioctls", "dep:kvm-bindings", "dep:libc"]
 
 [dependencies]
-nous-manifest = { path = "../nous-manifest" }
+nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
 thiserror.workspace = true
 kvm-ioctls = { workspace = true, optional = true }
 kvm-bindings = { workspace = true, optional = true }

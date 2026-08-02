@@ -48,10 +48,10 @@ name = "pilot"
 path = "src/lib.rs"
 
 [dependencies]
-nous-manifest = { path = "../nous-manifest" }
-nous-store = { path = "../nous-store" }
-assay = { path = "../assay" }
-warden = { path = "../warden" }
+nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
+nous-store = { version = "0.3.0", path = "../nous-store" }
+assay = { version = "0.3.0", path = "../assay" }
+warden = { version = "0.3.0", path = "../warden" }
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -8,6 +8,6 @@ repository.workspace = true
 description = "The build plane: rebuilds an artifact from source and proves the bytes match."
 
 [dependencies]
-nous-manifest = { path = "../nous-manifest" }
+nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
 serde.workspace = true
 thiserror.workspace = true

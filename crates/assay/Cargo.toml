@@ -16,9 +16,9 @@ name = "assay"
 path = "src/lib.rs"
 
 [dependencies]
-nous-manifest = { path = "../nous-manifest" }
-forge = { path = "../forge" }
-nous-store = { path = "../nous-store" }
+nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
+forge = { version = "0.3.0", path = "../forge" }
+nous-store = { version = "0.3.0", path = "../nous-store" }
 clap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

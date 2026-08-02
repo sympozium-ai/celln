@@ -12,13 +12,13 @@ name = "celln"
 path = "src/main.rs"
 
 [dependencies]
-nous-spec = { path = "../nous-spec" }
-nous-manifest = { path = "../nous-manifest" }
-nous-store = { path = "../nous-store" }
-assay = { path = "../assay" }
-forge = { path = "../forge" }
-pilot = { path = "../pilot" }
-warden = { path = "../warden" }
+nous-spec = { version = "0.3.0", path = "../nous-spec" }
+nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
+nous-store = { version = "0.3.0", path = "../nous-store" }
+assay = { version = "0.3.0", path = "../assay" }
+forge = { version = "0.3.0", path = "../forge" }
+pilot = { version = "0.3.0", path = "../pilot" }
+warden = { version = "0.3.0", path = "../warden" }
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -33,4 +33,4 @@ libc.workspace = true
 # else `nous` still validates specs and runs the mock proof, and says so rather
 # than pretending.
 [target.'cfg(target_os = "linux")'.dependencies]
-warden = { path = "../warden", features = ["kvm"] }
+warden = { version = "0.3.0", path = "../warden", features = ["kvm"] }
