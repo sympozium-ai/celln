@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
 
     // Shipped inventory: python is pre-forged (Tier 1). This is what makes the
     // common path never cold.
-    let py_hash = assayer.admit_forged("/usr/bin/python", b"cpython-3.13-bytes", true)?;
+    let py_hash = assayer.admit_verified("/usr/bin/python", b"cpython-3.13-bytes", true)?;
 
     // ---- beat 1: seal from intent ----
     beat(

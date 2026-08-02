@@ -16,6 +16,7 @@ nous-spec = { path = "../nous-spec" }
 nous-manifest = { path = "../nous-manifest" }
 nous-store = { path = "../nous-store" }
 assay = { path = "../assay" }
+forge = { path = "../forge" }
 pilot = { path = "../pilot" }
 warden = { path = "../warden" }
 anyhow.workspace = true

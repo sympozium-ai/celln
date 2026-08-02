@@ -78,6 +78,7 @@ mod tests {
             tier: Tier::Forged,
             interpreter: interp,
             author: nous_manifest::Author::Host,
+            recipe: None,
         });
         (m, h)
     }

@@ -5,9 +5,12 @@
 //! a tool resolves warm → Verified (seconds) → Forged (async, background), and
 //! the tier actually served is recorded.
 //!
-//! The hermetic build farm is out of scope for the POC, so "forging" here is
-//! simulated: we mark an artifact as upgradeable and expose `upgrade_to_forged`
-//! to model the background rebuild landing. No KVM, fully tested.
+//! The assayer grades; it does not build. When a caller wants the `Forged`
+//! tier it must bring a [`forge::Proof`] that an independent rebuild produced
+//! the same bytes, and the assayer checks that proof is about the bytes in
+//! hand before recording anything. A rebuild that did not reproduce is graded
+//! `Verified` instead — we still hold the artifact, we just cannot claim it
+//! was reproduced. No KVM, fully tested.
 
 use nous_manifest::{Author, Entry, Hash, Manifest, Tier};
 use nous_store::Store;
@@ -38,6 +41,8 @@ pub struct Resolved {
 pub enum AssayError {
     #[error(transparent)]
     Store(#[from] nous_store::StoreError),
+    #[error("the build proof is for different bytes than the ones being admitted")]
+    ProofMismatch,
 }
 
 impl Assayer {
@@ -70,37 +75,71 @@ impl Assayer {
         &self.manifest
     }
 
-    /// Pre-assayer an artifact (Tier 1). Models shipped inventory + completed
-    /// background builds. Stores the bytes and admits a Forged manifest entry.
-    pub fn admit_forged(
+    /// Admit bytes we did **not** build, at `Verified`.
+    ///
+    /// This is the honest tier for an upstream binary: we have it, we hashed
+    /// it, nobody rebuilt it. It used to be spelled `admit_forged`, which
+    /// claimed a rebuild that never happened.
+    pub fn admit_verified(
         &mut self,
         alias: &str,
         bytes: &[u8],
         interpreter: bool,
     ) -> Result<Hash, AssayError> {
-        self.admit_forged_authored(alias, bytes, interpreter, Author::Host)
+        let hash = self.store.put(bytes)?;
+        self.manifest.admit(Entry {
+            alias: alias.into(),
+            hash: hash.clone(),
+            tier: Tier::Verified,
+            interpreter,
+            author: Author::Host,
+            recipe: None,
+        });
+        self.manifest.sign_standin();
+        let _ = self.persist();
+        Ok(hash)
     }
 
-    /// Pre-assayer, naming who wrote the source.
+    /// Admit an artifact the build plane actually rebuilt.
     ///
-    /// Forging agent-authored source is a normal thing to do — it is how we get
-    /// a reproducible artifact out of something a model wrote. It just must not
-    /// also grant tool-lane authority, which is why the author rides along in
-    /// the manifest rather than being forgotten at the build step.
+    /// The assayer does not take the caller's word for the tier. It checks the
+    /// proof is about *these* bytes, then grades on what the proof says
+    /// happened: a rebuild that reproduced earns `Forged` and records the
+    /// recipe it reproduced from; one that did not is admitted at `Verified`,
+    /// because we still hold the bytes but can no longer claim they were
+    /// reproduced.
+    ///
+    /// Forging agent-authored source is a normal thing to do — it is how a
+    /// reproducible artifact comes out of something a model wrote. It just must
+    /// not also grant tool-lane authority, which is why the author rides along
+    /// in the manifest rather than being forgotten at the build step.
     pub fn admit_forged_authored(
         &mut self,
         alias: &str,
         bytes: &[u8],
         interpreter: bool,
         author: Author,
+        proof: &forge::Proof,
     ) -> Result<Hash, AssayError> {
+        // A proof about other bytes proves nothing about these. Without this
+        // the mechanism is decorative: anyone could carry a good proof
+        // alongside a different binary.
+        if proof.artifact != Hash::of(bytes) {
+            return Err(AssayError::ProofMismatch);
+        }
+        let (tier, recipe) = if proof.reproduced {
+            (Tier::Forged, Some(proof.recipe.clone()))
+        } else {
+            (Tier::Verified, None)
+        };
         let hash = self.store.put(bytes)?;
         self.manifest.admit(Entry {
             alias: alias.into(),
             hash: hash.clone(),
-            tier: Tier::Forged,
+            tier,
             interpreter,
             author,
+            recipe,
         });
         self.manifest.sign_standin();
         let _ = self.persist();
@@ -138,6 +177,7 @@ impl Assayer {
             tier: Tier::Verified,
             interpreter,
             author: Author::Host,
+            recipe: None,
         });
         self.manifest.sign_standin();
         let _ = self.persist();
@@ -166,6 +206,7 @@ impl Assayer {
             tier: Tier::Unsealed,
             interpreter,
             author: Author::Host,
+            recipe: None,
         });
         self.manifest.sign_standin();
         let _ = self.persist();
@@ -214,15 +255,44 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut assayer = Assayer::open(dir.path()).unwrap();
         assayer
-            .admit_forged("/usr/bin/python", b"python-bytes", true)
+            .admit_verified("/usr/bin/python", b"python-bytes", true)
             .unwrap();
 
         let r = assayer
             .resolve("/usr/bin/python", b"python-bytes", true)
             .unwrap();
         assert!(r.warm);
-        assert_eq!(r.tier, Tier::Forged);
+        // Whatever tier it was admitted at comes back unchanged — a warm hit
+        // maps pages and does not re-grade or rebuild anything.
+        assert_eq!(r.tier, Tier::Verified);
         assert!(!r.upgrade_queued);
+    }
+
+    #[test]
+    fn a_proof_for_other_bytes_is_refused() {
+        // The check that keeps the mechanism from being decorative: a valid
+        // proof carried alongside a different binary must not admit it.
+        let d = std::env::temp_dir().join(format!("assay-proof-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let mut a = Assayer::open(&d).unwrap();
+        let (bytes, proof) =
+            forge::build_and_verify(b"fn main() { println!(\"ok\"); }", &d.join("f")).unwrap();
+        assert!(proof.reproduced);
+
+        let other = [bytes.as_slice(), b"x"].concat();
+        assert!(matches!(
+            a.admit_forged_authored("/bin/other", &other, false, Author::Host, &proof),
+            Err(AssayError::ProofMismatch)
+        ));
+
+        // And the honest bytes do earn Forged, with the recipe recorded.
+        let h = a
+            .admit_forged_authored("/bin/ok", &bytes, false, Author::Host, &proof)
+            .unwrap();
+        let e = a.manifest().get(&h).unwrap();
+        assert_eq!(e.tier, Tier::Forged);
+        assert!(e.recipe.is_some(), "an earned tier records what it was earned from");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
@@ -260,7 +330,7 @@ mod tests {
     fn revoked_hash_is_not_served_warm() {
         let dir = tempdir().unwrap();
         let mut assayer = Assayer::open(dir.path()).unwrap();
-        let h = assayer.admit_forged("/usr/bin/curl", b"curl", false).unwrap();
+        let h = assayer.admit_verified("/usr/bin/curl", b"curl", false).unwrap();
         assayer.revoke(&h);
         // resolving again must not return the revoked warm entry; it re-admits
         // fresh bytes at Verified instead.
@@ -272,7 +342,7 @@ mod tests {
     fn manifest_stays_signed_after_mutations() {
         let dir = tempdir().unwrap();
         let mut assayer = Assayer::open(dir.path()).unwrap();
-        assayer.admit_forged("/usr/bin/python", b"py", true).unwrap();
+        assayer.admit_verified("/usr/bin/python", b"py", true).unwrap();
         assert!(assayer.manifest().verify_standin());
         assayer.resolve("/x", b"xbytes", false).unwrap();
         assert!(assayer.manifest().verify_standin());

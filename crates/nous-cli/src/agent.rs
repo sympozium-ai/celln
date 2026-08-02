@@ -231,29 +231,23 @@ pub fn agent(
     // Static musl: the cell carries no libc and no loader, so a dynamically
     // linked binary would have nothing to link against. It also means the
     // thing we hash is the entire program.
+    // The build plane builds it — twice, in different directories — and the
+    // assayer grades on whether those agreed. Nothing here asserts a tier.
+    let (code, proof) = match forge::build_and_verify(source.as_bytes(), &work.join("forge")) {
+        Ok(v) => v,
+        Err(forge::ForgeError::Build(stderr)) => {
+            // A model writing code that does not compile is a normal outcome,
+            // not an internal error — say so with the compiler's own words.
+            o.warn("the generated program does not compile");
+            eprintln!("{stderr}");
+            return Ok(1);
+        }
+        Err(e) => return Err(e.into()),
+    };
     let bin = work.join("program");
-    let out = Command::new("rustc")
-        .args(["--edition", "2021", "-O", "-C", "strip=symbols"])
-        .args(["--target", "x86_64-unknown-linux-musl"])
-        .args(["-C", "target-feature=+crt-static"])
-        .arg("-o")
-        .arg(&bin)
-        .arg(&src_path)
-        .output()
-        .context("running rustc")?;
-    if !out.status.success() {
-        // The model wrote code that does not compile. That is a normal
-        // outcome, not an internal error — say so with the compiler's words.
-        o.warn("the generated program does not compile");
-        eprintln!("{}", String::from_utf8_lossy(&out.stderr));
-        return Ok(1);
-    }
-    // Forge it here, with the library, rather than reporting an attestation a
-    // shell script performs later. Printing "forged" from a bare hash of the
-    // file was a claim about work that had not happened yet, and nothing would
-    // have caught the two disagreeing.
-    let code = std::fs::read(&bin)?;
+    std::fs::write(&bin, &code)?;
     let bytes = code.len() as u64;
+
     let author = if trust_agent_code {
         nous_manifest::Author::Host
     } else {
@@ -263,12 +257,12 @@ pub fn agent(
     std::fs::create_dir_all(&store)?;
     let mut assayer = assay::Assayer::open(&store).context("opening the tool store")?;
     let hash = assayer
-        .admit_forged_authored(ALIAS, &code, false, author)
-        .context("forging the generated program")?;
+        .admit_forged_authored(ALIAS, &code, false, author, &proof)
+        .context("admitting the generated program")?;
     let entry = assayer
         .manifest()
         .get(&hash)
-        .context("forged entry missing from the manifest")?;
+        .context("admitted entry missing from the manifest")?;
     o.event(
         "agent_forged",
         serde_json::json!({
@@ -276,10 +270,14 @@ pub fn agent(
             "bytes": bytes,
             "tier": entry.tier.to_string(),
             "author": entry.author.to_string(),
+            "reproduced": proof.reproduced,
+            "recipe": entry.recipe.as_ref().map(|r| r.0.clone()),
+            "toolchain": proof.toolchain,
         }),
         format!(
-            "  {} forged  {}  {} KiB  tier={} author={}",
+            "  {} {}  {}  {} KiB  tier={} author={}",
             green("+"),
+            if proof.reproduced { "rebuilt, reproduced" } else { "rebuilt, DID NOT reproduce" },
             dim(&hash.0),
             bytes / 1024,
             entry.tier,
@@ -288,41 +286,48 @@ pub fn agent(
     );
 
     // What the cell is asked to run. Written here for the same reason: the
-    // request and the manifest it is checked against should come from one
-    // place.
+    // request and the manifest it is checked against come from one place.
     let run_json = work.join("run.json");
     std::fs::write(
         &run_json,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "path": format!("/tools/{}", bin.file_name().unwrap().to_string_lossy()),
+            "path": "/tools/program",
             "alias": ALIAS,
             "args": [],
             "agent_authored_input": false,
         }))?,
     )?;
 
-    // ── 3. seal it into a tool filesystem, and stage the manifest ────────
-    //
-    // Both scripts, because both artifacts have to be built before the cell
-    // exists: the image is lent read-only, so nothing can be added to it from
-    // the inside, and the manifest has to name the hash before pilot boots.
-    sh(&root, "scripts/mktoolfs.sh", &[
-        "target/nous-toolfs.img".into(),
-        "32".into(),
-        bin.display().to_string(),
-    ])?;
     if trust_agent_code {
         // Explicit, and named for what it actually does. The default is the
         // correct one; this exists so the substrate stays demonstrable while
         // the collar is being built, not as a convenience.
         o.warn("--trust-agent-code: running agent-authored code in the tool lane");
     }
+    // Seal the binary into the tool filesystem. This has to be the same bytes
+    // the assayer just graded — when it was accidentally left out, the image
+    // still held the previous run's program and pilot refused it as
+    // unattested, which is exec-by-hash doing precisely its job.
+    // Into this run's own scratch, not target/. Those paths are the demo and
+    // boot-test fixtures; writing there made `cargo test` depend on whether
+    // anyone had run `nous agent` first, and would race two concurrent runs.
+    let toolfs = work.join("toolfs.img");
+    sh(
+        &root,
+        "scripts/mktoolfs.sh",
+        &[
+            toolfs.display().to_string(),
+            "32".into(),
+            bin.display().to_string(),
+        ],
+    )?;
     // The script now only packs what it is handed. Attestation is not a
     // packaging step, and it should not need a cargo toolchain at run time.
+    let initrd = work.join("initramfs.cpio");
     sh_env(
         &root,
         "scripts/mkinitramfs.sh",
-        &[],
+        &[initrd.display().to_string()],
         &[
             ("NOUS_MANIFEST", store.join("manifest.json").display().to_string()),
             ("NOUS_RUN_JSON", run_json.display().to_string()),
@@ -330,11 +335,11 @@ pub fn agent(
     )?;
 
     // ── 4. seal a cell and run it ────────────────────────────────────────
-    run_in_cell(&root, o)
+    run_in_cell(&toolfs, &initrd, o)
 }
 
 #[cfg(target_os = "linux")]
-fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
+fn run_in_cell(toolfs: &Path, initrd: &Path, o: &Out) -> Result<u8> {
     use warden::vmm::boot::{BootConfig, LinuxCell};
 
     if !Path::new("/dev/kvm").exists() {
@@ -344,12 +349,10 @@ fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
     let kernel = BootConfig::host_kernel()
         .context("no readable /boot/vmlinuz-* with matching /lib/modules")?;
 
-    let toolfs = root.join("target/nous-toolfs.img");
-    let payload = std::fs::read(&toolfs)?;
-    let mut cfg = BootConfig::new(&kernel).with_pmem(payload.len());
-    if let Some(initrd) = BootConfig::built_initramfs() {
-        cfg = cfg.with_initrd(initrd);
-    }
+    let payload = std::fs::read(toolfs)?;
+    let cfg = BootConfig::new(&kernel)
+        .with_pmem(payload.len())
+        .with_initrd(initrd);
 
     let mut cell = LinuxCell::boot(cfg)?;
     let h = nous_manifest::Hash::of(&payload);
@@ -426,7 +429,7 @@ fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_in_cell(_root: &Path, o: &Out) -> Result<u8> {
+fn run_in_cell(_toolfs: &Path, _initrd: &Path, o: &Out) -> Result<u8> {
     o.warn("sealing cells needs Linux with /dev/kvm");
     Ok(3)
 }

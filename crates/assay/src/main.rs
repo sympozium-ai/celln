@@ -27,7 +27,7 @@ struct Cli {
 enum Cmd {
     /// Initialise an empty store.
     Init,
-    /// Admit a tool at the Forged tier: `admit /usr/bin/python ./python [--interpreter]`.
+    /// Admit bytes we hold but did not build, at Verified.
     Admit {
         alias: String,
         file: PathBuf,
@@ -47,6 +47,21 @@ enum Cmd {
     },
     /// Run one queued background rebuild (Verified -> Forged).
     Rebuild,
+    /// Build from source and admit at Forged — but only if it reproduces.
+    ///
+    /// The tier is earned here rather than asserted: the source is compiled
+    /// twice in different directories and the bytes compared. A build that
+    /// does not reproduce is still admitted, at Verified.
+    Forge {
+        alias: String,
+        /// A single Rust source file.
+        source: PathBuf,
+        #[arg(long)]
+        interpreter: bool,
+        /// The source was written by an agent, not the host operator.
+        #[arg(long)]
+        agent_authored: bool,
+    },
     /// Revoke a hash fleet-wide.
     Revoke { hash: String },
     /// Print manifest status.
@@ -72,15 +87,43 @@ fn main() -> Result<()> {
             } else {
                 nous_manifest::Author::Host
             };
+            let _ = author;
             let bytes = std::fs::read(&file)?;
-            let h = assayer.admit_forged_authored(&alias, &bytes, interpreter, author)?;
-            println!("admitted {alias}\n  {h}\n  tier=forged author={author}");
-            // The tier is a claim about how these bytes were produced. In this
-            // POC nothing rebuilt them, so say so where the claim is made
-            // rather than only in a document nobody has open.
-            eprintln!(
-                "note: the hermetic build plane is simulated — Forged is asserted here, not earned"
+            let h = assayer.admit_verified(&alias, &bytes, interpreter)?;
+            println!("admitted {alias}\n  {h}\n  tier=verified author=host");
+            // Verified, not Forged, and the difference is the whole point: we
+            // have these bytes and hashed them, but nothing rebuilt them. Use
+            // `assay forge` when the source is available and the tier should
+            // be earned.
+            eprintln!("note: not rebuilt — use `assay forge <alias> <source.rs>` to earn Forged");
+        }
+        Cmd::Forge {
+            alias,
+            source,
+            interpreter,
+            agent_authored,
+        } => {
+            let author = if agent_authored {
+                nous_manifest::Author::Agent
+            } else {
+                nous_manifest::Author::Host
+            };
+            let src = std::fs::read(&source)?;
+            let scratch = std::env::temp_dir().join(format!("assay-forge-{}", std::process::id()));
+            let (bytes, proof) = forge::build_and_verify(&src, &scratch)?;
+            let _ = std::fs::remove_dir_all(&scratch);
+            let h = assayer.admit_forged_authored(&alias, &bytes, interpreter, author, &proof)?;
+            let entry = assayer.manifest().get(&h).expect("just admitted");
+            println!(
+                "forged {alias}\n  {h}\n  tier={} author={} reproduced={}",
+                entry.tier, entry.author, proof.reproduced
             );
+            match &entry.recipe {
+                Some(r) => println!("  recipe {r}\n  {}", proof.toolchain),
+                None => eprintln!(
+                    "note: the rebuild did not reproduce — graded Verified, not Forged"
+                ),
+            }
         }
         Cmd::Resolve {
             alias,

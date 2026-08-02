@@ -48,7 +48,7 @@ Plain, humble, lowercase role-names. They can be renamed into a themed set at br
 | **warden** | Per-cell VMM. A thin, jailed userspace process that wraps and drives exactly one microVM (one cell). Holds the KVM fds, vsock, and sealed page maps; enforces the authority ratchet. Jailed so an escaped agent lands inside a process that has nothing. | host · unprivileged · one per cell |
 | **pilot** | Cell supervisor. PID 1 inside the mote. The tool-call ABI, the shell-as-parser, the taint tracker, and the toolplane binary — one static binary that replaces init, shell, coreutils, and package manager. | guest · baked into every mote |
 
-Relationship: **assay** owns the motes and the tools; **warden** turns one mote into one cell and steers its microVM; **pilot** runs inside and speaks to the workload. One warden : one microVM : one cell, always 1:1:1.
+Relationship: **forge** rebuilds an artifact and proves it reproduced; **assay** grades what forge reports and owns the motes and the tools; **warden** turns one mote into one cell and steers its microVM; **pilot** runs inside and speaks to the workload. One warden : one microVM : one cell, always 1:1:1.
 
 ---
 

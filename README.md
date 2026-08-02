@@ -107,7 +107,7 @@ $ nous agent "print the first 100 primes, space separated"
   · waiting for claude (up to 300s; --timeout changes it)
   · replied in 5s
   · 23 lines of rust  /tmp/nous-agent-1844068/program.rs
-  + forged  blake3:df56aae49f18114d8f0ae57f9e6ec03b3dc6670c664191cb35733bec4d7e4949  436 KiB  tier=forged author=agent
+  + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:data
   ✔ pilot: /agent/program refused:collar-absent
@@ -134,17 +134,21 @@ warning: --trust-agent-code: running agent-authored code in the tool lane
 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
 ```
 
-The model writes the program **on the host**; `rustc` builds it static; `assay`
-grades the bytes it actually built and records who wrote them; the binary is
-sealed into the cell as read-only memory; and pilot re-hashes it in the guest
-and decides for itself. Under DAX there is no page-cache copy, so the
-instructions the guest executes *are* the host's pages.
+The model writes the program **on the host**; `forge` compiles it **twice, in
+different directories**, and compares the bytes; `assay` grades on what that
+rebuild reported and records who wrote it; the binary is sealed into the cell as
+read-only memory; and pilot re-hashes it in the guest and decides for itself.
+Under DAX there is no page-cache copy, so the instructions the guest executes
+*are* the host's pages.
 
-> **The `forged` tier is asserted, not earned.** The hermetic build plane is
-> simulated in this POC — nothing rebuilds an artifact from source and compares.
-> `assay` records the grade it was told; it does not verify it. That is why the
-> component is named for an assay office rather than a forge: it determines what
-> bytes *are* and stamps a grade, and claims nothing about having made them.
+> **`forged` is earned here, not asserted.** A rebuild that reproduces earns the
+> tier and records the recipe it reproduced from; one that does not is graded
+> `verified` instead — we still hold the bytes, we just cannot claim they were
+> reproduced. `assay` checks the proof is about the bytes in hand before
+> recording anything, so a good proof cannot be carried alongside a different
+> binary. Scope: this proves reproducibility *on this machine with this
+> toolchain*, not that anyone anywhere gets the same bytes
+> ([ADR-0008](docs/decisions/0008-the-forged-tier-is-earned.md)).
 
 Pick who writes it — `nous agents` shows what this host can use:
 
@@ -208,7 +212,7 @@ Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 |---|---|
 | The five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) |
 | What is proven, and what is not | [docs/findings/](docs/findings/) |
-| Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0007 |
+| Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0008 |
 | Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
 | Working on nouscell itself | [AGENTS.md](AGENTS.md), then `make help` |
 

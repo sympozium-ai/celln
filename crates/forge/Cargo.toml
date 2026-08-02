@@ -1,0 +1,13 @@
+[package]
+name = "forge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The build plane: rebuilds an artifact from source and proves the bytes match."
+
+[dependencies]
+nous-manifest = { path = "../nous-manifest" }
+serde.workspace = true
+thiserror.workspace = true

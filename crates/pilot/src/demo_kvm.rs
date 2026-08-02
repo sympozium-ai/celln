@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     // Shipped inventory: "python" is pre-forged. Its bytes are real guest code
     // (write 0x99 to scratch, halt) so the cell can execute the sealed page.
     let py_bytes = guest::tool_stub(kvm::SCRATCH, 0x99);
-    let py_hash = assayer.admit_forged("/usr/bin/python", &py_bytes, true)?;
+    let py_hash = assayer.admit_verified("/usr/bin/python", &py_bytes, true)?;
     let snapshot = "mote:bare+python";
 
     // ---- beat 1: seal from intent — fork a real microVM, timed ----

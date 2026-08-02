@@ -17,6 +17,7 @@ path = "src/lib.rs"
 
 [dependencies]
 nous-manifest = { path = "../nous-manifest" }
+forge = { path = "../forge" }
 nous-store = { path = "../nous-store" }
 clap.workspace = true
 anyhow.workspace = true

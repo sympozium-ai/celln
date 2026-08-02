@@ -65,11 +65,15 @@ frame() {
   <text x="40" y="126" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">HOST</text>
   <rect x="40" y="140" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
   <text x="58" y="167" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">assay</text>
-  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">content store · grades · tiers</text>
+  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">grades · tiers · revocation</text>
 
   <rect x="40" y="216" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="243" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">warden</text>
-  <text x="58" y="263" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">seals · ratchets · revokes</text>
+  <text x="58" y="243" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">forge</text>
+  <text x="58" y="263" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">rebuilds · proves it reproduced</text>
+
+  <rect x="40" y="292" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
+  <text x="58" y="319" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">warden</text>
+  <text x="58" y="339" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">seals · ratchets · revokes</text>
 
   <!-- ── the cell ─────────────────────────────────────── -->
   <g opacity="$cell_op">

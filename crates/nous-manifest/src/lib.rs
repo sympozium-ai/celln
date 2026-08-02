@@ -45,7 +45,8 @@ impl fmt::Debug for Hash {
 /// runs in the background; the manifest records which tier a cell actually got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Tier {
-    /// Rebuilt hermetically from source, signed. Minutes; background only.
+    /// Rebuilt from source and byte-compared. Earned when `Entry::recipe`
+    /// is set; merely asserted when it is not.
     Forged = 1,
     /// Upstream binary hash-pinned, scanned, signed. Seconds; the cold path.
     Verified = 2,
@@ -130,6 +131,16 @@ pub struct Entry {
     /// one of those entries actually was.
     #[serde(default)]
     pub author: Author,
+    /// Set only when [`Tier::Forged`] was **earned**: the hash of the recipe an
+    /// independent rebuild reproduced these exact bytes from.
+    ///
+    /// `None` at `Forged` means the tier was asserted by whoever admitted it
+    /// and nothing rebuilt anything — which is what every entry looked like
+    /// before a build plane existed. Keeping the distinction visible in the
+    /// manifest is the point: a reader can tell a checked claim from a stated
+    /// one without trusting the tool that wrote it.
+    #[serde(default)]
+    pub recipe: Option<Hash>,
 }
 
 /// A signed manifest: the set of hashes a cell is permitted to execute, plus a
@@ -282,6 +293,7 @@ mod tests {
             tier,
             interpreter: interp,
             author: Author::Host,
+            recipe: None,
         }
     }
 
