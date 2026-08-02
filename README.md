@@ -94,19 +94,20 @@ proving isolation on this machine
   ✔ revoking a tool stops it in an already-running cell
 ```
 
-## End to end: a model writes code, a cell runs it
+## Experimental: a model writes code, a cell runs it
 
 This is for **computations, not questions**. A cell exists to contain code you
 would rather not run unsealed — if nothing executes, it has nothing to protect
-you from, and asking the model directly is the right tool. `--show-source`
-prints what it wrote.
+you from, and asking the model directly is the right tool. This path currently
+needs a Linux source checkout (or `NOUS_REPO` pointing at one) because it builds
+the guest image locally. `--show-source` prints what it wrote.
 
 ```sh
 $ nous agent "print the first 100 primes, space separated"
-● asking anthropic (claude-opus-5) for a rust program that: print the first 100 primes, space separated
-  · waiting for claude (up to 300s; --timeout changes it)
+● asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
+  · waiting for claude (up to 90s; --timeout changes it)
   · replied in 5s
-  · 23 lines of rust  /tmp/nous-agent-1844068/program.rs
+  · selected sealed runtime: Rust 2021 (static musl); 23 source lines  /tmp/nous-agent-1844068/program.rs
   + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:data
@@ -153,13 +154,44 @@ Under DAX there is no page-cache copy, so the instructions the guest executes
 Pick who writes it — `nous agents` shows what this host can use:
 
 ```sh
+$ nous setup                         # discovers codex, claude, or ollama
+✔ default agent: openai (~/.config/nous/config.toml)
+
 $ nous agents
   ✔ anthropic  claude-opus-5          claude
-  ✔ openai     (cli default)          codex
+  ✔ openai     (cli default)          codex  default
   ✔ local      qwen2.5-coder          ollama
 
-$ nous agent --agent openai --model gpt-5-codex "…"
+$ nous agents --set-default anthropic # change the saved default
+$ nous agent --agent openai "…"       # override it for one invocation
+$ NOUS_AGENT=local nous agent "…"     # override it for one shell command
 ```
+
+The saved setting is deliberately small and credential-free:
+
+```toml
+# ~/.config/nous/config.toml (or $XDG_CONFIG_HOME/nous/config.toml)
+[agent]
+default = "openai"
+```
+
+Use `nous ask "…"` for a question: it asks the selected agent directly on the
+host because no program runs and there is nothing to contain. Use `nous agent
+"…"` for work that generates code to run; that path is where Nouscell seals
+and governs the resulting program. The agent selects a runtime from the cell's
+sealed capability set; today that set contains one static Rust runtime. Adding
+a runtime is a capability change—not a prompt convention—because its bytes
+must be attested, sealed, and revocable too.
+
+Network-shaped work must declare exactly where it may reach before a model is
+called:
+
+```sh
+nous agent --allow-host example.com "crawl https://example.com/ …"
+```
+
+Without `--allow-host`, Nouscell returns `Unsupported`; it does not generate a
+crawler that can never connect.
 
 Backends are subprocess adapters over CLIs you have already authenticated, not
 linked SDKs — `nous` never reads, stores, or forwards a key. That is not just
@@ -189,7 +221,7 @@ nous doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can se
 
 Diagnostics go to stderr, so they never land in the data. Exit codes mean
 something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells ·
-`4` refused by the trust model.
+`4` refused by the trust model · `5` unsupported.
 
 ## What is real
 

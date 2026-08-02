@@ -32,17 +32,24 @@ use std::time::{Duration, Instant};
 /// answer on stdout. A program with a build system is a supply chain, and the
 /// point here is that the whole artifact is something we hashed.
 const BRIEF: &str = "\
-Write a single-file Rust program (Rust 2021, standard library only, no external \
-crates, no Cargo) that does the following:
+Write a single-file program that does the following:
 
 %TASK%
 
+Available sealed guest runtimes:
+%RUNTIMES%
+
 Requirements:
-- exactly one source file, compiled by `rustc` alone
+- choose exactly one runtime from the list above
 - write the result to stdout
 - exit 0 on success
 
-Reply with only the Rust source in a single ```rust fenced block. No prose.";
+Reply with exactly these two parts and no prose:
+runtime: <chosen runtime id>
+```<chosen language>
+<source>
+```
+";
 
 const FETCH_ABI: &str = "This cell has no network stack. For an HTTPS fetch, invoke `/pilot-fetch URL` \
 with `std::process::Command`; it writes the response body to stdout. The host \
@@ -69,7 +76,75 @@ pub enum Backend {
     Local,
 }
 
+/// Execution profiles available inside the current mote.
+///
+/// This is intentionally a closed list. A language is not supported merely
+/// because the host has a compiler: its runtime must be a sealed guest tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Runtime {
+    /// Rust 2021, standard library only, built as a static musl binary.
+    Rust,
+}
+
+impl Runtime {
+    fn id(self) -> &'static str {
+        match self {
+            Runtime::Rust => "rust",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Runtime::Rust => "Rust 2021 (static musl)",
+        }
+    }
+
+    fn capability(self) -> &'static str {
+        match self {
+            Runtime::Rust => "rust — Rust 2021, static musl, standard library only; compiled by rustc",
+        }
+    }
+
+    fn from_id(id: &str) -> Option<Self> {
+        match id.trim() {
+            "rust" => Some(Runtime::Rust),
+            _ => None,
+        }
+    }
+
+    fn source_extension(self) -> &'static str {
+        match self {
+            Runtime::Rust => "rs",
+        }
+    }
+}
+
+const AVAILABLE_RUNTIMES: &[Runtime] = &[Runtime::Rust];
+
+#[derive(Debug)]
+struct GeneratedProgram {
+    runtime: Runtime,
+    source: String,
+}
+
 impl Backend {
+    fn saved_name(self) -> &'static str {
+        match self {
+            Backend::Anthropic => "anthropic",
+            Backend::Openai => "openai",
+            Backend::Local => "local",
+        }
+    }
+
+    fn from_saved_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "anthropic" | "claude" => Some(Backend::Anthropic),
+            "openai" | "codex" => Some(Backend::Openai),
+            "local" | "ollama" => Some(Backend::Local),
+            _ => None,
+        }
+    }
+
     /// The CLI this backend drives. Its presence is the availability check.
     fn program(self) -> &'static str {
         match self {
@@ -154,7 +229,16 @@ impl Backend {
 
 /// List the built-in backends and whether this host can use them.
 /// Mirrors `nous tools`: the question is always "what is available here".
-pub fn agents(o: &Out) -> Result<u8> {
+pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
+    if let Some(backend) = set_default {
+        let path = crate::config::set_default_agent(backend.saved_name())?;
+        o.event(
+            "agent_default",
+            serde_json::json!({"backend": backend.saved_name(), "config": path}),
+            format!("✔ default agent: {} ({})", backend.label(), path.display()),
+        );
+    }
+    let saved = crate::config::default_agent()?;
     for b in [Backend::Anthropic, Backend::Openai, Backend::Local] {
         let ok = b.available();
         o.event(
@@ -166,7 +250,7 @@ pub fn agents(o: &Out) -> Result<u8> {
                 "available": ok,
             }),
             format!(
-                "  {} {:<10} {:<22} {}",
+                "  {} {:<10} {:<22} {}{}",
                 if ok { green("✔") } else { dim("·") },
                 b.label(),
                 b.default_model().unwrap_or("(cli default)"),
@@ -174,11 +258,44 @@ pub fn agents(o: &Out) -> Result<u8> {
                     dim(b.program())
                 } else {
                     dim(&format!("{} not installed", b.program()))
-                }
+                },
+                if saved.as_deref().is_some_and(|name| Backend::from_saved_name(name) == Some(b)) {
+                    "  default"
+                } else {
+                    ""
+                },
             ),
         );
     }
-    Ok(0)
+    Ok(crate::exit::OK)
+}
+
+pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
+    let backend = match preferred {
+        Some(backend) if backend.available() => backend,
+        Some(backend) => {
+            o.warn(format!(
+                "{} is not available — install and authenticate `{}` first",
+                backend.label(),
+                backend.program()
+            ));
+            return Ok(crate::exit::HOST_INCAPABLE);
+        }
+        None => match discover_backend() {
+            Some(backend) => backend,
+            None => {
+                o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then rerun `nous setup`");
+                return Ok(crate::exit::HOST_INCAPABLE);
+            }
+        },
+    };
+    let path = crate::config::set_default_agent(backend.saved_name())?;
+    o.event(
+        "agent_default",
+        serde_json::json!({"backend": backend.saved_name(), "config": path}),
+        format!("✔ default agent: {} ({})", backend.label(), path.display()),
+    );
+    Ok(crate::exit::OK)
 }
 
 fn which(program: &str) -> Option<PathBuf> {
@@ -191,7 +308,7 @@ fn which(program: &str) -> Option<PathBuf> {
 
 pub fn agent(
     task: &str,
-    backend: Backend,
+    requested_backend: Option<Backend>,
     model: Option<&str>,
     trust_agent_code: bool,
     show_source: bool,
@@ -199,8 +316,10 @@ pub fn agent(
     allow_hosts: &[String],
     o: &Out,
 ) -> Result<u8> {
-    let root = repo_root()?;
-    let work = tempdir()?;
+    let backend = match select_backend(requested_backend, o)? {
+        Some(backend) => backend,
+        None => return Ok(crate::exit::HOST_INCAPABLE),
+    };
 
     // ── 1. the model writes the code, on the host ────────────────────────
     let model = model.or_else(|| backend.default_model());
@@ -210,11 +329,12 @@ pub fn agent(
             backend.label(),
             backend.program()
         ));
-        return Ok(3);
+        return Ok(crate::exit::HOST_INCAPABLE);
     }
-    // The cell has no network at all (ADR-0006), so a task that needs one
-    // cannot work no matter how good the program is. Warn rather than refuse:
-    // the guess is keyword-based and a wrong guess should not block anyone.
+    let root = repo_root()?;
+    let work = tempdir()?;
+    // The cell has no ambient network (ADR-0006). Do not make an agent spend
+    // time generating a program that cannot possibly perform its stated job.
     const NEEDS_EGRESS: &[&str] = &[
         "crawl", "http", "https", "url", "download", "fetch", "scrape", "api",
         "website", "web ", "internet", "network", "request",
@@ -223,9 +343,10 @@ pub fn agent(
     let needs_egress = NEEDS_EGRESS.iter().any(|w| lower.contains(*w));
     if needs_egress && allow_hosts.is_empty() {
         o.warn(
-            "this task needs web access, but no host was declared. The cell remains hermetic; \
+            "this task appears to need web access, but no host was declared. The cell remains hermetic; \
              add --allow-host example.org to lend the bounded pilot-fetch capability",
         );
+        return Ok(crate::exit::UNSUPPORTED);
     } else if needs_egress {
         o.note(format!(
             "  {} web access is brokered by pilot; allowed hosts: {}",
@@ -237,7 +358,7 @@ pub fn agent(
         "agent_brief",
         serde_json::json!({ "task": task, "backend": backend.label(), "model": model }),
         format!(
-            "{} asking {} ({}) for a rust program that: {}",
+            "{} asking {} ({}) to build: {}",
             bold("●"),
             backend.label(),
             model.unwrap_or("cli default"),
@@ -251,21 +372,31 @@ pub fn agent(
         timeout
     ));
     let started = Instant::now();
-    let mut brief = BRIEF.replace("%TASK%", task);
+    let runtimes = AVAILABLE_RUNTIMES
+        .iter()
+        .map(|runtime| format!("- {}", runtime.capability()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut brief = BRIEF
+        .replace("%RUNTIMES%", &runtimes)
+        .replace("%TASK%", task);
     if !allow_hosts.is_empty() {
         brief.push_str(FETCH_ABI);
     }
-    let source = ask_model(backend, model, &brief, timeout)?;
+    let program = ask_model(backend, model, &brief, timeout)?;
+    let runtime = program.runtime;
+    let source = program.source;
     o.note(format!(
         "  {} replied in {:.0}s",
         dim("·"),
         started.elapsed().as_secs_f32()
     ));
-    let src_path = work.join("program.rs");
+    let src_path = work.join(format!("program.{}", runtime.source_extension()));
     std::fs::write(&src_path, &source)?;
     o.note(format!(
-        "  {} {} lines of rust  {}",
+        "  {} selected sealed runtime: {}; {} source lines  {}",
         dim("·"),
+        runtime.label(),
         source.lines().count(),
         dim(&src_path.display().to_string())
     ));
@@ -287,7 +418,7 @@ pub fn agent(
             // not an internal error — say so with the compiler's own words.
             o.warn("the generated program does not compile");
             eprintln!("{stderr}");
-            return Ok(1);
+            return Ok(crate::exit::ERROR);
         }
         Err(e) => return Err(e.into()),
     };
@@ -385,13 +516,90 @@ pub fn agent(
     run_in_cell(&toolfs, &initrd, allow_hosts, o)
 }
 
+/// Questions do not need a cell: no generated program runs, so there is
+/// nothing to contain. Keep this path visibly separate from `nous agent`.
+pub fn ask(
+    question: &str,
+    requested_backend: Option<Backend>,
+    model: Option<&str>,
+    timeout: u64,
+    o: &Out,
+) -> Result<u8> {
+    let backend = match select_backend(requested_backend, o)? {
+        Some(backend) => backend,
+        None => return Ok(crate::exit::HOST_INCAPABLE),
+    };
+    if !backend.available() {
+        o.warn(format!(
+            "{} needs `{}` on PATH — see `nous agents`",
+            backend.label(),
+            backend.program()
+        ));
+        return Ok(crate::exit::HOST_INCAPABLE);
+    }
+    let model = model.or_else(|| backend.default_model());
+    o.event(
+        "agent_question",
+        serde_json::json!({ "question": question, "backend": backend.label(), "model": model }),
+        format!("{} asking {} ({})", bold("●"), backend.label(), model.unwrap_or("cli default")),
+    );
+    let answer = ask_model_text(backend, model, question, timeout)?;
+    o.event(
+        "agent_answer",
+        serde_json::json!({ "answer": answer }),
+        if o.is_json() { String::new() } else { answer.clone() },
+    );
+    Ok(crate::exit::OK)
+}
+
+fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>> {
+    if let Some(backend) = requested {
+        return Ok(Some(backend));
+    }
+    if let Some(name) = std::env::var_os("NOUS_AGENT") {
+        let name = name.to_string_lossy();
+        return match Backend::from_saved_name(&name) {
+            Some(backend) => Ok(Some(backend)),
+            None => {
+                o.warn(format!("NOUS_AGENT={name:?} is not one of: openai, anthropic, local"));
+                Ok(None)
+            }
+        };
+    }
+    if let Some(name) = crate::config::default_agent()? {
+        return match Backend::from_saved_name(&name) {
+            Some(backend) => Ok(Some(backend)),
+            None => {
+                o.warn(format!("saved default {name:?} is not one of: openai, anthropic, local; run `nous setup`"));
+                Ok(None)
+            }
+        };
+    }
+    match discover_backend() {
+        Some(backend) => {
+            o.note(format!("  {} using {} — run `nous setup` to save it as your default", dim("·"), backend.label()));
+            Ok(Some(backend))
+        }
+        None => {
+            o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then run `nous setup`");
+            Ok(None)
+        }
+    }
+}
+
+fn discover_backend() -> Option<Backend> {
+    [Backend::Openai, Backend::Anthropic, Backend::Local]
+        .into_iter()
+        .find(|backend| backend.available())
+}
+
 #[cfg(target_os = "linux")]
 fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) -> Result<u8> {
     use warden::vmm::boot::{BootConfig, LinuxCell};
 
     if !Path::new("/dev/kvm").exists() {
         o.warn("no /dev/kvm — cannot seal a cell on this host");
-        return Ok(3);
+        return Ok(crate::exit::HOST_INCAPABLE);
     }
     let kernel = BootConfig::host_kernel()
         .context("no readable /boot/vmlinuz-* with matching /lib/modules")?;
@@ -469,11 +677,11 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
                 dim("·"),
                 dim("·")
             ));
-            Ok(4)
+            Ok(crate::exit::REFUSED)
         }
         None => {
             o.warn("the program produced no output — see the cell's console");
-            Ok(1)
+            Ok(crate::exit::ERROR)
         }
     }
 }
@@ -481,7 +689,7 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
 #[cfg(not(target_os = "linux"))]
 fn run_in_cell(_toolfs: &Path, _initrd: &Path, _allow_hosts: &[String], o: &Out) -> Result<u8> {
     o.warn("sealing cells needs Linux with /dev/kvm");
-    Ok(3)
+    Ok(crate::exit::HOST_INCAPABLE)
 }
 
 /// Everything pilot printed between its markers is the program's own output.
@@ -584,6 +792,17 @@ fn ask_model(
     model: Option<&str>,
     prompt: &str,
     timeout: u64,
+) -> Result<GeneratedProgram> {
+    let text = ask_model_text(backend, model, prompt, timeout)?;
+    extract_program(&text)
+        .with_context(|| format!("invalid execution plan in the reply from {}", backend.label()))
+}
+
+fn ask_model_text(
+    backend: Backend,
+    model: Option<&str>,
+    prompt: &str,
+    timeout: u64,
 ) -> Result<String> {
     let program = backend.program();
     // Context names the program; the inner error says what went wrong. Wrapping
@@ -640,18 +859,40 @@ fn ask_model(
         }
     };
 
-    extract_rust(&text)
-        .with_context(|| format!("no ```rust block in the reply from {}", backend.label()))
+    Ok(text)
 }
 
 /// Pull the source out of a fenced block, tolerating the model adding prose
 /// around it despite being asked not to.
 fn extract_rust(reply: &str) -> Option<String> {
-    let start = reply.find("```rust").or_else(|| reply.find("```"))?;
+    let start = reply.find("```rust")?;
     let body = &reply[start..];
     let after = body.find('\n')? + 1;
     let end = body[after..].find("```")? + after;
     Some(body[after..end].to_string())
+}
+
+/// The agent elects a runtime; Nouscell validates it against the sealed
+/// capability set before it ever reaches the build or cell.
+fn extract_program(reply: &str) -> Result<GeneratedProgram> {
+    let runtime_id = reply
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("runtime:"))
+        .context("missing `runtime: <id>`")?;
+    let runtime = Runtime::from_id(runtime_id).with_context(|| {
+        format!(
+            "runtime {runtime_id:?} is unavailable; cell provides: {}",
+            AVAILABLE_RUNTIMES
+                .iter()
+                .map(|runtime| runtime.id())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })?;
+    let source = match runtime {
+        Runtime::Rust => extract_rust(reply).context("missing ```rust source block")?,
+    };
+    Ok(GeneratedProgram { runtime, source })
 }
 
 fn sh(root: &Path, script: &str, args: &[String]) -> Result<()> {
@@ -690,4 +931,22 @@ fn tempdir() -> Result<PathBuf> {
     let base = std::env::temp_dir().join(format!("nous-agent-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     Ok(base)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_plan_uses_the_runtime_the_agent_selected() {
+        let plan = extract_program("runtime: rust\n```rust\nfn main() {}\n```").unwrap();
+        assert_eq!(plan.runtime, Runtime::Rust);
+        assert_eq!(plan.source, "fn main() {}\n");
+    }
+
+    #[test]
+    fn execution_plan_rejects_a_runtime_the_cell_did_not_lend() {
+        let err = extract_program("runtime: python\n```python\nprint(42)\n```").unwrap_err();
+        assert!(err.to_string().contains("unavailable"));
+    }
 }

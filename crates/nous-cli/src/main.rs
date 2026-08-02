@@ -5,6 +5,7 @@
 
 mod agent;
 mod cells;
+mod config;
 mod host;
 mod out;
 mod run;
@@ -16,11 +17,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Exit codes, so scripts can branch on *why* rather than parsing text.
-mod exit {
+pub mod exit {
     pub const OK: u8 = 0;
     pub const ERROR: u8 = 1;
     pub const SPEC_INVALID: u8 = 2;
     pub const HOST_INCAPABLE: u8 = 3;
+    /// The trust model said no. Distinct from ERROR: nothing malfunctioned,
+    /// a decision was made and the caller may want to act on it differently.
+    pub const REFUSED: u8 = 4;
+    pub const UNSUPPORTED: u8 = 5;
 }
 
 #[derive(Parser)]
@@ -32,7 +37,7 @@ mod exit {
                   memory the host lends in and can revoke.\n\n\
                   Start with `nous spec init > agent.toml`, then `nous spec check agent.toml`.",
     after_help = "Output is human-readable on a terminal and NDJSON when piped.\n\
-                  Exit codes: 0 ok · 1 error · 2 spec invalid · 3 host cannot seal cells."
+                  Exit codes: 0 ok · 1 error · 2 spec invalid · 3 host cannot seal cells · 5 unsupported."
 )]
 struct Cli {
     /// Emit NDJSON regardless of whether stdout is a terminal.
@@ -92,7 +97,8 @@ enum Cmd {
     /// a cell has nothing to protect you from when no code runs.
     Agent {
         /// What the program should DO — a computation, not a question.
-        task: String,
+        #[arg(required = true, num_args = 1..)]
+        task: Vec<String>,
 
         /// Print the source the model wrote.
         #[arg(long)]
@@ -105,9 +111,9 @@ enum Cmd {
         #[arg(long, default_value = "90")]
         timeout: u64,
 
-        /// Which model writes it. See `nous agents`.
-        #[arg(long, value_enum, default_value = "anthropic")]
-        agent: agent::Backend,
+        /// Which model writes it. Overrides NOUS_AGENT and the saved default.
+        #[arg(long, value_enum)]
+        agent: Option<agent::Backend>,
 
         /// Override the backend's default model.
         #[arg(long)]
@@ -128,8 +134,38 @@ enum Cmd {
         allow_hosts: Vec<String>,
     },
 
-    /// List the built-in agent backends and whether this host can use them.
-    Agents,
+    /// Ask the selected agent a question on the host; no cell is needed.
+    Ask {
+        /// The question to ask.
+        #[arg(required = true, num_args = 1..)]
+        question: Vec<String>,
+
+        /// Which agent answers. Overrides NOUS_AGENT and the saved default.
+        #[arg(long, value_enum)]
+        agent: Option<agent::Backend>,
+
+        /// Override the backend's default model.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Seconds to wait for an answer before giving up.
+        #[arg(long, default_value = "90")]
+        timeout: u64,
+    },
+
+    /// Find agent CLIs and manage the saved default.
+    Agents {
+        /// Save the backend `nous agent` uses unless overridden.
+        #[arg(long, value_enum)]
+        set_default: Option<agent::Backend>,
+    },
+
+    /// Discover an agent CLI and save it as the default.
+    Setup {
+        /// Select this backend instead of auto-discovering one.
+        #[arg(long, value_enum)]
+        agent: Option<agent::Backend>,
+    },
 
     /// Walk the five-beat proof loop. Works without KVM.
     Demo,
@@ -191,7 +227,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             timeout,
             allow_hosts,
         } => agent::agent(
-            task,
+            &task.join(" "),
             *agent,
             model.as_deref(),
             *trust_agent_code,
@@ -200,7 +236,14 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             allow_hosts,
             o,
         ),
-        Cmd::Agents => agent::agents(o),
+        Cmd::Ask {
+            question,
+            agent,
+            model,
+            timeout,
+        } => agent::ask(&question.join(" "), *agent, model.as_deref(), *timeout, o),
+        Cmd::Agents { set_default } => agent::agents(*set_default, o),
+        Cmd::Setup { agent: preferred } => agent::setup(*preferred, o),
     }
 }
 

@@ -320,6 +320,7 @@ dependencies = [
  "pilot",
  "serde",
  "serde_json",
+ "toml",
  "warden",
 ]
 

@@ -11,6 +11,7 @@
 # Rust for code, make for orchestration, shell for glue. No Python.
 
 CARGO ?= cargo
+FETCH_URL ?= https://example.com/
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -72,7 +73,7 @@ boot-kvm: guest ## boot a STOCK kernel and prove the VFS<->memslot join (needs /
 
 .PHONY: fetch-proof
 fetch-proof: ## prove a real cell fetches HTTPS through pilot (needs /dev/kvm + egress)
-	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-fetch-proof
+	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-fetch-proof -- $(FETCH_URL)
 
 .PHONY: fmt
 fmt: ## format all crates
