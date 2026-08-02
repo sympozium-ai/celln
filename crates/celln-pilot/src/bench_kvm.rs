@@ -193,7 +193,7 @@ fn bench_sharing(n: usize, tool_kib: usize) -> (serde_json::Value, bool) {
     // A "CPython-sized" tool: real bytes, executable prologue so cells can run it.
     let mut tool = guest::tool_stub(kvm::SCRATCH, 0x99);
     tool.resize(tool_kib * 1024, 0x90); // nop-filled body
-    let h = nous_manifest::Hash::of(&tool);
+    let h = celln_manifest::Hash::of(&tool);
     let naive_kib = (tool.len() * n) / 1024;
 
     let rss0 = rss_kib();
@@ -280,7 +280,7 @@ fn bench_sharing(n: usize, tool_kib: usize) -> (serde_json::Value, bool) {
 fn bench_revocation(n: usize) -> (serde_json::Value, bool) {
     head(&format!("M2 — revocation reaching {n} running cells"));
     let tool = guest::tool_stub(kvm::SCRATCH, 0x99);
-    let h = nous_manifest::Hash::of(&tool);
+    let h = celln_manifest::Hash::of(&tool);
     let mut cells = Vec::with_capacity(n);
     for _ in 0..n {
         let mut v = match KvmVmm::new() {
@@ -645,7 +645,7 @@ fn bench_memslot_budget() -> serde_json::Value {
     const PROBE_CEILING: usize = 40_000;
     for i in 0..PROBE_CEILING {
         let body = format!("tool-{i}").into_bytes();
-        let h = nous_manifest::Hash::of(&body);
+        let h = celln_manifest::Hash::of(&body);
         match v.map_pages_ro_exec(&h, &body) {
             Ok(()) => mapped += 1,
             Err(e) => {

@@ -28,9 +28,9 @@
 //! mapped below [`REALMODE_LIMIT`] are reachable by those programs.
 
 use super::{Vmm, VmmError};
+use celln_manifest::Hash;
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MEM_READONLY};
 use kvm_ioctls::{Cap, Kvm, VcpuExit, VcpuFd, VmFd};
-use nous_manifest::Hash;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};

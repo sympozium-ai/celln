@@ -6,7 +6,7 @@
 //! live unmap revocation, dissolve freeze. See `vmm/kvm.rs` for exactly which
 //! properties are hardware-enforced in the M1 slice and which are still ahead.
 
-use nous_manifest::Hash;
+use celln_manifest::Hash;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VmmError {

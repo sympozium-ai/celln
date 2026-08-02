@@ -42,9 +42,9 @@
 use super::kvm::{shared_tool_bytes, shared_tool_map, shared_tool_map_existing, PAGE};
 use super::VmmError;
 use crate::egress::{HttpBroker, HttpPolicy};
+use celln_manifest::Hash;
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_READONLY};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
-use nous_manifest::Hash;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};

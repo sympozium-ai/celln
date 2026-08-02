@@ -1,6 +1,6 @@
 //! Reproducible local Rust builds for the `Forged` tier.
 
-use nous_manifest::Hash;
+use celln_manifest::Hash;
 use std::path::Path;
 use std::process::Command;
 

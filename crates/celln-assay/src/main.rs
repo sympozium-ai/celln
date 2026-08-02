@@ -9,15 +9,15 @@
 
 use anyhow::Result;
 use assay::Assayer;
+use celln_manifest::Hash;
 use clap::{Parser, Subcommand};
-use nous_manifest::Hash;
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "assay",
     version,
-    about = "Grade and admit artifacts into a Nouscell manifest"
+    about = "Grade and admit artifacts into a Celln manifest"
 )]
 struct Cli {
     /// Store root.
@@ -87,9 +87,9 @@ fn main() -> Result<()> {
             agent_authored,
         } => {
             let author = if agent_authored {
-                nous_manifest::Author::Agent
+                celln_manifest::Author::Agent
             } else {
-                nous_manifest::Author::Host
+                celln_manifest::Author::Host
             };
             let _ = author;
             let bytes = std::fs::read(&file)?;
@@ -108,9 +108,9 @@ fn main() -> Result<()> {
             agent_authored,
         } => {
             let author = if agent_authored {
-                nous_manifest::Author::Agent
+                celln_manifest::Author::Agent
             } else {
-                nous_manifest::Author::Host
+                celln_manifest::Author::Host
             };
             let src = std::fs::read(&source)?;
             let scratch = std::env::temp_dir().join(format!("assay-forge-{}", std::process::id()));

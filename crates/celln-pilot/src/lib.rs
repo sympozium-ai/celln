@@ -9,7 +9,7 @@
 //!   3. **explain** — emit a structured, machine-readable record for any denial,
 //!      because the error surface is an agent steering channel.
 
-use nous_manifest::{ExecDenied, Hash, Input, Lane, Manifest};
+use celln_manifest::{ExecDenied, Hash, Input, Lane, Manifest};
 use serde::Serialize;
 
 /// The result of asking pilot to run something.
@@ -44,7 +44,7 @@ impl Explain {
 pub fn exec(manifest: &Manifest, target: &Hash, input: Input) -> ExecOutcome {
     match manifest.permit_exec(target) {
         Ok(entry) => {
-            let lane = nous_manifest::resolve_exec_lane(entry, input);
+            let lane = celln_manifest::resolve_exec_lane(entry, input);
             ExecOutcome::Run {
                 hash: target.clone(),
                 lane,
@@ -67,7 +67,7 @@ pub fn exec(manifest: &Manifest, target: &Hash, input: Input) -> ExecOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nous_manifest::{Entry, Tier};
+    use celln_manifest::{Entry, Tier};
 
     fn manifest_with(alias: &str, body: &[u8], interp: bool) -> (Manifest, Hash) {
         let mut m = Manifest::new();
@@ -77,7 +77,7 @@ mod tests {
             hash: h.clone(),
             tier: Tier::Forged,
             interpreter: interp,
-            author: nous_manifest::Author::Host,
+            author: celln_manifest::Author::Host,
             recipe: None,
         });
         (m, h)

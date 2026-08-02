@@ -13,7 +13,7 @@
 //! The older `/dev/mem` probe runs alongside as the unambiguously-direct
 //! control, so a regression says which half broke (ADR-0005).
 
-use nous_manifest::Hash;
+use celln_manifest::Hash;
 use warden::vmm::boot::{BootConfig, BootEnd, LinuxCell};
 
 fn main() -> anyhow::Result<()> {

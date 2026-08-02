@@ -204,7 +204,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Spec(SpecCmd::Init) => {
             // Straight to stdout, unstyled, so `celln spec init > agent.toml`
             // produces a file and not a screenshot of one.
-            print!("{}", nous_spec::TEMPLATE);
+            print!("{}", celln_spec::TEMPLATE);
             Ok(exit::OK)
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),

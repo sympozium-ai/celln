@@ -48,10 +48,10 @@ name = "pilot"
 path = "src/lib.rs"
 
 [dependencies]
-celln-manifest = { version = "0.3.0", path = "../celln-manifest" }
-celln-store = { version = "0.3.0", path = "../celln-store" }
-celln-assay = { version = "0.3.0", path = "../celln-assay" }
-celln-warden = { version = "0.3.0", path = "../celln-warden" }
+celln-manifest = { version = "0.4.0", path = "../celln-manifest" }
+celln-store = { version = "0.4.0", path = "../celln-store" }
+celln-assay = { version = "0.4.0", path = "../celln-assay" }
+celln-warden = { version = "0.4.0", path = "../celln-warden" }
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

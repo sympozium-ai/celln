@@ -7,7 +7,7 @@
 //! demonstrable today; the hardware guarantees (sealing, real fork) are M1/M2.
 
 use assay::Assayer;
-use nous_manifest::{Hash, Input, Lane};
+use celln_manifest::{Hash, Input, Lane};
 use pilot::{exec, ExecOutcome};
 use warden::vmm::MockVmm;
 use warden::{Cell, Phase};

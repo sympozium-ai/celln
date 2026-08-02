@@ -63,7 +63,7 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y gcc cpio e2fsprogs
           make guest
-          cargo test -p warden --features kvm
+          cargo test -p celln-warden --features kvm
           cargo run -p celln-cli -- verify --no-json
       - name: no /dev/kvm on this runner
         if: steps.kvm.outputs.have == 'no'

@@ -17,7 +17,7 @@ command -v cpio >/dev/null 2>&1 || { echo "cpio not found — needed to pack the
 
 # The kernel we boot must be one whose modules are installed, because the DAX
 # probe loads nvdimm modules and vermagic is checked exactly. Same rule as
-# BootConfig::host_kernel in crates/warden/src/vmm/boot.rs — keep them in step.
+# BootConfig::host_kernel in crates/celln-warden/src/vmm/boot.rs — keep them in step.
 pick_kver() {
   local k v
   for k in $(ls -1 /boot/vmlinuz-* 2>/dev/null | grep -v rescue | sort -r); do

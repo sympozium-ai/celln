@@ -415,9 +415,9 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     let bytes = code.len() as u64;
 
     let author = if trust_agent_code {
-        nous_manifest::Author::Host
+        celln_manifest::Author::Host
     } else {
-        nous_manifest::Author::Agent
+        celln_manifest::Author::Agent
     };
     let store = work.join("store");
     std::fs::create_dir_all(&store)?;
@@ -655,7 +655,7 @@ fn run_in_cell(
     if !allow_hosts.is_empty() {
         cell.enable_http_fetch(warden::egress::HttpPolicy::new(allow_hosts.to_vec()));
     }
-    let h = nous_manifest::Hash::of(&payload);
+    let h = celln_manifest::Hash::of(&payload);
     if let Err(e) = cell.seal_tool(&h, &payload) {
         if let Some(record) = record.as_mut() {
             crate::cells::finish(state_root, record, "kvm", Some(e.to_string()));

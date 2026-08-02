@@ -13,7 +13,7 @@
 //! Requires /dev/kvm. Run with: make demo-kvm
 
 use assay::Assayer;
-use nous_manifest::{Input, Lane};
+use celln_manifest::{Input, Lane};
 use pilot::{exec, ExecOutcome};
 use std::time::Instant;
 use warden::vmm::kvm::{self, guest, GuestEvent, KvmVmm, RunEnd};

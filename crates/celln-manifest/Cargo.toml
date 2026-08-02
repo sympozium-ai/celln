@@ -8,7 +8,7 @@ repository.workspace = true
 description = "Shared Celln types: content hashes, manifests, trust tiers, provenance lanes."
 
 [lib]
-name = "nous_manifest"
+name = "celln_manifest"
 
 [dependencies]
 blake3.workspace = true

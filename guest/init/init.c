@@ -1,4 +1,4 @@
-/* Nouscell guest init — the smallest userspace that can prove things.
+/* Celln guest init — the smallest userspace that can prove things.
  *
  * This is the guest-side end of the test harness. It exists so claims about
  * what a *real* guest can and cannot do are made by guest code actually trying,
@@ -34,7 +34,7 @@
 
 /* Unused I/O port the guest pokes to say "I am live", so the host can
  * timestamp a cell reaching userspace in a single exit. Must match
- * LIVE_SIGNAL_PORT in crates/warden/src/vmm/boot.rs. */
+ * LIVE_SIGNAL_PORT in crates/celln-warden/src/vmm/boot.rs. */
 #define NOUS_LIVE_PORT 0x3f0
 
 #define O_RDONLY 0
@@ -48,7 +48,7 @@
 #define MAP_ANONYMOUS 0x20
 
 /* Where warden seals the first lent tool. Must match TOOL_WINDOW_GPA in
- * crates/warden/src/vmm/boot.rs — the coupling is deliberate and checked by
+ * crates/celln-warden/src/vmm/boot.rs — the coupling is deliberate and checked by
  * the magic below: if the two ever drift, the guest reads garbage and says so
  * rather than silently passing. */
 #define TOOL_GPA 0x6000000UL

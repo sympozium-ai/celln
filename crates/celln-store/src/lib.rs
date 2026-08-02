@@ -7,7 +7,7 @@
 //!
 //! No KVM here — this is plain filesystem work and is fully tested.
 
-use nous_manifest::Hash;
+use celln_manifest::Hash;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

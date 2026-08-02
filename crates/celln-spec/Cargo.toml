@@ -8,7 +8,7 @@ repository.workspace = true
 description = "The cell spec: what a user writes to describe an agent's cell."
 
 [lib]
-name = "nous_spec"
+name = "celln_spec"
 
 [dependencies]
 serde.workspace = true

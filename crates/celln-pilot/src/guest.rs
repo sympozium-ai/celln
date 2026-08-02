@@ -23,7 +23,7 @@
 //! would be exactly backwards. The lane split is what makes that a principled
 //! line rather than a missing feature.
 
-use nous_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
+use celln_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
 use pilot::{exec, ExecOutcome};
 use serde::Deserialize;
 use std::ffi::CString;

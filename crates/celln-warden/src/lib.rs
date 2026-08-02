@@ -16,7 +16,7 @@ pub mod vmm;
 pub use ratchet::{Phase, Ratchet, Verb};
 pub use vmm::{Vmm, VmmError};
 
-use nous_manifest::Hash;
+use celln_manifest::Hash;
 
 /// A live cell: a warden bound to one VMM instance, tracking its ratchet phase.
 pub struct Cell<V: Vmm> {
@@ -104,7 +104,7 @@ impl<V: Vmm> Cell<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nous_manifest::Hash;
+    use celln_manifest::Hash;
     use vmm::MockVmm;
 
     #[test]

@@ -1,7 +1,7 @@
 //! Content-addressed tool store and tiered resolution.
 
-use nous_manifest::{Author, Entry, Hash, Manifest, Tier};
-use nous_store::Store;
+use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
+use celln_store::Store;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
@@ -24,7 +24,7 @@ pub struct Resolved {
 #[derive(Debug, thiserror::Error)]
 pub enum AssayError {
     #[error(transparent)]
-    Store(#[from] nous_store::StoreError),
+    Store(#[from] celln_store::StoreError),
     #[error("the build proof is for different bytes than the ones being admitted")]
     ProofMismatch,
 }
@@ -35,7 +35,7 @@ impl Assayer {
         let store = Store::open(root)?;
         let manifest_path = root.join("manifest.json");
         let manifest = if manifest_path.exists() {
-            let bytes = std::fs::read(&manifest_path).map_err(nous_store::StoreError::Io)?;
+            let bytes = std::fs::read(&manifest_path).map_err(celln_store::StoreError::Io)?;
             serde_json::from_slice(&bytes).unwrap_or_default()
         } else {
             Manifest::new()
@@ -50,7 +50,7 @@ impl Assayer {
 
     fn persist(&self) -> Result<(), AssayError> {
         let bytes = serde_json::to_vec_pretty(&self.manifest).expect("manifest serializes");
-        std::fs::write(&self.manifest_path, bytes).map_err(nous_store::StoreError::Io)?;
+        std::fs::write(&self.manifest_path, bytes).map_err(celln_store::StoreError::Io)?;
         Ok(())
     }
 

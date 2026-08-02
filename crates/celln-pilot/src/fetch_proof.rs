@@ -7,7 +7,7 @@
 //! exception is involved in proving the transport.
 
 use anyhow::{bail, Context, Result};
-use nous_manifest::{Author, Entry, Hash, Manifest, Tier};
+use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use warden::egress::HttpPolicy;
@@ -122,7 +122,7 @@ fn repo_root() -> Result<PathBuf> {
     cwd.ancestors()
         .find(|p| p.join("scripts/mkinitramfs.sh").exists())
         .map(Path::to_path_buf)
-        .context("run from a nouscell checkout")
+        .context("run from a Celln checkout")
 }
 
 fn run(root: &Path, script: &str, args: &[&Path]) -> Result<()> {

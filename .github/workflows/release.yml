@@ -44,12 +44,12 @@ jobs:
           generate_release_notes: true
           files: |
             target/release/celln
-            Formula/cellulose.rb
+            Formula/celln.rb
           body: |
             ## Install
 
             ```sh
-            brew install sympozium-ai/tap/cellulose
+            brew install sympozium-ai/tap/celln
             ```
 
             Then:

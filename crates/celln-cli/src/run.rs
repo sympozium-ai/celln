@@ -5,24 +5,24 @@ use crate::host::Host;
 use crate::out::{bold, dim, green, red, Out};
 use anyhow::{Context, Result};
 use assay::Assayer;
-use nous_manifest::{Hash, Input, Lane, Tier};
-use nous_spec::Spec;
+use celln_manifest::{Hash, Input, Lane, Tier};
+use celln_spec::Spec;
 use std::path::Path;
 
 /// Map the spec's tier vocabulary onto the manifest's.
-fn tier_of(t: nous_spec::Tier) -> Tier {
+fn tier_of(t: celln_spec::Tier) -> Tier {
     match t {
-        nous_spec::Tier::Forged => Tier::Forged,
-        nous_spec::Tier::Verified => Tier::Verified,
-        nous_spec::Tier::Unsealed => Tier::Unsealed,
+        celln_spec::Tier::Forged => Tier::Forged,
+        celln_spec::Tier::Verified => Tier::Verified,
+        celln_spec::Tier::Unsealed => Tier::Unsealed,
     }
 }
 
-fn input_of(i: nous_spec::Input, lane: Lane) -> Input {
+fn input_of(i: celln_spec::Input, lane: Lane) -> Input {
     match i {
-        nous_spec::Input::None => Input::None,
-        nous_spec::Input::Tool => Input::File(Lane::Tool),
-        nous_spec::Input::Data => Input::File(lane),
+        celln_spec::Input::None => Input::None,
+        celln_spec::Input::Tool => Input::File(Lane::Tool),
+        celln_spec::Input::Data => Input::File(lane),
     }
 }
 
@@ -30,7 +30,7 @@ fn input_of(i: nous_spec::Input, lane: Lane) -> Input {
 fn load(path: &Path, o: &Out) -> Result<Spec, u8> {
     match Spec::load(path) {
         Ok(s) => Ok(s),
-        Err(nous_spec::SpecError::Invalid { path, problems }) => {
+        Err(celln_spec::SpecError::Invalid { path, problems }) => {
             if o.is_json() {
                 for p in &problems {
                     o.event(
@@ -123,7 +123,7 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
             .find(|t| t.alias == run.exec)
             .map(|t| t.interpreter)
             .unwrap_or(false);
-        let demoted = interp && run.input == nous_spec::Input::Data;
+        let demoted = interp && run.input == celln_spec::Input::Data;
         let lane = if demoted { "agent" } else { "tool" };
         o.say("");
         o.say(bold("run"));
@@ -311,7 +311,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
 #[cfg(target_os = "linux")]
 fn seal_cell(
     spec: &Spec,
-    resolved: &[(nous_spec::Tool, Hash, Vec<u8>)],
+    resolved: &[(celln_spec::Tool, Hash, Vec<u8>)],
     o: &Out,
 ) -> Result<&'static str> {
     use warden::vmm::kvm::KvmVmm;
@@ -352,7 +352,7 @@ fn seal_cell(
 #[cfg(not(target_os = "linux"))]
 fn seal_cell(
     _spec: &Spec,
-    _resolved: &[(nous_spec::Tool, Hash, Vec<u8>)],
+    _resolved: &[(celln_spec::Tool, Hash, Vec<u8>)],
     _o: &Out,
 ) -> Result<&'static str> {
     anyhow::bail!("hardware isolation needs Linux with /dev/kvm")
@@ -483,7 +483,7 @@ pub fn tools(root: &Path, o: &Out) -> Result<u8> {
 /// `celln verify` — prove the isolation on this machine, right now.
 #[cfg(target_os = "linux")]
 pub fn verify(o: &Out) -> Result<u8> {
-    use nous_manifest::Hash;
+    use celln_manifest::Hash;
     use warden::vmm::kvm::{guest, GuestEvent, KvmVmm, RunEnd};
     use warden::vmm::Vmm;
 

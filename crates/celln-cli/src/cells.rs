@@ -118,7 +118,7 @@ pub fn begin(root: &Path, name: &str, spec: &Path, tools: Vec<String>) -> std::i
         .unwrap_or(0);
     // Short, stable, and collision-resistant enough for a local registry.
     let seed = format!("{name}:{started_ms}:{nanos}:{pid}");
-    let id = nous_manifest::Hash::of(seed.as_bytes())
+    let id = celln_manifest::Hash::of(seed.as_bytes())
         .0
         .trim_start_matches("blake3:")
         .chars()
