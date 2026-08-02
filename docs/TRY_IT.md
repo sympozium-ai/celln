@@ -1,14 +1,12 @@
 # Try it
 
-Five commands, about five minutes. Each proves something specific, and this page
-says what to look for so you can read it without running anything.
+Five commands, about five minutes. Each checks a specific property and explains
+the expected result.
 
-> **The honest part first.** `celln run` does not yet execute your command inside
-> the cell. There is no toolplane, no vsock, no in-cell shell — that is build
-> plan M5. What exists today is the **isolation substrate**: a real
-> hardware-isolated microVM, your tools sealed into it as memory the guest
-> cannot modify, and every trust decision applied. If you are evaluating whether
-> the idea holds up, this is the evidence.
+> **Scope.** `celln run` seals declared tools into a hardware-isolated cell.
+> `celln agent` executes agent-authored programs in the agent lane, with a
+> workspace-only filesystem boundary and no network. The spec-driven `celln run`
+> path remains the sealing and admission interface.
 
 ---
 
@@ -43,8 +41,8 @@ celln doctor -q || echo "no hardware isolation here"
 celln spec init > agent.toml
 ```
 
-The template is commented in place — it is meant to be read, not just filled
-in. The field worth understanding is `interpreter`:
+The template is commented in place. The field worth understanding is
+`interpreter`:
 
 ```toml
 [[tool]]
@@ -78,7 +76,7 @@ run
   runs in the agent lane — demoted: an interpreter fed agent-authored input
 ```
 
-**What to notice.** It tells you the *lane your run will land in* before
+**Expected result.** It tells you the *lane your run will land in* before
 anything is sealed. That last line is the laundering ban applied to your file.
 
 Mistakes read like a compiler, and every one carries a fix:
@@ -115,7 +113,7 @@ celln run agent.toml
 ● cell dissolved
 ```
 
-**What to notice.**
+**Expected result.**
 
 - `cold — verified now, forged queued`: an unseen tool is admitted at Verified
   in seconds and a hermetic rebuild is queued *behind* the traffic. Launch is
@@ -124,8 +122,8 @@ celln run agent.toml
 - `authority ratcheted to Work`: once any agent-authored code has run, the cell
   can never be lent another tool. Authority only shrinks, and the host enforces
   it, so a compromised cell cannot roll it back.
-- Your 24 MB Python binary really was sealed into a microVM's physical address
-  space as read-only memory.
+- Your 24 MB Python binary is sealed into the microVM's physical address space
+  as read-only memory.
 
 `--dry-run` stops after resolving tools, if you only want to see what a spec
 would pull in.
@@ -146,7 +144,7 @@ proving isolation on this machine
 ✔ isolation holds on this machine.
 ```
 
-**What to notice.** The first proof is the one the design rests on. It builds a
+**Expected result.** The first proof builds a
 guest that enters 32-bit protected mode, installs page tables **it wrote
 itself**, maps the sealed tool page writable in them, and writes. Guest-side
 that write is entirely legal — ring 0, PTE says writable, no fault. It still
@@ -158,7 +156,7 @@ Nothing in the guest is enforcing this. The guest is root.
 
 ## 6. Have a model write the code, and run it sealed
 
-Steps 2–4 stop at sealing. This is the path that actually executes something.
+`celln agent` is the path that executes agent-authored code.
 
 First, choose the already-authenticated agent CLI `celln` should use:
 
@@ -185,8 +183,7 @@ celln agent "print the first 100 primes, space separated"
 2 3 5 7 11 13 17 19 23 29 31 ...
 ```
 
-**The agent lane is the point.** The
-program was graded `forged` — `forge` rebuilt it twice and the bytes matched,
+The program was graded `forged` — `forge` rebuilt it twice and the bytes matched,
 so the tier was earned rather than asserted. It is still `author=agent`, and
 agent-authored code never carries tool-lane authority at any tier. Running it
 runs with a workspace-only Landlock boundary and a seccomp network/privileged-

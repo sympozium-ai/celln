@@ -80,9 +80,9 @@ run
   runs in the agent lane — demoted: an interpreter fed agent-authored input
 ```
 
-That demotion is the point. `python` is fully attested, but the moment it is
-fed something the agent wrote, *that invocation* moves to the agent lane — including the
-`python -c "…"` form that file-level taint tracking misses.
+`python` is fully attested, but an invocation fed agent-written input moves to
+the agent lane — including the `python -c "…"` form that file-level taint
+tracking misses.
 
 **3. Run it.**
 
@@ -97,7 +97,7 @@ $ celln run agent.toml
 ● cell dissolved
 ```
 
-**4. Prove it.** Not a claim in a README — run it on your machine.
+**4. Verify the isolation.**
 
 ```sh
 $ celln verify
@@ -140,15 +140,14 @@ laundering ban stops one it has to stop both.
 `--trust-agent-code` remains only as an explicitly unsafe debugging override;
 it is not part of the normal example.
 
-## The model, in three lines
+## Execution lanes
 
 - **Tool lane**: host-provided, attested tools use only the authority the cell loans them.
 - **Agent lane**: agent-authored code gets only explicitly loaned capabilities: its executable and workspace by default, with no network.
 - **Data**: bytes the agent produced or fetched. Data never gains authority by being handed to an attested tool.
 
-That last rule is the point: `python` is trusted tooling, but `python` fed an
-agent-written script is an **agent-lane** execution, not a way to inherit the
-tool lane.
+An attested interpreter fed an agent-written script runs in the **agent lane**;
+it does not inherit tool-lane authority.
 
 The model writes the program **on the host**; `forge` compiles it **twice, in
 different directories**, and compares the bytes; `assay` grades on what that
@@ -157,14 +156,11 @@ read-only memory; and pilot re-hashes it in the guest and decides for itself.
 Under DAX there is no page-cache copy, so the instructions the guest executes
 *are* the host's pages.
 
-> **`forged` is earned here, not asserted.** A rebuild that reproduces earns the
-> tier and records the recipe it reproduced from; one that does not is graded
-> `verified` instead — we still hold the bytes, we just cannot claim they were
-> reproduced. `assay` checks the proof is about the bytes in hand before
-> recording anything, so a good proof cannot be carried alongside a different
-> binary. Scope: this proves reproducibility *on this machine with this
-> toolchain*, not that anyone anywhere gets the same bytes
-> ([ADR-0008](docs/decisions/0008-the-forged-tier-is-earned.md)).
+A `forged` tier requires a matching rebuild and records the reproduced recipe.
+Otherwise the artifact is `verified`. `assay` checks that a proof names the
+bytes being admitted. This establishes reproducibility on this machine and
+toolchain, not across every environment
+([ADR-0008](docs/decisions/0008-the-forged-tier-is-earned.md)).
 
 Pick who writes it — `celln agents` shows what this host can use:
 
@@ -182,7 +178,7 @@ $ celln agent --agent openai "…"       # override it for one invocation
 $ CELLN_AGENT=local celln agent "…"    # override it for one shell command
 ```
 
-The saved setting is deliberately small and credential-free:
+The saved setting is credential-free:
 
 ```toml
 # ~/.config/celln/config.toml (or $XDG_CONFIG_HOME/celln/config.toml)
@@ -209,21 +205,18 @@ Without `--allow-host`, Celln returns `Unsupported`; it does not generate a
 crawler that can never connect.
 
 Backends are subprocess adapters over CLIs you have already authenticated, not
-linked SDKs — `celln` never reads, stores, or forwards a key. That is not just
-convenience: under ADR-0006 the credential belongs to the host and must never
-approach the cell.
+linked SDKs. `celln` never reads, stores, or forwards a key; credentials remain
+on the host under ADR-0006.
 
-Two things this is careful about. **The cell has no network** — not a
-firewalled one, none — so the API credential never goes near it; only bytes
-cross. **Grading is provenance, not intent**: a tier says where these bytes came
-from, not that the program is correct or benign. Nobody read it. The cell is
-what makes running it acceptable anyway.
+Cells have no ambient network, so API credentials never enter the guest; only
+brokered bytes cross the boundary. Grading records provenance, not program
+correctness or safety.
 
 Getting the *model itself* into a cell is the same problem as any other egress,
 and gets the same answer — an attested network stack behind a broker, never an
 ambient NIC ([ADR-0006](docs/decisions/0006-hermetic-cells-network-as-a-tool.md)).
 
-## It pipes
+## Output
 
 Human-readable on a terminal, NDJSON the moment it is not. No flag needed,
 though `--json` and `--no-json` force it either way.
@@ -238,20 +231,20 @@ Diagnostics go to stderr, so they never land in the data. Exit codes mean
 something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells ·
 `4` refused by the trust model · `5` unsupported.
 
-## What is real
+## Isolation and limits
 
-`celln run` seals a **real** hardware-isolated microVM and lends it your tools as
-read-only memory that the guest cannot modify — proven against a guest that
+`celln run` seals a hardware-isolated microVM and lends it your tools as
+read-only memory that the guest cannot modify. The hardware test uses a guest that
 enters protected mode and maps the page writable in page tables it wrote itself.
 Revocation reaches a cell that is already running.
 
-**In-cell execution works in the agent lane** — `celln agent` runs agent-authored
-programs behind a Landlock filesystem boundary and a seccomp syscall filter.
+`celln agent` runs agent-authored programs behind a Landlock filesystem boundary
+and a seccomp syscall filter.
 The guest may execute `/tools/program` and write only to `/nous/work`; network,
 mounting, tracing, and privilege gain are refused. `celln run` remains the
 spec-driven sealing path.
 
-Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
+Measurements and known gaps: [docs/findings/](docs/findings/).
 
 ## Reading
 

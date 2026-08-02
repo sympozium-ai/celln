@@ -1,4 +1,4 @@
-# Findings — M1 spawn latency: the gate is MISSED, and the toy was lying
+# Findings — M1 spawn latency: the gate is missed
 
 Date: 2026-08-01 · Host: x86_64, kernel 7.1, Intel VT-x, `/dev/kvm`
 Raw numbers: `bench/results/m1-m2-kvm.json` → `thesis_real_cell_spawn`
@@ -10,7 +10,7 @@ Reproduce: `make bench-kvm` · Test: `cells_fork_from_a_booted_kernel_without_bo
 > about forking a real one. This document tests it with a stock Linux kernel and
 > reports what came back, including a **failed gate**.
 
-## The headline
+## Summary
 
 | | |
 |---|---|
@@ -26,7 +26,7 @@ Reproduce: `make bench-kvm` · Test: `cells_fork_from_a_booted_kernel_without_bo
 and is three orders of magnitude better than booting one. It is also **6× worse
 than the gate**, and about **30× worse than the toy benchmark implied.**
 
-## What the previous numbers actually measured
+## What the previous figures measured
 
 The M1 harness reports fork p50 ≈ 184 µs. That is a fork of a **16 KiB guest
 running hand-assembled real-mode code**, from a "warm snapshot" that is a marker
@@ -81,7 +81,7 @@ cost *collapsed* from 1,817 µs to 333 µs when the mapping was pre-populated,
 which confirms that "memslot ioctl time" is really page-fault time wearing a
 different hat.
 
-## The actual cost, measured
+## Measured cost
 
 Taken together the suspicion was that post-resume **write** faults dominate. That
 is now measured rather than inferred. Activating a cell from an
@@ -143,7 +143,7 @@ Ranked by expected value, given that the target is **fault count**:
 4. **UFFD-based pre-copy of a known hot set**, if the touched pages turn out to
    be stable across cells. Most work, most speculative.
 
-## Honest limits of this measurement
+## Measurement scope
 
 - One vCPU, one guest, one host, `n = 50`. Not a concurrency study; the earlier
   1,000-cell figure is the toy, and the equivalent for real cells is untested.
