@@ -1,4 +1,4 @@
-//! Shared Cellulose types.
+//! Shared Celln types.
 //!
 //! This crate is the vocabulary of the system, in code form. It mirrors
 //! `NAMES_AND_CONVENTIONS.md`:

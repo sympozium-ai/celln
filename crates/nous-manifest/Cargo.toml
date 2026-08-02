@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared Cellulose types: content hashes, manifests, trust tiers, provenance lanes."
+description = "Shared Celln types: content hashes, manifests, trust tiers, provenance lanes."
 
 [dependencies]
 blake3.workspace = true

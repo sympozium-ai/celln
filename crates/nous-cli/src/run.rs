@@ -56,7 +56,7 @@ fn load(path: &Path, o: &Out) -> Result<Spec, u8> {
     }
 }
 
-/// `cell spec check` — validate, then say what would happen.
+/// `celln spec check` — validate, then say what would happen.
 pub fn check(path: &Path, o: &Out) -> Result<u8> {
     let spec = match load(path, o) {
         Ok(s) => s,
@@ -151,13 +151,13 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
     let h = Host::probe();
     if !h.can_seal() {
         o.note(dim(
-            "\nthis host cannot seal cells; `cell run` would refuse. `cell doctor` says why.",
+            "\nthis host cannot seal cells; `celln run` would refuse. `celln doctor` says why.",
         ));
     }
     Ok(exit::OK)
 }
 
-/// `cell run` — seal a cell from a spec and drive its lifecycle.
+/// `celln run` — seal a cell from a spec and drive its lifecycle.
 pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let spec = match load(path, o) {
         Ok(s) => s,
@@ -170,7 +170,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let h = Host::probe();
     if !h.can_seal() {
         eprintln!(
-            "{}: this host cannot seal cells. Run `cell doctor`.",
+            "{}: this host cannot seal cells. Run `celln doctor`.",
             red("error")
         );
         return Ok(exit::HOST_INCAPABLE);
@@ -179,7 +179,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let mut assayer =
         Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
 
-    // Write the cell down before it exists, so `cell ps` can see it while it
+    // Write the cell down before it exists, so `celln ps` can see it while it
     // runs and still has a record if this process is killed mid-cell.
     let mut record = crate::cells::begin(
         root,
@@ -301,7 +301,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
             "in-cell execution of your command is not wired yet (build plan M5:\n\
              stripped mote kernel + pilot). What ran here is real: a hardware-isolated\n\
              cell, your tools sealed into it as read-only memory, and every trust\n\
-             decision applied. `cell verify` proves the isolation on this machine.",
+             decision applied. `celln verify` proves the isolation on this machine.",
         ));
     }
     Ok(exit::OK)
@@ -358,12 +358,12 @@ fn seal_cell(
     anyhow::bail!("hardware isolation needs Linux with /dev/kvm")
 }
 
-/// `cell ps` — cells, the way `docker ps` shows containers.
+/// `celln ps` — cells, the way `docker ps` shows containers.
 ///
 /// This registry exists because a KVM VM has no identity outside the process
 /// that made it: it is a file descriptor, there is no `/proc/kvm` to walk, and
 /// `virsh list` only ever shows domains libvirt itself created. If a cell is to
-/// be visible at all, `cell` has to write it down.
+/// be visible at all, `celln` has to write it down.
 pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
     let mut records = crate::cells::list(root);
     if !all {
@@ -388,11 +388,11 @@ pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
 
     if records.is_empty() {
         o.note(dim(if all {
-            "no cells yet — `cell run <spec>` seals one"
+            "no cells yet — `celln run <spec>` seals one"
         } else {
             // Cells are short-lived, so an empty `ps` is the normal case and
             // saying nothing here would look like a broken command.
-            "no live cells — `cell ps -a` shows recent runs"
+            "no live cells — `celln ps -a` shows recent runs"
         }));
         return Ok(exit::OK);
     }
@@ -451,14 +451,14 @@ fn visible_len(s: &str) -> usize {
     n
 }
 
-/// `cell tools` — what this host has attested.
+/// `celln tools` — what this host has attested.
 pub fn tools(root: &Path, o: &Out) -> Result<u8> {
     let assayer =
         Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
     let m = assayer.manifest();
     if m.is_empty() {
         o.note(dim(
-            "no tools attested yet — `cell run` admits them as it resolves",
+            "no tools attested yet — `celln run` admits them as it resolves",
         ));
         return Ok(exit::OK);
     }
@@ -480,7 +480,7 @@ pub fn tools(root: &Path, o: &Out) -> Result<u8> {
     Ok(exit::OK)
 }
 
-/// `cell verify` — prove the isolation on this machine, right now.
+/// `celln verify` — prove the isolation on this machine, right now.
 #[cfg(target_os = "linux")]
 pub fn verify(o: &Out) -> Result<u8> {
     use nous_manifest::Hash;
@@ -490,7 +490,7 @@ pub fn verify(o: &Out) -> Result<u8> {
     let h = Host::probe();
     if !h.can_seal() {
         eprintln!(
-            "{}: no hardware isolation here. Run `cell doctor`.",
+            "{}: no hardware isolation here. Run `celln doctor`.",
             red("error")
         );
         return Ok(exit::HOST_INCAPABLE);
@@ -587,7 +587,7 @@ pub fn verify(o: &Out) -> Result<u8> {
     Ok(exit::HOST_INCAPABLE)
 }
 
-/// `cell demo` — the five-beat loop, no hardware required.
+/// `celln demo` — the five-beat loop, no hardware required.
 pub fn demo(o: &Out) -> Result<u8> {
     let tmp = std::env::temp_dir().join(format!("nous-demo-{}", std::process::id()));
     let mut assayer = Assayer::open(&tmp)?;
@@ -663,7 +663,7 @@ pub fn demo(o: &Out) -> Result<u8> {
     let h = Host::probe();
     if h.can_seal() {
         o.say(dim(
-            "that was the control flow. `cell verify` proves it in hardware.",
+            "that was the control flow. `celln verify` proves it in hardware.",
         ));
     } else {
         o.say(dim(

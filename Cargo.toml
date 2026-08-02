@@ -12,11 +12,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
-repository = "https://github.com/sympozium-ai/cellulose"
+repository = "https://github.com/sympozium-ai/celln"
 
 # Pinned to versions that build on Rust 1.75 (edition 2021).
 [workspace.dependencies]

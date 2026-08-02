@@ -1,14 +1,14 @@
 [package]
-name = "cell-cli"
+name = "celln-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "cell — run agents in hardware-isolated cells."
+description = "celln — run agents in hardware-isolated cells."
 
 [[bin]]
-name = "cell"
+name = "celln"
 path = "src/main.rs"
 
 [dependencies]

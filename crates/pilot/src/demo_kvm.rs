@@ -36,7 +36,7 @@ fn main() -> anyhow::Result<()> {
     let tmp = std::env::temp_dir().join(format!("nous-demo-kvm-{}", std::process::id()));
     let mut assayer = Assayer::open(&tmp)?;
 
-    println!("\x1b[1mCellulose M1 — five-beat proof on REAL KVM\x1b[0m");
+    println!("\x1b[1mCelln M1 — five-beat proof on REAL KVM\x1b[0m");
     println!("store: {}", tmp.display());
 
     // Shipped inventory: "python" is pre-forged. Its bytes are real guest code

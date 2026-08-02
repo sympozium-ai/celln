@@ -685,7 +685,7 @@ fn main() -> anyhow::Result<()> {
         eprintln!("no /dev/kvm on this host — this harness measures real hardware");
         std::process::exit(1);
     }
-    println!("\x1b[1mCellulose — M1/M2 exit criteria on real KVM\x1b[0m");
+    println!("\x1b[1mCelln — M1/M2 exit criteria on real KVM\x1b[0m");
     println!(
         "host: {} · kernel {}",
         std::env::consts::ARCH,

@@ -1,7 +1,7 @@
 //! The **cell spec**: what a user writes to describe an agent's cell.
 //!
 //! This is the contract between someone who wants to run an agent and the
-//! machinery that isolates it. Everything else in Cellulose is an implementation
+//! machinery that isolates it. Everything else in Celln is an implementation
 //! detail behind it, so the spec is deliberately small and boring: a name, a
 //! cell size, the tools the agent may be lent, and what it intends to run.
 //!
@@ -105,7 +105,7 @@ pub struct Tool {
     /// True for interpreters (python, sh, node…). An interpreter fed input the
     /// agent wrote is moved to the agent lane *for that invocation* — the
     /// laundering ban. Getting this wrong is the most consequential mistake
-    /// available in this file, which is why `cell spec check` guesses at it and
+    /// available in this file, which is why `celln spec check` guesses at it and
     /// warns when your answer disagrees.
     #[serde(default)]
     pub interpreter: bool,
@@ -361,14 +361,14 @@ pub fn parse_size(s: &str) -> Option<u64> {
 }
 
 /// A starter spec, written to be read: every field is explained where it is.
-pub const TEMPLATE: &str = r#"# A Cellulose cell spec.
+pub const TEMPLATE: &str = r#"# A Celln cell spec.
 #
 # This describes the cell an agent runs in: how big it is, which tools it may
 # be lent, and what it intends to run. Anything not listed here cannot execute
 # inside the cell — that is the point of the file.
 #
-#   cell spec check agent.toml    # validate, and show what would happen
-#   cell run agent.toml           # seal a cell and do it
+#   celln spec check agent.toml   # validate, and show what would happen
+#   celln run agent.toml          # seal a cell and do it
 
 name = "my-agent"
 

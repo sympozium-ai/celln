@@ -15,26 +15,27 @@ struct Agent {
     default: Option<String>,
 }
 
-/// `CELL_CONFIG` is useful for automation; otherwise follow XDG on every host.
+/// `CELLN_CONFIG` is useful for automation; otherwise follow XDG on every host.
 pub fn path() -> PathBuf {
-    if let Some(path) = std::env::var_os("CELL_CONFIG") {
+    if let Some(path) = std::env::var_os("CELLN_CONFIG") {
         return PathBuf::from(path);
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"));
-    base.join("cell").join("config.toml")
+    base.join("celln").join("config.toml")
 }
 
 fn legacy_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("NOUS_CONFIG") {
+    if let Some(path) = std::env::var_os("CELL_CONFIG").or_else(|| std::env::var_os("NOUS_CONFIG"))
+    {
         return Some(PathBuf::from(path));
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(base.join("nous").join("config.toml"))
+    Some(base.join("cell").join("config.toml"))
 }
 
 pub fn default_agent() -> Result<Option<String>> {
@@ -67,7 +68,7 @@ pub fn set_default_agent(agent: &str) -> Result<PathBuf> {
             default: Some(agent.to_owned()),
         },
     };
-    let source = toml::to_string_pretty(&config).context("encoding cell config")?;
+    let source = toml::to_string_pretty(&config).context("encoding celln config")?;
     std::fs::write(&path, source).with_context(|| format!("writing config {}", path.display()))?;
     Ok(path)
 }

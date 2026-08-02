@@ -1,11 +1,11 @@
-# Development tasks for working on Cellulose.
+# Development tasks for working on Celln.
 #
-# This is NOT the user interface. Users install `cell` and run `cell <verb>` —
+# This is NOT the user interface. Users install `celln` and run `celln <verb>` —
 # nothing here is required to use the tool, and nothing here does anything a
 # user needs. If you find yourself documenting a make target for users, it
 # belongs in the CLI instead.
 #
-#   make install    build and install `cell` into ~/.cargo/bin
+#   make install    build and install `celln` into ~/.cargo/bin
 #   make ci         what CI runs
 #
 # Rust for code, make for orchestration, shell for glue. No Python.
@@ -20,9 +20,9 @@ help: ## show this help
 		| sort | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: install
-install: ## build and install the `cell` CLI into ~/.cargo/bin
+install: ## build and install the `celln` CLI into ~/.cargo/bin
 	$(CARGO) install --path crates/nous-cli --locked
-	@echo "installed. try: cell doctor"
+	@echo "installed. try: celln doctor"
 
 .PHONY: build
 build: ## build the whole workspace (mock backend)
@@ -97,4 +97,4 @@ ci: fmt-check clippy build test ## what CI runs
 .PHONY: clean
 clean: ## remove build artifacts and demo state
 	$(CARGO) clean
-	rm -rf .cell
+	rm -rf .celln

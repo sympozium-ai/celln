@@ -1,4 +1,4 @@
-//! Booting a **stock Linux kernel** in a Cellulose microVM.
+//! Booting a **stock Linux kernel** in a Celln microVM.
 //!
 //! M1/M2 proved the enforcement layer with hand-assembled, kernel-less guests.
 //! That was the right way to prove sealing (a kernel-less guest can be made

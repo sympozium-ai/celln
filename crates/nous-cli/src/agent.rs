@@ -1,4 +1,4 @@
-//! `cell agent` — ask Claude for a program, then run it sealed in a cell.
+//! `celln agent` — ask Claude for a program, then run it sealed in a cell.
 //!
 //! This is the end-to-end shape of the thing: a model writes code, the host
 //! attests the bytes it actually built, seals them into a hardware-isolated
@@ -63,7 +63,7 @@ const ALIAS: &str = "/agent/program";
 /// Which model writes the code.
 ///
 /// Backends are subprocess adapters, not linked SDKs: whatever CLI the user has
-/// already authenticated is what gets used, and `cell` never reads, stores, or
+/// already authenticated is what gets used, and `celln` never reads, stores, or
 /// forwards a key. That is not only convenience — under ADR-0006 the credential
 /// belongs to the host and must never approach the cell, and shelling out to a
 /// tool that already holds it is the least-privilege way to arrange that.
@@ -233,7 +233,7 @@ impl Backend {
 }
 
 /// List the built-in backends and whether this host can use them.
-/// Mirrors `cell tools`: the question is always "what is available here".
+/// Mirrors `celln tools`: the question is always "what is available here".
 pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
     if let Some(backend) = set_default {
         let path = crate::config::set_default_agent(backend.saved_name())?;
@@ -292,7 +292,7 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
         None => match discover_backend() {
             Some(backend) => backend,
             None => {
-                o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then rerun `cell setup`");
+                o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then rerun `celln setup`");
                 return Ok(crate::exit::HOST_INCAPABLE);
             }
         },
@@ -346,7 +346,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     let model = model.or_else(|| backend.default_model());
     if !backend.available() {
         o.warn(format!(
-            "{} needs `{}` on PATH — see `cell agents`",
+            "{} needs `{}` on PATH — see `celln agents`",
             backend.label(),
             backend.program()
         ));
@@ -549,7 +549,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
 }
 
 /// Questions do not need a cell: no generated program runs, so there is
-/// nothing to contain. Keep this path visibly separate from `cell agent`.
+/// nothing to contain. Keep this path visibly separate from `celln agent`.
 pub fn ask(
     question: &str,
     requested_backend: Option<Backend>,
@@ -563,7 +563,7 @@ pub fn ask(
     };
     if !backend.available() {
         o.warn(format!(
-            "{} needs `{}` on PATH — see `cell agents`",
+            "{} needs `{}` on PATH — see `celln agents`",
             backend.label(),
             backend.program()
         ));
@@ -597,13 +597,16 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     if let Some(backend) = requested {
         return Ok(Some(backend));
     }
-    if let Some(name) = std::env::var_os("CELL_AGENT").or_else(|| std::env::var_os("NOUS_AGENT")) {
+    if let Some(name) = std::env::var_os("CELLN_AGENT")
+        .or_else(|| std::env::var_os("CELL_AGENT"))
+        .or_else(|| std::env::var_os("NOUS_AGENT"))
+    {
         let name = name.to_string_lossy();
         return match Backend::from_saved_name(&name) {
             Some(backend) => Ok(Some(backend)),
             None => {
                 o.warn(format!(
-                    "CELL_AGENT={name:?} is not one of: openai, anthropic, local"
+                    "CELLN_AGENT={name:?} is not one of: openai, anthropic, local"
                 ));
                 Ok(None)
             }
@@ -613,7 +616,7 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
         return match Backend::from_saved_name(&name) {
             Some(backend) => Ok(Some(backend)),
             None => {
-                o.warn(format!("saved default {name:?} is not one of: openai, anthropic, local; run `cell setup`"));
+                o.warn(format!("saved default {name:?} is not one of: openai, anthropic, local; run `celln setup`"));
                 Ok(None)
             }
         };
@@ -621,14 +624,14 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     match discover_backend() {
         Some(backend) => {
             o.note(format!(
-                "  {} using {} — run `cell setup` to save it as your default",
+                "  {} using {} — run `celln setup` to save it as your default",
                 dim("·"),
                 backend.label()
             ));
             Ok(Some(backend))
         }
         None => {
-            o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then run `cell setup`");
+            o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then run `celln setup`");
             Ok(None)
         }
     }
@@ -761,7 +764,7 @@ fn run_in_cell(
             }
             o.warn(format!("pilot refused to run it: {reason}"));
             o.note(format!(
-                "  {} this is a safe policy refusal, not a broken cell; `cell ps -a` records it as refused.\n  {} to inspect the generated code, rerun with `--show-source`.",
+                "  {} this is a safe policy refusal, not a broken cell; `celln ps -a` records it as refused.\n  {} to inspect the generated code, rerun with `--show-source`.",
                 dim("·"),
                 dim("·")
             ));
@@ -944,7 +947,7 @@ fn ask_model_text(
                     .unwrap_or("error");
                 bail!(
                     "`{program}` reported {subtype} after {} ms of API time.\n\
-                     The failure is inside the CLI, not in Cellulose — no program was \
+                     The failure is inside the CLI, not in Celln — no program was \
                      produced. Some prompts trigger this every time, so rewording \
                      the task is more likely to help than retrying it.",
                     v.get("duration_api_ms")
@@ -982,7 +985,7 @@ fn extract_rust(reply: &str) -> Option<String> {
     Some(body[after..end].to_string())
 }
 
-/// The agent elects a runtime; Cellulose validates it against the sealed
+/// The agent elects a runtime; Celln validates it against the sealed
 /// capability set before it ever reaches the build or cell.
 fn extract_program(reply: &str) -> Result<GeneratedProgram> {
     let runtime_id = reply
@@ -1023,19 +1026,20 @@ fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) ->
 }
 
 /// Find the guest-image assets. A checkout remains convenient for development,
-/// while a packaged install places the same tree in `share/cellulose` beside the
-/// executable's prefix. `CELL_RUNTIME_DIR` is an explicit override for unusual
+/// while a packaged install places the same tree in `share/celln` beside the
+/// executable's prefix. `CELLN_RUNTIME_DIR` is an explicit override for unusual
 /// layouts and downstream packagers.
 fn runtime_root() -> Result<PathBuf> {
-    if let Some(p) =
-        std::env::var_os("CELL_RUNTIME_DIR").or_else(|| std::env::var_os("NOUS_RUNTIME_DIR"))
+    if let Some(p) = std::env::var_os("CELLN_RUNTIME_DIR")
+        .or_else(|| std::env::var_os("CELL_RUNTIME_DIR"))
+        .or_else(|| std::env::var_os("NOUS_RUNTIME_DIR"))
     {
         let p = PathBuf::from(p);
         if p.join("scripts/mkinitramfs.sh").exists() {
             return Ok(p);
         }
         bail!(
-            "CELL_RUNTIME_DIR={} does not contain scripts/mkinitramfs.sh",
+            "CELLN_RUNTIME_DIR={} does not contain scripts/mkinitramfs.sh",
             p.display()
         );
     }
@@ -1047,14 +1051,14 @@ fn runtime_root() -> Result<PathBuf> {
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(prefix) = exe.parent().and_then(Path::parent) {
-            let packaged = prefix.join("share/cellulose");
+            let packaged = prefix.join("share/celln");
             if packaged.join("scripts/mkinitramfs.sh").exists() {
                 return Ok(packaged);
             }
         }
     }
     bail!(
-        "guest assets are missing; reinstall cellulose, or set CELL_RUNTIME_DIR to its asset directory"
+        "guest assets are missing; reinstall celln, or set CELLN_RUNTIME_DIR to its asset directory"
     )
 }
 
@@ -1083,11 +1087,11 @@ mod tests {
 
     #[test]
     fn packaged_runtime_layout_is_under_the_install_prefix() {
-        let exe = Path::new("/opt/homebrew/bin/cell");
+        let exe = Path::new("/opt/homebrew/bin/celln");
         let prefix = exe.parent().and_then(Path::parent).unwrap();
         assert_eq!(
-            prefix.join("share/cellulose"),
-            PathBuf::from("/opt/homebrew/share/cellulose")
+            prefix.join("share/celln"),
+            PathBuf::from("/opt/homebrew/share/celln")
         );
     }
 }

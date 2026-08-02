@@ -7,7 +7,7 @@
 //!    get something readable. Redirected into a file or a pipe you get NDJSON,
 //!    one event per line, because that is what the next program in the pipeline
 //!    wants. `--json` and `--no-json` override the guess.
-//! 2. **Events go to stdout, diagnostics go to stderr.** `cell run spec.toml |
+//! 2. **Events go to stdout, diagnostics go to stderr.** `celln run spec.toml |
 //!    jq` must never have a progress message land in the JSON stream.
 
 use is_terminal::IsTerminal;
@@ -53,7 +53,7 @@ impl Out {
     /// An event: a line of NDJSON, or `human` if someone is watching.
     ///
     /// `--quiet` silences stdout in *both* modes. That is what quiet means
-    /// elsewhere, and it is what makes `cell doctor -q || echo …` work as a
+    /// elsewhere, and it is what makes `celln doctor -q || echo …` work as a
     /// pure exit-code check without a redirect.
     pub fn event(&self, event: &str, fields: serde_json::Value, human: impl AsRef<str>) {
         if self.quiet {

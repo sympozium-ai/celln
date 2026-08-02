@@ -18,7 +18,7 @@ jobs:
 
       # Refuse to tag something that does not build and pass.
       - run: cargo test --workspace
-      - run: cargo build --release -p cell-cli
+      - run: cargo build --release -p celln-cli
 
       # The source repo is private. The tap therefore fetches the signed tag
       # through the caller's SSH Git credentials rather than an unauthenticated
@@ -43,7 +43,7 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            target/release/cell
+            target/release/celln
             Formula/cellulose.rb
           body: |
             ## Install
@@ -55,13 +55,13 @@ jobs:
             Then:
 
             ```sh
-            cell doctor
-            cell spec init > agent.toml
-            cell run agent.toml
+            celln doctor
+            celln spec init > agent.toml
+            celln run agent.toml
             ```
 
-            Sealing cells needs Linux with `/dev/kvm`; `cell doctor` reports
+            Sealing cells needs Linux with `/dev/kvm`; `celln doctor` reports
             what this machine can do.
 
-            **Formula maintainers:** copy the attached `cellulose.rb` into the
+            **Formula maintainers:** copy the attached `celln.rb` into the
             private tap. It pins this release's SSH Git tag and commit.

@@ -1,4 +1,4 @@
-# Cellulose — Names & Conventions
+# Celln — Names & Conventions
 
 The canonical glossary. When a term is used in the build plan, the proposal, the diagrams, or the code, it means what it means here. If a document drifts from these definitions, this document wins.
 
@@ -21,7 +21,7 @@ State it this way whenever the relationship matters, so the two terms stay a hie
 
 | Term | Pronunciation | Meaning |
 |------|---------------|---------|
-| **Cellulose** | SELL-you-lohs | The product. A biological structural material made of cells: the substrate that gives cells form and strength. Working name, pending trademark/domain clearance. |
+| **Celln** | SELL-en | The product. Scale a system to cell *n*: an unbounded family of sealed cells, each with explicit authority. Working name, pending trademark/domain clearance. |
 
 Thesis line: _software is a service the host provides to the process, not property the machine owns._
 
