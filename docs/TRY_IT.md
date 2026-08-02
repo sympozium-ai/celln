@@ -181,20 +181,22 @@ nous agent "print the first 100 primes, space separated"
   + rebuilt, reproduced  blake3:c0d7ceb8…  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:agent
-  ✔ pilot: /agent/program refused:agent-lane-unavailable
-warning: pilot refused to run it: refused:agent-lane-unavailable
+
+2 3 5 7 11 13 17 19 23 29 31 ...
 ```
 
-**The refusal is the correct answer, and it is the interesting part.** The
+**The agent lane is the point.** The
 program was graded `forged` — `forge` rebuilt it twice and the bytes matched,
 so the tier was earned rather than asserted. It is still `author=agent`, and
 agent-authored code never carries tool-lane authority at any tier. Running it
-needs the agent-lane capability boundary, which does not exist yet.
+runs with a workspace-only Landlock boundary and a seccomp network/privileged-
+syscall filter.
 
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier.
 
-To watch it actually run while the agent lane is being built:
+`--trust-agent-code` remains an unsafe debugging override; normal `nous agent`
+already runs in the agent lane:
 
 ```sh
 nous agent --trust-agent-code "print the first 100 primes, space separated"
