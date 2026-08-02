@@ -1,14 +1,14 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/nous-manifest",
-    "crates/nous-spec",
-    "crates/nous-cli",
-    "crates/nous-store",
-    "crates/assay",
-    "crates/forge",
-    "crates/pilot",
-    "crates/warden",
+    "crates/celln-manifest",
+    "crates/celln-spec",
+    "crates/celln-cli",
+    "crates/celln-store",
+    "crates/celln-assay",
+    "crates/celln-forge",
+    "crates/celln-pilot",
+    "crates/celln-warden",
 ]
 
 [workspace.package]

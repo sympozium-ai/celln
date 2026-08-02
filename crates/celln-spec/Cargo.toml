@@ -1,11 +1,14 @@
 [package]
-name = "nous-spec"
+name = "celln-spec"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The cell spec: what a user writes to describe an agent's cell."
+
+[lib]
+name = "nous_spec"
 
 [dependencies]
 serde.workspace = true

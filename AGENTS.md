@@ -35,15 +35,15 @@ of the design corpus in `docs/`.
 
 ## Where things are
 
-- Trust core (no I/O): `crates/nous-manifest`
-- Store: `crates/nous-store`
-- Cell spec parsing + validation: `crates/nous-spec`
-- Grading, tiered resolution + CLI: `crates/assay`
-- Build plane (rebuild + reproduce): `crates/forge`
-- The `cell` CLI users actually run: `crates/nous-cli`
-- Ratchet + VMM trait/backends: `crates/warden` (`vmm/kvm.rs` real KVM,
+- Trust core (no I/O): `crates/celln-manifest`
+- Store: `crates/celln-store`
+- Cell spec parsing + validation: `crates/celln-spec`
+- Grading, tiered resolution + CLI: `crates/celln-assay`
+- Build plane (rebuild + reproduce): `crates/celln-forge`
+- The `celln` CLI users actually run: `crates/celln-cli`
+- Ratchet + VMM trait/backends: `crates/celln-warden` (`vmm/kvm.rs` real KVM,
   `vmm/boot.rs` stock-kernel boot)
-- Exec gate + lanes + explain + demos: `crates/pilot`
+- Exec gate + lanes + explain + demos: `crates/celln-pilot`
 - Guest-side code: `guest/init/init.c` (freestanding, no libc); guest images built
   by `scripts/mkinitramfs.sh` and `scripts/mktoolfs.sh`
 - Verdicts and measurements: `docs/findings/`, `bench/results/`

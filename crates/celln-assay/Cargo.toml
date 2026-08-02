@@ -1,5 +1,5 @@
 [package]
-name = "assay"
+name = "celln-assay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,9 +16,9 @@ name = "assay"
 path = "src/lib.rs"
 
 [dependencies]
-nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
-forge = { version = "0.3.0", path = "../forge" }
-nous-store = { version = "0.3.0", path = "../nous-store" }
+celln-manifest = { version = "0.3.0", path = "../celln-manifest" }
+celln-forge = { version = "0.3.0", path = "../celln-forge" }
+celln-store = { version = "0.3.0", path = "../celln-store" }
 clap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

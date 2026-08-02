@@ -1,14 +1,16 @@
 [package]
-name = "nous-manifest"
+name = "celln-forge"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared Celln types: content hashes, manifests, trust tiers, provenance lanes."
+description = "The build plane: rebuilds an artifact from source and proves the bytes match."
+
+[lib]
+name = "forge"
 
 [dependencies]
-blake3.workspace = true
+celln-manifest = { version = "0.3.0", path = "../celln-manifest" }
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true

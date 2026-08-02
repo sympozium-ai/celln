@@ -25,15 +25,15 @@ class Celln < Formula
     ENV["CARGO_HOME"] = buildpath/"cargo"
     system "rustup", "toolchain", "install", "stable", "--profile", "minimal",
            "--target", "x86_64-unknown-linux-musl"
-    system "cargo", "+stable", "install", "--path", "crates/nous-cli", "--root", prefix,
+    system "cargo", "+stable", "install", "--path", "crates/celln-cli", "--root", prefix,
            "--locked"
     guest_bin = buildpath/"guest-bin"
-    system "cargo", "+stable", "install", "--path", "crates/pilot", "--root", guest_bin,
-           "--target", "x86_64-unknown-linux-musl", "--bin", "nous-pilot", "--bin", "pilot-fetch",
+    system "cargo", "+stable", "install", "--path", "crates/celln-pilot", "--root", guest_bin,
+           "--target", "x86_64-unknown-linux-musl", "--bin", "celln-pilot", "--bin", "pilot-fetch",
            "--locked"
 
     pkgshare.install "scripts", "guest"
-    (pkgshare/"pilot").install guest_bin/"bin/nous-pilot"
+    (pkgshare/"pilot").install guest_bin/"bin/celln-pilot"
     (pkgshare/"pilot").install guest_bin/"bin/pilot-fetch"
   end
 

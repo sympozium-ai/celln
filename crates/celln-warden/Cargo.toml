@@ -1,11 +1,14 @@
 [package]
-name = "warden"
+name = "celln-warden"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Per-cell VMM: wraps one microVM, enforces the authority ratchet."
+
+[lib]
+name = "warden"
 
 [features]
 # Default builds the mock backend so the POC runs on any host (incl. this
@@ -16,7 +19,7 @@ mock = []
 kvm = ["dep:kvm-ioctls", "dep:kvm-bindings", "dep:libc"]
 
 [dependencies]
-nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
+celln-manifest = { version = "0.3.0", path = "../celln-manifest" }
 thiserror.workspace = true
 kvm-ioctls = { workspace = true, optional = true }
 kvm-bindings = { workspace = true, optional = true }

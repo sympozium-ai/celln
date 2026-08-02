@@ -1,5 +1,5 @@
 [package]
-name = "nous-store"
+name = "celln-store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Content-addressed store: the on-disk half of assay's distro."
 
+[lib]
+name = "nous_store"
+
 [dependencies]
-nous-manifest = { version = "0.3.0", path = "../nous-manifest" }
+celln-manifest = { version = "0.3.0", path = "../celln-manifest" }
 blake3.workspace = true
 thiserror.workspace = true
 

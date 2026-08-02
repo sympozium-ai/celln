@@ -49,16 +49,16 @@ mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
 # outcomes — an attested interpreter (demoted when fed agent-authored input),
 # an attested binary (not demoted), and one that is simply not in the manifest.
 pilot_dir="${NOUS_PILOT_DIR:-$root/pilot}"
-if [ -x "$pilot_dir/nous-pilot" ] && [ -x "$pilot_dir/pilot-fetch" ]; then
+if [ -x "$pilot_dir/celln-pilot" ] && [ -x "$pilot_dir/pilot-fetch" ]; then
   # An installed distribution ships these two static guest binaries. Keeping
   # them out of the host's PATH prevents an installed `nous agent` from needing
   # a checkout or Cargo merely to construct an initramfs.
-  cp "$pilot_dir/nous-pilot" "$work/pilot"
+  cp "$pilot_dir/celln-pilot" "$work/pilot"
   cp "$pilot_dir/pilot-fetch" "$work/pilot-fetch"
 elif rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
   ( cd "$root" && cargo build --quiet --release \
-      --target x86_64-unknown-linux-musl -p pilot --bin nous-pilot --bin pilot-fetch )
-  cp "$root/target/x86_64-unknown-linux-musl/release/nous-pilot" "$work/pilot"
+      --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch )
+  cp "$root/target/x86_64-unknown-linux-musl/release/celln-pilot" "$work/pilot"
   cp "$root/target/x86_64-unknown-linux-musl/release/pilot-fetch" "$work/pilot-fetch"
 else
   printf 'pilot:    skipped (install a distribution with guest assets, or run rustup target add x86_64-unknown-linux-musl)\n'

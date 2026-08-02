@@ -21,7 +21,7 @@ help: ## show this help
 
 .PHONY: install
 install: ## build and install the `celln` CLI into ~/.cargo/bin
-	$(CARGO) install --path crates/nous-cli --locked
+	$(CARGO) install --path crates/celln-cli --locked
 	@echo "installed. try: celln doctor"
 
 .PHONY: build
@@ -38,19 +38,19 @@ test: ## run all unit tests
 
 .PHONY: demo
 demo: ## run the five-beat proof loop (mock mode, no KVM)
-	@$(CARGO) run --quiet --bin nous-demo
+	@$(CARGO) run --quiet --bin celln-demo
 
 .PHONY: test-kvm
 test-kvm: ## run warden tests against REAL KVM (needs /dev/kvm)
-	$(CARGO) test -p warden --features kvm
+	$(CARGO) test -p celln-warden --features kvm
 
 .PHONY: demo-kvm
 demo-kvm: ## run the five-beat proof on REAL KVM (needs /dev/kvm)
-	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-demo-kvm
+	@$(CARGO) run --quiet -p celln-pilot --features kvm --bin celln-demo-kvm
 
 .PHONY: bench-kvm
 bench-kvm: ## measure the M1/M2 exit criteria on REAL KVM -> bench/results/
-	@$(CARGO) run --quiet --release -p pilot --features kvm --bin nous-bench-kvm
+	@$(CARGO) run --quiet --release -p celln-pilot --features kvm --bin celln-bench-kvm
 
 .PHONY: initramfs
 initramfs: ## build the guest initramfs (freestanding init, needs gcc + cpio)
@@ -69,11 +69,11 @@ guest: initramfs toolfs ## build everything the guest side needs
 
 .PHONY: boot-kvm
 boot-kvm: guest ## boot a STOCK kernel and prove the VFS<->memslot join (needs /dev/kvm)
-	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-boot-kvm
+	@$(CARGO) run --quiet -p celln-pilot --features kvm --bin celln-boot-kvm
 
 .PHONY: fetch-proof
 fetch-proof: ## prove a real cell fetches HTTPS through pilot (needs /dev/kvm + egress)
-	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-fetch-proof -- $(FETCH_URL)
+	@$(CARGO) run --quiet -p celln-pilot --features kvm --bin celln-fetch-proof -- $(FETCH_URL)
 
 .PHONY: fmt
 fmt: ## format all crates
