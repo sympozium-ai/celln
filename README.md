@@ -18,9 +18,8 @@ brew tap sympozium-ai/tap
 brew install sympozium-ai/tap/celln
 ```
 
-The tap and source repository are private: this uses the SSH Git key you
-already use for GitHub. On Linux, enable the one static target that the local
-build plane uses for generated programs:
+The tap and source repository are public. On Linux, enable the one static
+target that the local build plane uses for generated programs:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
@@ -30,9 +29,9 @@ rustup target add x86_64-unknown-linux-musl
 <summary>or from source</summary>
 
 ```sh
-git clone git@github.com:sympozium-ai/celln.git
+git clone https://github.com/sympozium-ai/celln.git
 cd celln
-cargo build --release -p cell-cli
+cargo build --release -p celln-cli
 ./target/release/celln doctor
 ```
 </details>
