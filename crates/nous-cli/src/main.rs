@@ -83,11 +83,31 @@ enum Cmd {
     /// Prove the isolation properties on this machine.
     Verify,
 
-    /// Ask Claude for a program, then run it sealed in a cell.
+    /// Ask a model for a program, then run it sealed in a cell.
     Agent {
         /// What the program should do, in plain english.
         task: String,
+
+        /// Which model writes it. See `nous agents`.
+        #[arg(long, value_enum, default_value = "anthropic")]
+        agent: agent::Backend,
+
+        /// Override the backend's default model.
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Run the generated program in the tool lane.
+        ///
+        /// Off by default, and the default is the correct one: code a model
+        /// wrote is agent-authored however it was built, so it belongs in the
+        /// collared lane. This exists only so the substrate stays demonstrable
+        /// while the collar is being built.
+        #[arg(long)]
+        trust_agent_code: bool,
     },
+
+    /// List the built-in agent backends and whether this host can use them.
+    Agents,
 
     /// Walk the five-beat proof loop. Works without KVM.
     Demo,
@@ -140,7 +160,13 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Tools => run::tools(&cli.root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
-        Cmd::Agent { task } => agent::agent(&task, o),
+        Cmd::Agent {
+            task,
+            agent,
+            model,
+            trust_agent_code,
+        } => agent::agent(task, *agent, model.as_deref(), *trust_agent_code, o),
+        Cmd::Agents => agent::agents(o),
     }
 }
 

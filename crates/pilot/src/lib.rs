@@ -77,6 +77,7 @@ mod tests {
             hash: h.clone(),
             tier: Tier::Forged,
             interpreter: interp,
+            author: nous_manifest::Author::Host,
         });
         (m, h)
     }

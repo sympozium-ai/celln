@@ -28,6 +28,10 @@ enum Cmd {
         file: PathBuf,
         #[arg(long)]
         interpreter: bool,
+        /// The source these bytes were built from was written by an agent.
+        /// Forging still applies; tool-lane authority does not.
+        #[arg(long)]
+        agent_authored: bool,
     },
     /// Resolve a tool by alias, admitting upstream bytes from a file if cold.
     Resolve {
@@ -56,10 +60,16 @@ fn main() -> Result<()> {
             alias,
             file,
             interpreter,
+            agent_authored,
         } => {
+            let author = if agent_authored {
+                nous_manifest::Author::Agent
+            } else {
+                nous_manifest::Author::Host
+            };
             let bytes = std::fs::read(&file)?;
-            let h = forge.preforge(&alias, &bytes, interpreter)?;
-            println!("forged {alias}\n  {h}\n  tier=forged");
+            let h = forge.preforge_authored(&alias, &bytes, interpreter, author)?;
+            println!("forged {alias}\n  {h}\n  tier=forged author={author}");
         }
         Cmd::Resolve {
             alias,

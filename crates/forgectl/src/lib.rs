@@ -9,7 +9,7 @@
 //! simulated: we mark an artifact as upgradeable and expose `upgrade_to_forged`
 //! to model the background rebuild landing. No KVM, fully tested.
 
-use nous_manifest::{Entry, Hash, Manifest, Tier};
+use nous_manifest::{Author, Entry, Hash, Manifest, Tier};
 use nous_store::Store;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -78,12 +78,29 @@ impl Forge {
         bytes: &[u8],
         interpreter: bool,
     ) -> Result<Hash, ForgeError> {
+        self.preforge_authored(alias, bytes, interpreter, Author::Host)
+    }
+
+    /// Pre-forge, naming who wrote the source.
+    ///
+    /// Forging agent-authored source is a normal thing to do — it is how we get
+    /// a reproducible artifact out of something a model wrote. It just must not
+    /// also grant tool-lane authority, which is why the author rides along in
+    /// the manifest rather than being forgotten at the build step.
+    pub fn preforge_authored(
+        &mut self,
+        alias: &str,
+        bytes: &[u8],
+        interpreter: bool,
+        author: Author,
+    ) -> Result<Hash, ForgeError> {
         let hash = self.store.put(bytes)?;
         self.manifest.admit(Entry {
             alias: alias.into(),
             hash: hash.clone(),
             tier: Tier::Forged,
             interpreter,
+            author,
         });
         self.manifest.sign_standin();
         let _ = self.persist();
@@ -120,6 +137,7 @@ impl Forge {
             hash: hash.clone(),
             tier: Tier::Verified,
             interpreter,
+            author: Author::Host,
         });
         self.manifest.sign_standin();
         let _ = self.persist();
@@ -147,6 +165,7 @@ impl Forge {
             hash: hash.clone(),
             tier: Tier::Unsealed,
             interpreter,
+            author: Author::Host,
         });
         self.manifest.sign_standin();
         let _ = self.persist();

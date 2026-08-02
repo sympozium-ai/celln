@@ -98,20 +98,55 @@ proving isolation on this machine
 
 ```sh
 $ nous agent "print the first 100 primes, space separated"
-● asking claude for a program
-  · 16 lines of rust
-  + forged  blake3:c76fdc66321d6990def93a9e130d7b273acc1bcca5a9716973eb01ce336cdaa4  436 KiB
+● asking anthropic (claude-opus-5) for a program
+  · 20 lines of rust
+  + forged  blake3:6ab98015c7a62942ea8b367afb654cbdf3501563c659cc4ffcb9799818acdc2d  436 KiB
   · cell sealed, tools lent read-only
+  ✔ pilot: /agent/program permitted:data
+  ✔ pilot: /agent/program refused:collar-absent
+warning: pilot refused to run it: refused:collar-absent
+```
+
+**That refusal is the correct answer**, and it is worth reading carefully. The
+program was forged — we built it hermetically from source we hold. It is still
+*agent-authored*, and agent-authored code never carries tool-lane authority at
+any tier. Running it needs the per-exec collar, which does not exist yet.
+
+Compiling is not a way around that. `rustc` fed model-written source is
+`python` fed model-written source with the interpretation moved earlier; if the
+laundering ban stops one it has to stop both.
+
+To watch it actually run while the collar is being built:
+
+```sh
+$ nous agent --trust-agent-code "print the first 100 primes, space separated"
+warning: --trust-agent-code: running agent-authored code in the tool lane
   ✔ pilot: /agent/program permitted:tool
 
 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
 ```
 
-Claude writes the program **on the host**; `rustc` builds it static; forgectl
-attests the bytes it actually built; the binary is sealed into the cell as
-read-only memory; and pilot re-hashes it in the guest and execs it by hash out
-of the sealed mapping. Under DAX there is no page-cache copy, so the
+The model writes the program **on the host**; `rustc` builds it static;
+forgectl attests the bytes it actually built and records who wrote them; the
+binary is sealed into the cell as read-only memory; and pilot re-hashes it in
+the guest and decides for itself. Under DAX there is no page-cache copy, so the
 instructions the guest executes *are* the host's pages.
+
+Pick who writes it — `nous agents` shows what this host can use:
+
+```sh
+$ nous agents
+  ✔ anthropic  claude-opus-5          claude
+  ✔ openai     (cli default)          codex
+  ✔ local      qwen2.5-coder          ollama
+
+$ nous agent --agent openai --model gpt-5-codex "…"
+```
+
+Backends are subprocess adapters over CLIs you have already authenticated, not
+linked SDKs — `nous` never reads, stores, or forwards a key. That is not just
+convenience: under ADR-0006 the credential belongs to the host and must never
+approach the cell.
 
 Two things this is careful about. **The cell has no network** — not a
 firewalled one, none — so the API credential never goes near it; only bytes
@@ -135,7 +170,8 @@ nous doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can se
 ```
 
 Diagnostics go to stderr, so they never land in the data. Exit codes mean
-something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells.
+something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells ·
+`4` refused by the trust model.
 
 ## What is real
 

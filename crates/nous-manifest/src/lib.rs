@@ -82,9 +82,39 @@ impl fmt::Display for Lane {
     }
 }
 
+/// Who wrote the source these bytes were built from.
+///
+/// This is **not** the same question as [`Tier`], and conflating the two is a
+/// laundering route. Tier asks *how were these bytes produced, and can we
+/// reproduce them* — provenance of the build. Author asks *whose intent do
+/// they encode* — authority to act.
+///
+/// A program an agent wrote and we then compiled hermetically is legitimately
+/// `Forged` **and** `Agent`-authored. Those are not in tension; they answer
+/// different questions. Reading authority off the tier alone means a compiler
+/// launders agent-authored code into the tool lane — the same move the
+/// laundering ban stops at runtime, done ahead of time instead.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Author {
+    /// Supplied by the host operator: a distro binary, a vendored source tree.
+    #[default]
+    Host,
+    /// Written by an agent. Never carries tool-lane authority, at any tier.
+    Agent,
+}
+
+impl fmt::Display for Author {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Author::Host => "host",
+            Author::Agent => "agent",
+        })
+    }
+}
+
 /// One attested artifact in a manifest: a name alias, its content hash, the
-/// tier at which it was admitted, and whether it is an interpreter (relevant to
-/// the laundering ban — see [`resolve_exec_lane`]).
+/// tier at which it was admitted, who authored it, and whether it is an
+/// interpreter (relevant to the laundering ban — see [`resolve_exec_lane`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
     /// Path-style alias, e.g. `/usr/bin/python`. A naming convenience only —
@@ -95,6 +125,11 @@ pub struct Entry {
     /// True for interpreters (python, sh, node, …). An interpreter fed tainted
     /// input is demoted for that invocation.
     pub interpreter: bool,
+    /// Defaulted so manifests written before this field existed still parse —
+    /// and default to the safe answer only because host-authored is what every
+    /// one of those entries actually was.
+    #[serde(default)]
+    pub author: Author,
 }
 
 /// A signed manifest: the set of hashes a cell is permitted to execute, plus a
@@ -220,7 +255,13 @@ pub fn resolve_exec_lane(entry: &Entry, input: Input) -> Lane {
         input,
         Input::File(Lane::Data) | Input::ArgString(Lane::Data)
     );
-    if entry.interpreter && tainted_input {
+    if entry.author == Author::Agent {
+        // Agent-authored code never carries tool-lane authority, however it was
+        // built. Compiling it is not a way to launder it: `rustc` fed agent
+        // source is `python` fed agent source with the interpretation moved
+        // earlier, and the ban has to catch both or it catches neither.
+        Lane::Data
+    } else if entry.interpreter && tainted_input {
         Lane::Data // demotion
     } else if entry.tier == Tier::Unsealed {
         // Unsealed artifacts never carry tool-lane authority.
@@ -240,7 +281,33 @@ mod tests {
             hash: Hash::of(body),
             tier,
             interpreter: interp,
+            author: Author::Host,
         }
+    }
+
+    #[test]
+    fn agent_authored_code_never_reaches_the_tool_lane() {
+        // The laundering route this closes: an agent writes source, we compile
+        // it hermetically, and the Forged tier would otherwise hand the result
+        // full authority. `rustc` fed agent source is `python` fed agent source
+        // with the interpretation moved earlier.
+        let mut written = tool("/agent/program", b"from agent source", false, Tier::Forged);
+        written.author = Author::Agent;
+        assert_eq!(resolve_exec_lane(&written, Input::None), Lane::Data);
+
+        // Byte-identical, host-authored, at the same tier: tool lane. So the
+        // author bit is what decided it, not the tier or the interpreter flag.
+        let host = tool("/usr/bin/ls", b"from agent source", false, Tier::Forged);
+        assert_eq!(resolve_exec_lane(&host, Input::None), Lane::Tool);
+    }
+
+    #[test]
+    fn author_defaults_to_host_for_manifests_written_before_the_field() {
+        let e: Entry = serde_json::from_str(
+            r#"{"alias":"/usr/bin/ls","hash":"blake3:ab","tier":"Verified","interpreter":false}"#,
+        )
+        .expect("legacy entry parses");
+        assert_eq!(e.author, Author::Host);
     }
 
     #[test]

@@ -70,8 +70,12 @@ if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-mus
   # against — pilot re-hashes whatever it finds at that path before running it.
   if [ -n "${NOUS_RUN_PROG:-}" ]; then
     prog_alias="${NOUS_RUN_ALIAS:-/$(basename "$NOUS_RUN_PROG")}"
+    # Agent-authored source stays agent-authored through the compiler. Forging
+    # it is fine and gives a reproducible artifact; granting it the tool lane
+    # is not, so the author rides into the manifest with the hash.
     ( cd "$root" && cargo run --quiet -p forgectl -- --root "$store" \
-        preforge "$prog_alias" "$NOUS_RUN_PROG" >/dev/null )
+        preforge "$prog_alias" "$NOUS_RUN_PROG" \
+        ${NOUS_RUN_AGENT_AUTHORED:+--agent-authored} >/dev/null )
 
     args_json="[]"
     if [ -n "${NOUS_RUN_ARGS:-}" ]; then

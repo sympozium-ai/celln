@@ -44,17 +44,159 @@ Reply with only the Rust source in a single ```rust fenced block. No prose.";
 /// Where the guest will find the program, and what pilot calls it in reports.
 const ALIAS: &str = "/agent/program";
 
-pub fn agent(task: &str, o: &Out) -> Result<u8> {
+/// Which model writes the code.
+///
+/// Backends are subprocess adapters, not linked SDKs: whatever CLI the user has
+/// already authenticated is what gets used, and `nous` never reads, stores, or
+/// forwards a key. That is not only convenience — under ADR-0006 the credential
+/// belongs to the host and must never approach the cell, and shelling out to a
+/// tool that already holds it is the least-privilege way to arrange that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Backend {
+    /// Claude, via the `claude` CLI.
+    Anthropic,
+    /// OpenAI, via the `codex` CLI.
+    Openai,
+    /// A local model, via `ollama`. No egress at all.
+    Local,
+}
+
+impl Backend {
+    /// The CLI this backend drives. Its presence is the availability check.
+    fn program(self) -> &'static str {
+        match self {
+            Backend::Anthropic => "claude",
+            Backend::Openai => "codex",
+            Backend::Local => "ollama",
+        }
+    }
+
+    /// Used when the user does not name one. `None` means "whatever that CLI
+    /// is already configured to use" — the right default when the tool has its
+    /// own config and account-specific model availability, which is exactly the
+    /// case for `codex`. Overridable with `--model` in every case, because
+    /// model names date fast.
+    fn default_model(self) -> Option<&'static str> {
+        match self {
+            Backend::Anthropic => Some("claude-opus-5"),
+            Backend::Openai => None,
+            // `ollama run` takes the model as a positional, so this one is
+            // required rather than optional. It has to be pulled first.
+            Backend::Local => Some("qwen2.5-coder"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Backend::Anthropic => "anthropic",
+            Backend::Openai => "openai",
+            Backend::Local => "local",
+        }
+    }
+
+    fn available(self) -> bool {
+        which(self.program()).is_some()
+    }
+
+    /// Build the one-shot, non-interactive invocation. Each of these CLIs
+    /// spells "answer once and exit" differently.
+    fn command(self, prompt: &str, model: Option<&str>) -> Command {
+        let mut c = Command::new(self.program());
+        match self {
+            Backend::Anthropic => {
+                c.arg("-p").arg(prompt);
+                if let Some(m) = model {
+                    c.arg("--model").arg(m);
+                }
+            }
+            Backend::Openai => {
+                // Read-only sandbox and no git check: it is being asked to
+                // write source to stdout, not to touch the working tree.
+                c.arg("exec")
+                    .arg(prompt)
+                    .arg("--sandbox")
+                    .arg("read-only")
+                    .arg("--skip-git-repo-check");
+                if let Some(m) = model {
+                    c.arg("-m").arg(m);
+                }
+            }
+            Backend::Local => {
+                c.arg("run").arg(model.unwrap_or("qwen2.5-coder")).arg(prompt);
+            }
+        }
+        c
+    }
+}
+
+/// List the built-in backends and whether this host can use them.
+/// Mirrors `nous tools`: the question is always "what is available here".
+pub fn agents(o: &Out) -> Result<u8> {
+    for b in [Backend::Anthropic, Backend::Openai, Backend::Local] {
+        let ok = b.available();
+        o.event(
+            "agent_backend",
+            serde_json::json!({
+                "backend": b.label(),
+                "program": b.program(),
+                "default_model": b.default_model(),
+                "available": ok,
+            }),
+            format!(
+                "  {} {:<10} {:<22} {}",
+                if ok { green("✔") } else { dim("·") },
+                b.label(),
+                b.default_model().unwrap_or("(cli default)"),
+                if ok {
+                    dim(b.program())
+                } else {
+                    dim(&format!("{} not installed", b.program()))
+                }
+            ),
+        );
+    }
+    Ok(0)
+}
+
+fn which(program: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(program))
+            .find(|p| p.is_file())
+    })
+}
+
+pub fn agent(
+    task: &str,
+    backend: Backend,
+    model: Option<&str>,
+    trust_agent_code: bool,
+    o: &Out,
+) -> Result<u8> {
     let root = repo_root()?;
     let work = tempdir()?;
 
     // ── 1. the model writes the code, on the host ────────────────────────
+    let model = model.or_else(|| backend.default_model());
+    if !backend.available() {
+        o.warn(format!(
+            "{} needs `{}` on PATH — see `nous agents`",
+            backend.label(),
+            backend.program()
+        ));
+        return Ok(3);
+    }
     o.event(
         "agent_brief",
-        serde_json::json!({ "task": task }),
-        format!("{} asking claude for a program", bold("●")),
+        serde_json::json!({ "task": task, "backend": backend.label(), "model": model }),
+        format!(
+            "{} asking {} ({}) for a program",
+            bold("●"),
+            backend.label(),
+            model.unwrap_or("cli default")
+        ),
     );
-    let source = ask_claude(&BRIEF.replace("%TASK%", task))?;
+    let source = ask_model(backend, model, &BRIEF.replace("%TASK%", task))?;
     let src_path = work.join("program.rs");
     std::fs::write(&src_path, &source)?;
     o.note(format!(
@@ -108,15 +250,19 @@ pub fn agent(task: &str, o: &Out) -> Result<u8> {
         "32".into(),
         bin.display().to_string(),
     ])?;
-    sh_env(
-        &root,
-        "scripts/mkinitramfs.sh",
-        &[],
-        &[
-            ("NOUS_RUN_PROG", bin.display().to_string()),
-            ("NOUS_RUN_ALIAS", ALIAS.into()),
-        ],
-    )?;
+    let mut env = vec![
+        ("NOUS_RUN_PROG", bin.display().to_string()),
+        ("NOUS_RUN_ALIAS", ALIAS.into()),
+    ];
+    if trust_agent_code {
+        // Explicit, and named for what it actually does. The default is the
+        // correct one; this exists so the substrate stays demonstrable while
+        // the collar is being built, not as a convenience.
+        o.warn("--trust-agent-code: running agent-authored code in the tool lane");
+    } else {
+        env.push(("NOUS_RUN_AGENT_AUTHORED", "1".into()));
+    }
+    sh_env(&root, "scripts/mkinitramfs.sh", &[], &env)?;
 
     // ── 4. seal a cell and run it ────────────────────────────────────────
     run_in_cell(&root, o)
@@ -156,6 +302,7 @@ fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
     // status rides the same channel but is not a verdict — keep them apart so
     // a program that fails is distinguishable from one that was refused.
     let mut code = 0u8;
+    let mut refused: Option<String> = None;
     for line in r.console.lines() {
         let Some(rest) = line.strip_prefix("NOUS:pilot_run_") else {
             continue;
@@ -166,6 +313,9 @@ fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
         if key.ends_with("_exit") {
             code = val.parse::<i32>().unwrap_or(1).clamp(0, 255) as u8;
         } else {
+            if val.starts_with("refused") || val == "denied" {
+                refused = Some(val.to_string());
+            }
             o.event(
                 "pilot_verdict",
                 serde_json::json!({ "alias": key, "verdict": val }),
@@ -187,6 +337,21 @@ fn run_in_cell(root: &Path, o: &Out) -> Result<u8> {
                 println!("{text}");
             }
             Ok(code)
+        }
+        // A refusal is a result, not a failure to produce one. Saying "no
+        // output" here would describe the symptom and hide the decision.
+        None if refused.is_some() => {
+            o.warn(format!(
+                "pilot refused to run it: {}",
+                refused.unwrap_or_default()
+            ));
+            o.note(format!(
+                "  {} a model wrote this, so it is agent-authored at any tier and\n  {} belongs in the collared lane. The collar does not exist yet.\n  {} --trust-agent-code runs it anyway.",
+                dim("·"),
+                dim("·"),
+                dim("·")
+            ));
+            Ok(4)
         }
         None => {
             o.warn("the program produced no output — see the cell's console");
@@ -210,25 +375,23 @@ fn slice_output(console: &str) -> Option<String> {
     (!text.trim().is_empty()).then(|| text.replace("\r\n", "\n"))
 }
 
-/// Shell out to the already-authenticated `claude` CLI.
-///
-/// Deliberately the CLI and not the API: whatever credential the user already
-/// has works, and no key is read, stored, or passed by this program.
-fn ask_claude(prompt: &str) -> Result<String> {
-    let out = Command::new("claude")
-        .arg("-p")
-        .arg(prompt)
+/// Shell out to whichever provider CLI was selected.
+fn ask_model(backend: Backend, model: Option<&str>, prompt: &str) -> Result<String> {
+    let program = backend.program();
+    let out = backend
+        .command(prompt, model)
         .output()
-        .context("running `claude` — is Claude Code installed and logged in?")?;
+        .with_context(|| format!("running `{program}` — is it installed and logged in?"))?;
     if !out.status.success() {
         bail!(
-            "claude exited {}: {}",
+            "{program} exited {}: {}",
             out.status,
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    extract_rust(&text).context("no ```rust block in claude's reply")
+    extract_rust(&text)
+        .with_context(|| format!("no ```rust block in the reply from {}", backend.label()))
 }
 
 /// Pull the source out of a fenced block, tolerating the model adding prose
