@@ -58,8 +58,8 @@ Relationship: **forge** rebuilds an artifact and proves it reproduced; **assay**
 | Term | Meaning |
 |------|---------|
 | **tool lane** | Files/pages that came through the attestation gate. Manifest-attested, hypervisor-sealed. Runs with the cell's full (small) authority. Rendered **teal**. |
-| **data lane** | Files born inside the cell — agent scripts, downloads, JIT output. Can execute, but always under a per-exec Landlock+seccomp collar. Rendered **amber**. |
-| **the laundering ban** | An attested (tool-lane) interpreter fed tainted input — via argv, stdin/pipe, file, fd, mmap, or env — is demoted to data lane for that invocation. `python -c "<tainted>"` runs collared even though python is attested. |
+| **agent lane** | Agent-authored execution — including an interpreter fed agent input. It receives only explicitly loaned capabilities. Rendered **amber**. |
+| **the laundering ban** | An attested (tool-lane) interpreter fed tainted input — via argv, stdin/pipe, file, fd, mmap, or env — is moved to the agent lane for that invocation. `python -c "<tainted>"` uses the agent lane even though python is attested. |
 | **the authority ratchet** | A cell's rights only shrink, enforced host-side by warden. **P1 Materialise** → **P2 Work** (first tainted exec revokes materialisation for the lineage) → **P3 Dissolve** (exec disabled, read-only harvest, then struck). |
 
 ### Trust tiers
@@ -90,7 +90,7 @@ Rule: **serve fast, upgrade trust async.** Cold requests get Tier 2 now; a Tier-
 | Colour | Means |
 |--------|-------|
 | **teal** `#5fd0b5` | host-lent · attested · tool lane |
-| **amber** `#e8a15f` | guest-born · collared · data lane |
+| **amber** `#e8a15f` | agent-authored · agent lane |
 | **blue** `#7aa2d6` | host plane · trusted components |
 | **red** `#e06c5f` | danger / dissolve / revocation moments |
 

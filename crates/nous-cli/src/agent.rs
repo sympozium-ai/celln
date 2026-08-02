@@ -504,7 +504,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     if trust_agent_code {
         // Explicit, and named for what it actually does. The default is the
         // correct one; this exists so the substrate stays demonstrable while
-        // the collar is being built, not as a convenience.
+        // the agent lane is being built, not as a convenience.
         o.warn("--trust-agent-code: running agent-authored code in the tool lane");
     }
     // Seal the binary into the tool filesystem. This has to be the same bytes
@@ -761,7 +761,7 @@ fn run_in_cell(
             }
             o.warn(format!("pilot refused to run it: {reason}"));
             o.note(format!(
-                "  {} this is a safe policy refusal, not a broken cell; `nous ps -a` records it as refused.\n  {} to inspect the generated code, rerun with `--show-source`.\n  {} the safe collar is not implemented yet. To demonstrate execution anyway, rerun with `--trust-agent-code` (unsafe).",
+                "  {} this is a safe policy refusal, not a broken cell; `nous ps -a` records it as refused.\n  {} to inspect the generated code, rerun with `--show-source`.\n  {} the safe agent lane is not implemented yet. To demonstrate execution anyway, rerun with `--trust-agent-code` (unsafe).",
                 dim("·"),
                 dim("·"),
                 dim("·")

@@ -12,14 +12,14 @@
 //!      that hash against the manifest — **exec-by-hash**. The filesystem has
 //!      no authority to run code; only content does.
 //!   3. Apply the laundering ban: an attested interpreter fed input the agent
-//!      wrote is demoted to the collared lane for that invocation.
+//!      wrote is moved to the agent lane for that invocation.
 //!   4. Refuse with a structured record rather than an error string, because
 //!      the failure surface is how an agent corrects itself.
 //!
 //! It will `execve` a program, but **only into the tool lane** — code whose
 //! bytes hash to an attested entry and which was not fed anything the agent
-//! wrote. Data-lane exec stays refused until the collar (Landlock + seccomp
-//! per exec) exists, because running collared code before the collar exists
+//! wrote. Agent-lane exec stays refused until its capability boundary (Landlock + seccomp
+//! per exec) exists, because running agent code before that boundary exists
 //! would be exactly backwards. The lane split is what makes that a principled
 //! line rather than a missing feature.
 
@@ -188,10 +188,13 @@ fn run_requested(manifest: &Manifest) {
 
             // The honest line: the tool lane is code we attested and did not
             // feed anything the agent wrote, so it runs with authority. The
-            // data lane needs the per-exec collar, and until that exists,
+            // agent lane needs its explicit capability boundary, and until that exists,
             // refusing is the only defensible answer.
             if lane != Lane::Tool {
-                report(&format!("pilot_run_{}", req.alias), "refused:collar-absent");
+                report(
+                    &format!("pilot_run_{}", req.alias),
+                    "refused:agent-lane-unavailable",
+                );
                 return;
             }
 

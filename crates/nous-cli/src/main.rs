@@ -123,8 +123,8 @@ enum Cmd {
         ///
         /// Off by default, and the default is the correct one: code a model
         /// wrote is agent-authored however it was built, so it belongs in the
-        /// collared lane. This exists only so the substrate stays demonstrable
-        /// while the collar is being built.
+        /// agent lane. This exists only so the substrate stays demonstrable
+        /// while the agent lane is being built.
         #[arg(long)]
         trust_agent_code: bool,
 

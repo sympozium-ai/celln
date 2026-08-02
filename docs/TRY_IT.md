@@ -54,7 +54,7 @@ interpreter = true
 ```
 
 `interpreter = true` is the most consequential line in the file. An interpreter
-fed something the agent wrote is demoted to the collared lane *for that
+fed something the agent wrote is moved to the agent lane *for that
 invocation*, so an agent cannot launder its own code into full authority by
 handing it to `python`. Mark interpreters as interpreters; `nous spec check`
 warns if you forget on a name it recognises.
@@ -181,20 +181,20 @@ nous agent "print the first 100 primes, space separated"
   + rebuilt, reproduced  blake3:c0d7ceb8…  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:data
-  ✔ pilot: /agent/program refused:collar-absent
-warning: pilot refused to run it: refused:collar-absent
+  ✔ pilot: /agent/program refused:agent-lane-unavailable
+warning: pilot refused to run it: refused:agent-lane-unavailable
 ```
 
 **The refusal is the correct answer, and it is the interesting part.** The
 program was graded `forged` — `forge` rebuilt it twice and the bytes matched,
 so the tier was earned rather than asserted. It is still `author=agent`, and
 agent-authored code never carries tool-lane authority at any tier. Running it
-needs the per-exec collar, which does not exist yet.
+needs the agent-lane capability boundary, which does not exist yet.
 
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier.
 
-To watch it actually run while the collar is being built:
+To watch it actually run while the agent lane is being built:
 
 ```sh
 nous agent --trust-agent-code "print the first 100 primes, space separated"

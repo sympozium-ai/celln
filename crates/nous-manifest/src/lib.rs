@@ -70,7 +70,7 @@ impl fmt::Display for Tier {
 pub enum Lane {
     /// Manifest-attested, hypervisor-sealed. Full (small) cell authority.
     Tool,
-    /// Born inside the cell. Runs under a per-exec Landlock+seccomp collar.
+    /// Born inside the cell. Runs in the bounded agent lane.
     Data,
 }
 
@@ -259,7 +259,7 @@ pub enum Input {
 /// Given the entry being exec'd and the input it is being fed, decide the lane
 /// the invocation actually runs in. An attested (tool-lane) interpreter fed
 /// tainted (data-lane) input is **demoted to the data lane for that call** —
-/// `python evil.py` and `python -c "<tainted>"` both run collared even though
+/// `python evil.py` and `python -c "<tainted>"` both run in the agent lane even though
 /// python itself is attested.
 pub fn resolve_exec_lane(entry: &Entry, input: Input) -> Lane {
     let tainted_input = matches!(

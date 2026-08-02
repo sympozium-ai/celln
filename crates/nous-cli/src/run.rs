@@ -223,7 +223,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
         );
         if r.tier > tier_of(spec.cell.require_tier) {
             o.warn(format!(
-                "{} is {} but the spec requires {} — it will run collared",
+                "{} is {} but the spec requires {} — it will run in the agent lane",
                 t.alias, r.tier, spec.cell.require_tier
             ));
         }

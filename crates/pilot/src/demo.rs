@@ -76,7 +76,7 @@ fn main() -> anyhow::Result<()> {
     // ---- beat 4: demote on exec ----
     beat(
         4,
-        "demote on exec — attested python fed a data-lane script runs collared",
+        "demote on exec — attested python fed agent-authored input uses the agent lane",
     );
     // The agent writes its own script (data lane) and runs it with python.
     match exec(assayer.manifest(), &py_hash, Input::File(Lane::Data)) {

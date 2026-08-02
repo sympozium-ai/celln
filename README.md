@@ -78,11 +78,11 @@ tools
 
 run
   /usr/bin/python review.py
-  runs in the data lane — demoted: an interpreter fed agent-authored input
+  runs in the agent lane — demoted: an interpreter fed agent-authored input
 ```
 
 That demotion is the point. `python` is fully attested, but the moment it is
-fed something the agent wrote, *that invocation* runs collared — including the
+fed something the agent wrote, *that invocation* moves to the agent lane — including the
 `python -c "…"` form that file-level taint tracking misses.
 
 **3. Run it.**
@@ -94,7 +94,7 @@ $ nous run agent.toml
   · microVM sealed, phase=Materialise
   · /usr/bin/python sealed read-only into the cell
   · authority ratcheted to Work — no further tools can be lent
-  ✔ /usr/bin/python permitted in the data lane
+  ✔ /usr/bin/python permitted in the agent lane
 ● cell dissolved
 ```
 
@@ -124,21 +124,21 @@ $ nous agent "print the first 100 primes, space separated"
   + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:data
-  ✔ pilot: /agent/program refused:collar-absent
-warning: pilot refused to run it: refused:collar-absent
+  ✔ pilot: /agent/program refused:agent-lane-unavailable
+warning: pilot refused to run it: refused:agent-lane-unavailable
 ```
 
 **That refusal is the correct answer**, and it is worth reading carefully. The
 program was graded `forged` — we compiled it ourselves from source we hold. It
 is still `author=agent`, and agent-authored code never carries tool-lane
-authority at any tier. Running it needs the per-exec collar, which does not
+authority at any tier. Running it needs the agent-lane boundary, which does not
 exist yet.
 
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier; if the
 laundering ban stops one it has to stop both.
 
-To watch it actually run while the collar is being built:
+To watch it actually run while the agent lane is being built:
 
 ```sh
 $ nous agent --trust-agent-code "print the first 100 primes, space separated"
@@ -147,6 +147,16 @@ warning: --trust-agent-code: running agent-authored code in the tool lane
 
 2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
 ```
+
+## The model, in three lines
+
+- **Tool lane**: host-provided, attested tools use only the authority the cell loans them.
+- **Agent lane**: agent-authored code gets only explicitly loaned capabilities; today it is safely refused until that boundary exists.
+- **Data**: bytes the agent produced or fetched. Data never gains authority by being handed to an attested tool.
+
+That last rule is the point: `python` is trusted tooling, but `python` fed an
+agent-written script is an **agent-lane** execution, not a way to inherit the
+tool lane.
 
 The model writes the program **on the host**; `forge` compiles it **twice, in
 different directories**, and compares the bytes; `assay` grades on what that
@@ -244,9 +254,9 @@ enters protected mode and maps the page writable in page tables it wrote itself.
 Revocation reaches a cell that is already running.
 
 **In-cell execution works for the tool lane** — that is what `nous agent` does
-above. **Data-lane exec is still refused**, deliberately: it needs the per-exec
-collar (Landlock + seccomp), and running collared code before the collar exists
-would be exactly backwards. `nous run` still stops at sealing; `nous agent` is
+above. **Agent-lane exec is still refused**, deliberately: it needs an explicit
+capability boundary (Landlock + seccomp), and running agent code before that
+boundary exists would be exactly backwards. `nous run` still stops at sealing; `nous agent` is
 the path that reaches execution.
 
 Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
@@ -265,8 +275,8 @@ Honest numbers, including a gate we miss: [docs/findings/](docs/findings/).
 
 - **mote** — the substrate at rest. The seed.
 - **cell** — a live, sealed, tool-loaned mote. *Every cell is a sealed mote.*
-- **tool lane / data lane** — attested code has authority; code the agent wrote
-  runs collared. An interpreter fed agent-authored input is demoted to the data
-  lane for that invocation.
+- **tool lane / agent lane / data** — attested host tools use loaned authority;
+  agent-authored execution is bounded in the agent lane; data never gains
+  authority by crossing into a tool.
 
 Pre-alpha, single-host. Working name pending trademark/domain clearance.

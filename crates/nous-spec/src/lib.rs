@@ -48,7 +48,7 @@ pub struct Cell {
     pub memory: String,
 
     /// The weakest trust tier a tool may be admitted at and still carry
-    /// tool-lane authority. Tools below it still run, but collared.
+    /// tool-lane authority. Tools below it run in the agent lane.
     #[serde(default = "default_tier")]
     pub require_tier: Tier,
 }
@@ -103,7 +103,7 @@ pub struct Tool {
     pub path: PathBuf,
 
     /// True for interpreters (python, sh, node…). An interpreter fed input the
-    /// agent wrote is demoted to the collared lane *for that invocation* — the
+    /// agent wrote is moved to the agent lane *for that invocation* — the
     /// laundering ban. Getting this wrong is the most consequential mistake
     /// available in this file, which is why `nous spec check` guesses at it and
     /// warns when your answer disagrees.
@@ -392,7 +392,7 @@ path = "/usr/bin/python3"      # where the bytes come from on this host
 interpreter = true             # see below
 
 # `interpreter = true` is the most consequential line in this file. An
-# interpreter fed something the agent wrote is demoted to the collared lane for
+# interpreter fed something the agent wrote is moved to the agent lane for
 # that invocation, so `python evil.py` and `python -c "..."` do not get to
 # launder agent-authored code into full authority. Mark interpreters as
 # interpreters.
