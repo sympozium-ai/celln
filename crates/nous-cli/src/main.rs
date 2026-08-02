@@ -121,6 +121,11 @@ enum Cmd {
         /// while the collar is being built.
         #[arg(long)]
         trust_agent_code: bool,
+
+        /// Exact HTTPS host the cell may fetch through pilot (repeatable).
+        /// Without this, the cell remains hermetic.
+        #[arg(long = "allow-host")]
+        allow_hosts: Vec<String>,
     },
 
     /// List the built-in agent backends and whether this host can use them.
@@ -184,6 +189,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             trust_agent_code,
             show_source,
             timeout,
+            allow_hosts,
         } => agent::agent(
             task,
             *agent,
@@ -191,6 +197,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             *trust_agent_code,
             *show_source,
             *timeout,
+            allow_hosts,
             o,
         ),
         Cmd::Agents => agent::agents(o),

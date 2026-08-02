@@ -41,10 +41,11 @@
 
 use super::kvm::{shared_tool_bytes, shared_tool_map, shared_tool_map_existing, PAGE};
 use super::VmmError;
+use crate::egress::{HttpBroker, HttpPolicy};
 use kvm_bindings::{kvm_userspace_memory_region, KVM_MAX_CPUID_ENTRIES, KVM_MEM_READONLY};
 use kvm_ioctls::{Kvm, VcpuExit, VcpuFd, VmFd};
 use nous_manifest::Hash;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -130,6 +131,12 @@ const PCI_CONFIG_ADDR: u16 = 0xcf8;
 /// produce. Saying it on the console instead measures our 8250 emulation, not
 /// spawn latency. Must match NOUS_LIVE_PORT in guest/init/init.c.
 const LIVE_SIGNAL_PORT: u16 = 0x3f0;
+/// Four I/O ports forming the deliberately tiny pilot→warden fetch channel.
+/// This is not a NIC: the guest gets no packet interface and no socket API.
+pub const PILOT_FETCH_TX: u16 = 0x2f8;
+pub const PILOT_FETCH_CALL: u16 = 0x2f9;
+pub const PILOT_FETCH_RX: u16 = 0x2fa;
+pub const PILOT_FETCH_STATUS: u16 = 0x2fb;
 
 // ---- setup_header / boot_params offsets (Documentation/x86/boot.rst) ----
 
@@ -780,6 +787,10 @@ pub struct LinuxCell {
     /// dropping it would unmap memory the guest is running out of.
     _mem: Mem,
     serial: Serial,
+    /// Host-owned egress capability, absent unless explicitly enabled.
+    http: Option<HttpBroker>,
+    fetch_request: Vec<u8>,
+    fetch_response: VecDeque<u8>,
     /// The PCI configuration address latch (port 0xcf8).
     ///
     /// We emulate no PCI devices, but the kernel must still *detect* a type-1
@@ -924,6 +935,9 @@ impl LinuxCell {
             vcpu,
             _mem: mem,
             serial: Serial::default(),
+            http: None,
+            fetch_request: Vec::new(),
+            fetch_response: VecDeque::new(),
             pci_cf8: 0,
             revoke_trigger: None,
             stop_marker: None,
@@ -964,6 +978,34 @@ impl LinuxCell {
         self.next_slot += 1;
         self.next_tool_gpa += len as u64;
         Ok(gpa)
+    }
+
+    /// Lend this cell the narrowly-scoped HTTP fetch capability. The policy
+    /// remains in the host; this only enables the pilot I/O ABI.
+    pub fn enable_http_fetch(&mut self, policy: HttpPolicy) {
+        self.http = Some(HttpBroker::new(policy));
+    }
+
+    fn dispatch_fetch(&mut self) {
+        let request = std::str::from_utf8(&self.fetch_request)
+            .map(str::trim)
+            .map(str::to_owned)
+            .unwrap_or_default();
+        self.fetch_request.clear();
+        let body = match self.http.as_mut() {
+            Some(broker) => broker.fetch(&request),
+            None => Err(crate::egress::FetchDenied::Host(
+                "http_fetch capability not declared".into(),
+            )),
+        };
+        let bytes = match body {
+            Ok(body) => body,
+            Err(e) => format!("NOUS_FETCH_ERROR:{e}").into_bytes(),
+        };
+        // Length framing makes response bytes opaque: HTML, newlines and NULs
+        // cross as data, not as a second control protocol.
+        self.fetch_response.extend((bytes.len() as u32).to_le_bytes());
+        self.fetch_response.extend(bytes);
     }
 
     /// Stop as soon as the guest signals it is doing userspace work, and
@@ -1183,6 +1225,9 @@ impl LinuxCell {
                     ier: mote.serial_ier,
                     mcr: mote.serial_mcr,
                 },
+                http: None,
+                fetch_request: Vec::new(),
+                fetch_response: VecDeque::new(),
                 pci_cf8: 0,
                 revoke_trigger: None,
                 stop_marker: None,
@@ -1306,6 +1351,14 @@ impl LinuxCell {
                                         }
                                     }
                                 }
+                            } else if port == PILOT_FETCH_TX {
+                                // Bounded before allocation: a malicious cell
+                                // cannot make the host buffer an unbounded URL.
+                                if self.fetch_request.len() < 8192 {
+                                    self.fetch_request.extend_from_slice(data);
+                                }
+                            } else if port == PILOT_FETCH_CALL {
+                                self.dispatch_fetch();
                             } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
                                 self.pci_cf8 =
                                     u32::from_le_bytes(data.try_into().unwrap_or([0; 4]));
@@ -1324,6 +1377,12 @@ impl LinuxCell {
                                 for b in data.iter_mut() {
                                     *b = v;
                                 }
+                            } else if port == PILOT_FETCH_RX {
+                                for b in data.iter_mut() {
+                                    *b = self.fetch_response.pop_front().unwrap_or(0);
+                                }
+                            } else if port == PILOT_FETCH_STATUS {
+                                data.fill(u8::from(!self.fetch_response.is_empty()));
                             } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
                                 // Read back what was written, so the kernel
                                 // concludes type-1 config access works.

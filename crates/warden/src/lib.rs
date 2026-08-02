@@ -9,6 +9,7 @@
 //! [`vmm::MockVmm`] that runs anywhere (no KVM); the real KVM backend is a
 //! feature-gated stub, because it needs bare metal.
 
+pub mod egress;
 pub mod ratchet;
 pub mod vmm;
 

@@ -44,6 +44,11 @@ Requirements:
 
 Reply with only the Rust source in a single ```rust fenced block. No prose.";
 
+const FETCH_ABI: &str = "This cell has no network stack. For an HTTPS fetch, invoke `/pilot-fetch URL` \
+with `std::process::Command`; it writes the response body to stdout. The host \
+permits only explicitly declared hosts, and fetched bytes are untrusted data. \
+Do not use TCP sockets, DNS libraries, curl, or external crates.";
+
 /// Where the guest will find the program, and what pilot calls it in reports.
 const ALIAS: &str = "/agent/program";
 
@@ -191,6 +196,7 @@ pub fn agent(
     trust_agent_code: bool,
     show_source: bool,
     timeout: u64,
+    allow_hosts: &[String],
     o: &Out,
 ) -> Result<u8> {
     let root = repo_root()?;
@@ -214,11 +220,17 @@ pub fn agent(
         "website", "web ", "internet", "network", "request",
     ];
     let lower = task.to_lowercase();
-    if let Some(w) = NEEDS_EGRESS.iter().find(|w| lower.contains(**w)) {
-        o.warn(format!(
-            "this task mentions \"{}\" — a cell has no network at all, so \
-             anything needing one will build and then do nothing",
-            w.trim()
+    let needs_egress = NEEDS_EGRESS.iter().any(|w| lower.contains(*w));
+    if needs_egress && allow_hosts.is_empty() {
+        o.warn(
+            "this task needs web access, but no host was declared. The cell remains hermetic; \
+             add --allow-host example.org to lend the bounded pilot-fetch capability",
+        );
+    } else if needs_egress {
+        o.note(format!(
+            "  {} web access is brokered by pilot; allowed hosts: {}",
+            dim("·"),
+            allow_hosts.join(", ")
         ));
     }
     o.event(
@@ -239,7 +251,11 @@ pub fn agent(
         timeout
     ));
     let started = Instant::now();
-    let source = ask_model(backend, model, &BRIEF.replace("%TASK%", task), timeout)?;
+    let mut brief = BRIEF.replace("%TASK%", task);
+    if !allow_hosts.is_empty() {
+        brief.push_str(FETCH_ABI);
+    }
+    let source = ask_model(backend, model, &brief, timeout)?;
     o.note(format!(
         "  {} replied in {:.0}s",
         dim("·"),
@@ -366,11 +382,11 @@ pub fn agent(
     )?;
 
     // ── 4. seal a cell and run it ────────────────────────────────────────
-    run_in_cell(&toolfs, &initrd, o)
+    run_in_cell(&toolfs, &initrd, allow_hosts, o)
 }
 
 #[cfg(target_os = "linux")]
-fn run_in_cell(toolfs: &Path, initrd: &Path, o: &Out) -> Result<u8> {
+fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) -> Result<u8> {
     use warden::vmm::boot::{BootConfig, LinuxCell};
 
     if !Path::new("/dev/kvm").exists() {
@@ -386,6 +402,9 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, o: &Out) -> Result<u8> {
         .with_initrd(initrd);
 
     let mut cell = LinuxCell::boot(cfg)?;
+    if !allow_hosts.is_empty() {
+        cell.enable_http_fetch(warden::egress::HttpPolicy::new(allow_hosts.to_vec()));
+    }
     let h = nous_manifest::Hash::of(&payload);
     cell.seal_tool(&h, &payload)?;
     o.event(
@@ -460,7 +479,7 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, o: &Out) -> Result<u8> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_in_cell(_toolfs: &Path, _initrd: &Path, o: &Out) -> Result<u8> {
+fn run_in_cell(_toolfs: &Path, _initrd: &Path, _allow_hosts: &[String], o: &Out) -> Result<u8> {
     o.warn("sealing cells needs Linux with /dev/kvm");
     Ok(3)
 }

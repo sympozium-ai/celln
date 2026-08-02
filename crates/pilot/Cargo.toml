@@ -16,6 +16,10 @@ name = "nous-pilot"
 path = "src/guest.rs"
 
 [[bin]]
+name = "pilot-fetch"
+path = "src/fetch.rs"
+
+[[bin]]
 name = "nous-demo"
 path = "src/demo.rs"
 

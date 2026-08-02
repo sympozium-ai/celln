@@ -50,8 +50,9 @@ mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
 # an attested binary (not demoted), and one that is simply not in the manifest.
 if rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-musl; then
   ( cd "$root" && cargo build --quiet --release \
-      --target x86_64-unknown-linux-musl -p pilot --bin nous-pilot )
+      --target x86_64-unknown-linux-musl -p pilot --bin nous-pilot --bin pilot-fetch )
   cp "$root/target/x86_64-unknown-linux-musl/release/nous-pilot" "$work/pilot"
+  cp "$root/target/x86_64-unknown-linux-musl/release/pilot-fetch" "$work/pilot-fetch"
 
   printf '#!/attested/python\nprint("attested interpreter")\n' > "$work/nous/tools/python"
   printf 'attested binary bytes, not an interpreter\n'          > "$work/nous/tools/ls"
