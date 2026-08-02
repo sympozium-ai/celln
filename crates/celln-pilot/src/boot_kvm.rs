@@ -11,7 +11,7 @@
 //! holds the mapping — has the tool revoked out from under it.
 //!
 //! The older `/dev/mem` probe runs alongside as the unambiguously-direct
-//! control, so a regression says which half broke (ADR-0005).
+//! control, so a regression says which half broke.
 
 use celln_manifest::Hash;
 use warden::vmm::boot::{BootConfig, BootEnd, LinuxCell};

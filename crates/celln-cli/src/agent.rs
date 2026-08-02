@@ -321,7 +321,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     }
     let runtime_root = runtime_root()?;
     let work = tempdir()?;
-    // The cell has no ambient network (ADR-0006). Do not make an agent spend
+    // The cell has no ambient network. Do not make an agent spend
     // time generating a program that cannot possibly perform its stated job.
     const NEEDS_EGRESS: &[&str] = &[
         "crawl", "http", "https", "url", "download", "fetch", "scrape", "api", "website", "web ",

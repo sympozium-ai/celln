@@ -21,7 +21,7 @@
 //!   write anything, while the host still reads the workspace for harvest.
 //!
 //! What is NOT here yet: a stripped mote kernel and in-guest pilot (M5), and
-//! the VFS↔memslot join (ADR-0005) that a real guest needs so an `mmap` of
+//! the VFS↔memslot join that a real guest needs so an `mmap` of
 //! `/tools/python` lands on the sealed memslot rather than a page-cache copy.
 //! The guest in this slice runs hand-assembled flat real-mode / 32-bit code so
 //! the hardware properties are provable without booting a kernel; only tools

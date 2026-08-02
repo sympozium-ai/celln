@@ -8,6 +8,10 @@ of rebuilding Linux environments.
 Most agent runtimes give an agent a machine. Celln gives it a temporary,
 read-only lease on the tools it needs.
 
+```sh
+celln agent "Build me something dangerous that should only run in an isolated environment."
+```
+
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
 
@@ -164,8 +168,7 @@ Under DAX there is no page-cache copy, so the instructions the guest executes
 A `forged` tier requires a matching rebuild and records the reproduced recipe.
 Otherwise the artifact is `verified`. `assay` checks that a proof names the
 bytes being admitted. This establishes reproducibility on this machine and
-toolchain, not across every environment
-([ADR-0008](docs/decisions/0008-the-forged-tier-is-earned.md)).
+toolchain, not across every environment.
 
 Pick who writes it — `celln agents` shows what this host can use:
 
@@ -211,7 +214,7 @@ crawler that can never connect.
 
 Backends are subprocess adapters over CLIs you have already authenticated, not
 linked SDKs. `celln` never reads, stores, or forwards a key; credentials remain
-on the host under ADR-0006.
+on the host.
 
 Cells have no ambient network, so API credentials never enter the guest; only
 brokered bytes cross the boundary. Grading records provenance, not program
@@ -219,7 +222,7 @@ correctness or safety.
 
 Getting the *model itself* into a cell is the same problem as any other egress,
 and gets the same answer — an attested network stack behind a broker, never an
-ambient NIC ([ADR-0006](docs/decisions/0006-hermetic-cells-network-as-a-tool.md)).
+ambient NIC.
 
 ## Output
 
@@ -258,7 +261,6 @@ checks and measurements.
 |---|---|
 | The five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) |
 | Run the hardware checks | `celln verify` and `make bench-kvm` |
-| Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0008 |
 | Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
 | Working on Celln itself | [AGENTS.md](AGENTS.md), then `make help` |
 

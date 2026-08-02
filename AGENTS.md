@@ -29,7 +29,7 @@ of the design corpus in `docs/`.
 - **Prefer measurement over assertion.** Performance claims become committed
   numbers, not comments.
 - **Reduce guest attack surface and stay reversible** when choosing between
-  implementations; record the choice as an ADR in `docs/decisions/`.
+  implementations; keep the rationale close to the code it affects.
 - Rust for code, Make for orchestration, shell for glue. No Python.
 - `make ci` must stay green: `fmt-check build test`.
 

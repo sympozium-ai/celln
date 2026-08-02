@@ -635,7 +635,7 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
 }
 
 /// M2: KVM's memslot budget — the limit that decides whether per-tool sealing
-/// is viable or whether tools must be packed into coarser layers (ADR-0004).
+/// is viable or whether tools must be packed into coarser layers.
 fn bench_memslot_budget() -> serde_json::Value {
     head("M2 — memslot budget per VM (measured, not assumed)");
     let mut v = KvmVmm::new().expect("kvm");
@@ -668,7 +668,7 @@ fn bench_memslot_budget() -> serde_json::Value {
     let verdict = if mapped >= 500 {
         "per-tool sealing is viable at realistic tool counts"
     } else {
-        "per-tool sealing is tight — pack tools into coarser layers (ADR-0004)"
+        "per-tool sealing is tight — pack tools into coarser layers"
     };
     println!("    → {verdict}");
     serde_json::json!({
