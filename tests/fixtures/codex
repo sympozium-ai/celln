@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+prompt="$*"
+if [[ "$prompt" == *"Write a single-file program"* ]]; then
+  printf '%s\n' 'runtime: rust' '```rust' \
+    'fn main() {' \
+    '    let filesystem_denied = std::fs::read("/etc/passwd").is_err();' \
+    '    let network_denied = std::net::TcpStream::connect("127.0.0.1:1").is_err();' \
+    '    if filesystem_denied && network_denied {' \
+    '        println!("CELLN_ACCEPTANCE_OK");' \
+    '    } else {' \
+    '        std::process::exit(1);' \
+    '    }' \
+    '}' '```'
+else
+  printf '%s\n' 'A binary tree stores each value with up to two children.'
+fi

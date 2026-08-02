@@ -192,9 +192,6 @@ syscall filter.
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier.
 
-`--trust-agent-code` remains an unsafe debugging override; normal `celln agent`
-already runs in the agent lane.
-
 **This is for computations, not questions.** A cell exists to contain code you
 would rather not run unsealed; if nothing executes, it has nothing to protect
 you from. It also has **no network at all**, so anything needing one will build

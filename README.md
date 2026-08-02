@@ -153,9 +153,6 @@ Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier; if the
 laundering ban stops one it has to stop both.
 
-`--trust-agent-code` remains only as an explicitly unsafe debugging override;
-it is not part of the normal example.
-
 ## Execution lanes
 
 - **Tool lane**: host-provided, attested tools use only the authority the cell loans them.

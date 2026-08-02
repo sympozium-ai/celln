@@ -65,6 +65,7 @@ jobs:
           make guest
           cargo test -p celln-warden --features kvm
           cargo run -p celln-cli -- verify --no-json
+          make acceptance-kvm
       - name: no /dev/kvm on this runner
         if: steps.kvm.outputs.have == 'no'
         run: |

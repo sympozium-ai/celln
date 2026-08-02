@@ -114,15 +114,6 @@ enum Cmd {
         #[arg(long)]
         model: Option<String>,
 
-        /// Run the generated program in the tool lane.
-        ///
-        /// Off by default, and the default is the correct one: code a model
-        /// wrote is agent-authored however it was built, so it belongs in the
-        /// agent lane. This exists only so the substrate stays demonstrable
-        /// while the agent lane is being built.
-        #[arg(long)]
-        trust_agent_code: bool,
-
         /// Exact HTTPS host the cell may fetch through pilot (repeatable).
         /// Without this, the cell remains hermetic.
         #[arg(long = "allow-host")]
@@ -217,7 +208,6 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             task,
             agent,
             model,
-            trust_agent_code,
             show_source,
             timeout,
             allow_hosts,
@@ -227,7 +217,6 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
                 state_root: &cli.root,
                 requested_backend: *agent,
                 model: model.as_deref(),
-                trust_agent_code: *trust_agent_code,
                 show_source: *show_source,
                 timeout: *timeout,
                 allow_hosts,

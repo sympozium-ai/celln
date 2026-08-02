@@ -16,12 +16,9 @@
 //!   4. Refuse with a structured record rather than an error string, because
 //!      the failure surface is how an agent corrects itself.
 //!
-//! It will `execve` a program, but **only into the tool lane** — code whose
-//! bytes hash to an attested entry and which was not fed anything the agent
-//! wrote. Agent-lane exec stays refused until its capability boundary (Landlock + seccomp
-//! per exec) exists, because running agent code before that boundary exists
-//! would be exactly backwards. The lane split is what makes that a principled
-//! line rather than a missing feature.
+//! Tool-lane code runs with its attested authority. Agent-lane code is entered
+//! only through the Landlock and seccomp boundary immediately before execve;
+//! it never inherits tool-lane authority.
 
 use celln_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
 use pilot::{exec, ExecOutcome};

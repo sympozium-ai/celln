@@ -75,6 +75,11 @@ boot-kvm: guest ## boot a STOCK kernel and prove the VFS<->memslot join (needs /
 fetch-proof: ## prove a real cell fetches HTTPS through pilot (needs /dev/kvm + egress)
 	@$(CARGO) run --quiet -p celln-pilot --features kvm --bin celln-fetch-proof -- $(FETCH_URL)
 
+.PHONY: acceptance-kvm
+acceptance-kvm: ## prove setup, ask, agent cell, output, and ps on real KVM
+	@$(CARGO) build --quiet -p celln-cli
+	@./scripts/acceptance-agent-cell.sh
+
 .PHONY: fmt
 fmt: ## format all crates
 	$(CARGO) fmt

@@ -287,7 +287,6 @@ pub struct AgentRequest<'a> {
     pub state_root: &'a Path,
     pub requested_backend: Option<Backend>,
     pub model: Option<&'a str>,
-    pub trust_agent_code: bool,
     pub show_source: bool,
     pub timeout: u64,
     pub allow_hosts: &'a [String],
@@ -299,7 +298,6 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
         state_root,
         requested_backend,
         model,
-        trust_agent_code,
         show_source,
         timeout,
         allow_hosts,
@@ -414,11 +412,10 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     std::fs::write(&bin, &code)?;
     let bytes = code.len() as u64;
 
-    let author = if trust_agent_code {
-        celln_manifest::Author::Host
-    } else {
-        celln_manifest::Author::Agent
-    };
+    // Compiling agent source never changes its provenance. The resulting
+    // artifact is attested for exec-by-hash, but always executes in the agent
+    // lane inside a real cell.
+    let author = celln_manifest::Author::Agent;
     let store = work.join("store");
     std::fs::create_dir_all(&store)?;
     let mut assayer = assay::Assayer::open(&store).context("opening the tool store")?;
@@ -464,16 +461,10 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
             "path": "/tools/program",
             "alias": ALIAS,
             "args": [],
-            "agent_authored_input": false,
+            "agent_authored_input": true,
         }))?,
     )?;
 
-    if trust_agent_code {
-        // Explicit, and named for what it actually does. The default is the
-        // correct one; this exists so the substrate stays demonstrable while
-        // the agent lane is being built, not as a convenience.
-        o.warn("--trust-agent-code: running agent-authored code in the tool lane");
-    }
     // Seal the binary into the tool filesystem. This has to be the same bytes
     // the assayer just graded — when it was accidentally left out, the image
     // still held the previous run's program and pilot refused it as
