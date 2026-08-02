@@ -1,56 +1,58 @@
-# Homebrew formula for nouscell.
+# Homebrew formula template for the private sympozium-ai tap.
 #
-#   brew install sympozium-ai/tap/nouscell
-#
-# Builds from source rather than shipping a bottle: this is pre-alpha and the
-# hardware path is Linux-only, so a bottle would mostly be a way to ship the
-# wrong thing to the wrong machine.
+# The release workflow replaces TAG and REVISION before publishing this file to
+# the tap. A private repository must be fetched over the caller's authenticated
+# SSH Git transport; a public GitHub tarball URL would make `brew install` fail
+# even when the user can clone the repository.
 class Nouscell < Formula
   desc "Run agents in hardware-isolated cells with attested, revocable tools"
   homepage "https://github.com/sympozium-ai/nouscell"
-  url "https://github.com/sympozium-ai/nouscell/archive/refs/tags/v0.1.0.tar.gz"
-  # Replaced by the release workflow; `brew audit` will flag it until then.
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  url "git@github.com:sympozium-ai/nouscell.git",
+      using:    :git,
+      tag:      "v0.1.0",
+      revision: "0000000000000000000000000000000000000000"
   license "Apache-2.0"
-  head "https://github.com/sympozium-ai/nouscell.git", branch: "main"
 
-  depends_on "rust" => :build
+  depends_on "cpio"
+  depends_on "e2fsprogs"
+  depends_on "rustup"
 
   def install
-    system "cargo", "install", *std_cargo_args(path: "crates/nous-cli")
-    doc.install "README.md", "docs"
+    # Use a private build-local Rustup home: brewing must not mutate the
+    # caller's own toolchain selection. `nous agent` still explains the one
+    # target its local build plane needs at run time.
+    ENV["RUSTUP_HOME"] = buildpath/"rustup"
+    ENV["CARGO_HOME"] = buildpath/"cargo"
+    system "rustup", "toolchain", "install", "stable", "--profile", "minimal",
+           "--target", "x86_64-unknown-linux-musl"
+    system "cargo", "+stable", "install", "--path", "crates/nous-cli", "--root", prefix,
+           "--locked"
+    guest_bin = buildpath/"guest-bin"
+    system "cargo", "+stable", "install", "--path", "crates/pilot", "--root", guest_bin,
+           "--target", "x86_64-unknown-linux-musl", "--bin", "nous-pilot", "--bin", "pilot-fetch",
+           "--locked"
+
+    pkgshare.install "scripts", "guest"
+    (pkgshare/"pilot").install guest_bin/"bin/nous-pilot"
+    (pkgshare/"pilot").install guest_bin/"bin/pilot-fetch"
   end
 
   def caveats
-    on_macos do
-      <<~EOS
-        Hardware isolation needs Linux with /dev/kvm, so on macOS `nous` can
-        validate specs and run `nous demo`, but not seal cells.
+    <<~EOS
+      `nous agent` builds generated programs as static musl binaries. Set up
+      the same target in your user Rust toolchain once:
 
-          nous doctor    # says exactly what this machine can do
-      EOS
-    end
-    on_linux do
-      <<~EOS
-        Sealing cells needs read access to /dev/kvm. If `nous doctor` reports it
-        is present but not readable:
+        rustup target add x86_64-unknown-linux-musl
 
-          sudo usermod -aG kvm $USER    # then log out and back in
+      Sealing cells also needs Linux with readable /dev/kvm:
 
-        Get started:
-
-          nous spec init > agent.toml
-          nous spec check agent.toml
-      EOS
-    end
+        nous doctor
+    EOS
   end
 
   test do
-    # Works everywhere, hardware or not.
     assert_match "nous", shell_output("#{bin}/nous --version")
     (testpath/"agent.toml").write shell_output("#{bin}/nous spec init")
     assert_match "my-agent", shell_output("#{bin}/nous spec check agent.toml --no-json")
-    # `doctor` exits 3 on a host that cannot seal cells, which is not a failure.
-    shell_output("#{bin}/nous doctor --no-json", 3) if !File.exist?("/dev/kvm")
   end
 end

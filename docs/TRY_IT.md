@@ -160,15 +160,24 @@ Nothing in the guest is enforcing this. The guest is root.
 
 Steps 2–4 stop at sealing. This is the path that actually executes something.
 
+First, choose the already-authenticated agent CLI `nous` should use:
+
+```sh
+nous setup
+```
+
+Then ask it to build a computation. The current build plane emits static musl
+artifacts, so a source install needs `rustup target add x86_64-unknown-linux-musl`.
+
 ```sh
 nous agent "print the first 100 primes, space separated"
 ```
 
 ```
-● asking anthropic (claude-opus-5) for a rust program that: print the first 100 primes, space separated
+● asking anthropic (cli default) to build: print the first 100 primes, space separated
   · waiting for claude (up to 90s; --timeout changes it)
   · replied in 5s
-  · 23 lines of rust  /tmp/nous-agent-1844068/program.rs
+  · selected sealed runtime: Rust 2021 (static musl); 23 source lines
   + rebuilt, reproduced  blake3:c0d7ceb8…  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:data

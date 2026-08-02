@@ -349,7 +349,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
         ));
         return Ok(crate::exit::HOST_INCAPABLE);
     }
-    let root = repo_root()?;
+    let root = runtime_root()?;
     let work = tempdir()?;
     // The cell has no ambient network (ADR-0006). Do not make an agent spend
     // time generating a program that cannot possibly perform its stated job.
@@ -534,6 +534,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
                 store.join("manifest.json").display().to_string(),
             ),
             ("NOUS_RUN_JSON", run_json.display().to_string()),
+            ("NOUS_PILOT_DIR", root.join("pilot").display().to_string()),
         ],
     )?;
 
@@ -959,11 +960,20 @@ fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) ->
     Ok(())
 }
 
-/// The build scripts live in the repo, so `nous agent` currently has to run
-/// from a checkout. `NOUS_REPO` overrides for anything else.
-fn repo_root() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("NOUS_REPO") {
-        return Ok(PathBuf::from(p));
+/// Find the guest-image assets. A checkout remains convenient for development,
+/// while a packaged install places the same tree in `share/nouscell` beside the
+/// executable's prefix. `NOUS_RUNTIME_DIR` is an explicit override for unusual
+/// layouts and downstream packagers.
+fn runtime_root() -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os("NOUS_RUNTIME_DIR") {
+        let p = PathBuf::from(p);
+        if p.join("scripts/mkinitramfs.sh").exists() {
+            return Ok(p);
+        }
+        bail!(
+            "NOUS_RUNTIME_DIR={} does not contain scripts/mkinitramfs.sh",
+            p.display()
+        );
     }
     let cwd = std::env::current_dir()?;
     for dir in cwd.ancestors() {
@@ -971,7 +981,17 @@ fn repo_root() -> Result<PathBuf> {
             return Ok(dir.to_path_buf());
         }
     }
-    bail!("run `nous agent` from a nouscell checkout, or set NOUS_REPO")
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(prefix) = exe.parent().and_then(Path::parent) {
+            let packaged = prefix.join("share/nouscell");
+            if packaged.join("scripts/mkinitramfs.sh").exists() {
+                return Ok(packaged);
+            }
+        }
+    }
+    bail!(
+        "guest assets are missing; reinstall nouscell, or set NOUS_RUNTIME_DIR to its asset directory"
+    )
 }
 
 fn tempdir() -> Result<PathBuf> {
@@ -995,5 +1015,15 @@ mod tests {
     fn execution_plan_rejects_a_runtime_the_cell_did_not_lend() {
         let err = extract_program("runtime: python\n```python\nprint(42)\n```").unwrap_err();
         assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn packaged_runtime_layout_is_under_the_install_prefix() {
+        let exe = Path::new("/opt/homebrew/bin/nous");
+        let prefix = exe.parent().and_then(Path::parent).unwrap();
+        assert_eq!(
+            prefix.join("share/nouscell"),
+            PathBuf::from("/opt/homebrew/share/nouscell")
+        );
     }
 }

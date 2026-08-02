@@ -14,19 +14,32 @@ every tool is attested memory the host lends in and can revoke in microseconds.
 ## Install
 
 ```sh
+brew tap sympozium-ai/tap
 brew install sympozium-ai/tap/nouscell
+```
+
+The tap and source repository are private: this uses the SSH Git key you
+already use for GitHub. On Linux, enable the one static target that the local
+build plane uses for generated programs:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
 ```
 
 <details>
 <summary>or from source</summary>
 
 ```sh
-cargo install --git https://github.com/sympozium-ai/nouscell nous-cli
+git clone git@github.com:sympozium-ai/nouscell.git
+cd nouscell
+cargo build --release -p nous-cli
+./target/release/nous doctor
 ```
 </details>
 
-Sealing cells needs Linux with `/dev/kvm`. Everywhere else `nous` still
-validates specs and runs `nous demo`, and `nous doctor` says which you have.
+Sealing cells needs Linux with `/dev/kvm`; generated-program cells additionally
+need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `nous` still validates
+specs and runs `nous demo`, and `nous doctor` says which you have.
 
 ## Use it
 
