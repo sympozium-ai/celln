@@ -35,8 +35,8 @@ jobs:
           sed -i \
             -e "s|tag:[[:space:]]*\"v[^\"]*\"|tag:      \"${GITHUB_REF_NAME}\"|" \
             -e "s|revision: \"[0-9a-f]*\"|revision: \"${{ steps.release.outputs.revision }}\"|" \
-            Formula/cellulose.rb
-          grep -E 'url|tag:|revision:' Formula/cellulose.rb
+            Formula/celln.rb
+          grep -E 'url|tag:|revision:' Formula/celln.rb
 
       - name: publish
         uses: softprops/action-gh-release@v2
