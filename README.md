@@ -111,9 +111,8 @@ proving isolation on this machine
 
 This is for **computations, not questions**. A cell exists to contain code you
 would rather not run unsealed — if nothing executes, it has nothing to protect
-you from, and asking the model directly is the right tool. This path currently
-needs a Linux source checkout (or `NOUS_REPO` pointing at one) because it builds
-the guest image locally. `--show-source` prints what it wrote.
+you from, and asking the model directly is the right tool. `--show-source`
+prints what it wrote.
 
 ```sh
 $ nous agent "print the first 100 primes, space separated"
@@ -139,16 +138,8 @@ Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier; if the
 laundering ban stops one it has to stop both.
 
-`--trust-agent-code` is an explicitly unsafe debugging override. It is not
-needed for normal agent work:
-
-```sh
-$ nous agent --trust-agent-code "print the first 100 primes, space separated"
-warning: --trust-agent-code: running agent-authored code in the tool lane
-  ✔ pilot: /agent/program permitted:tool
-
-2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
-```
+`--trust-agent-code` remains only as an explicitly unsafe debugging override;
+it is not part of the normal example.
 
 ## The model, in three lines
 

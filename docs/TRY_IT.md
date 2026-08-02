@@ -196,15 +196,7 @@ Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier.
 
 `--trust-agent-code` remains an unsafe debugging override; normal `nous agent`
-already runs in the agent lane:
-
-```sh
-nous agent --trust-agent-code "print the first 100 primes, space separated"
-```
-
-```
-2 3 5 7 11 13 17 19 23 29 31 37 41 43 47 53 59 61 67 71 73 79 83 89 97 ...
-```
+already runs in the agent lane.
 
 **This is for computations, not questions.** A cell exists to contain code you
 would rather not run unsealed; if nothing executes, it has nothing to protect
