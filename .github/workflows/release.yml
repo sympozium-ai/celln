@@ -12,6 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: require a main-based release tag
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -20,9 +25,8 @@ jobs:
       - run: cargo test --workspace
       - run: cargo build --release -p celln-cli
 
-      # The source repo is private. The tap therefore fetches the signed tag
-      # through the caller's SSH Git credentials rather than an unauthenticated
-      # GitHub tarball URL. Pin both tag and commit in the formula.
+      # The public tap installs the immutable source archive for this tag.
+      # Pin its digest so Homebrew verifies exactly what it builds.
       - name: pin the formula to this release
         id: release
         run: |
