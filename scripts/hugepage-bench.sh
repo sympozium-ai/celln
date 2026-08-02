@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hugepage-bench.sh — measure whether huge pages fix M1 spawn latency.
 #
-# docs/findings/m1-spawn.md measured spawn as page-fault-bound: a resuming cell
+# The KVM benchmark reports spawn as page-fault-bound: a resuming cell
 # takes ~2,511 copy-on-write faults at ~1.6 us each. On 2 MiB pages the same
 # working set would be 5 faults. That is the prediction; this script tests it.
 #

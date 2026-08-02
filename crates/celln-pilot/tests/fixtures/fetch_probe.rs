@@ -1,4 +1,4 @@
-//! Host-authored probe used by `nous-fetch-proof`.
+//! Host-authored probe used by `celln-fetch-proof`.
 //!
 //! It has no network code. Its only possible path to a response is invoking
 //! `/pilot-fetch`, which exercises the guest→warden broker ABI.

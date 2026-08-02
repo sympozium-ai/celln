@@ -4,7 +4,7 @@
 //! That was the right way to prove sealing (a kernel-less guest can be made
 //! strictly more hostile than a stock kernel), but it leaves one claim
 //! unreachable: that a *real* guest can execute out of sealed pages. The blocker
-//! named in `docs/findings/m2.md` is the **VFS↔memslot join** — a guest
+//! identified by the KVM hardware test is the **VFS↔memslot join** — a guest
 //! `mmap(PROT_EXEC)` of `/tools/python` must land on the sealed memslot rather
 //! than on a page-cache copy of it.
 //!
@@ -536,7 +536,7 @@ impl Mem {
     /// A writable, shareable RAM image: the template a mote is parked in.
     ///
     /// Two huge-page paths, both off by default because both need host state
-    /// this project will not change on its own (see `docs/findings/m1-spawn.md`):
+    /// this project will not change on its own; `make bench-kvm` measures it:
     ///
     /// * `NOUS_HUGEPAGE=1` — `MADV_HUGEPAGE` on the mapping. Needs
     ///   `/sys/kernel/mm/transparent_hugepage/shmem_enabled` set to `advise` or
@@ -611,7 +611,7 @@ impl Mem {
     /// resumed guest fault its working set in one page at a time. That is not
     /// obviously a win — it moves cost from activation to the fork call and
     /// touches every page — which is exactly why it is measurable rather than
-    /// assumed. See `docs/findings/m1-spawn.md`.
+    /// assumed. Measure with `make bench-kvm`.
     fn cow_of(fd: &Arc<OwnedFd>, len: usize) -> Result<Self, VmmError> {
         let ptr = unsafe {
             libc::mmap(
@@ -1117,7 +1117,7 @@ impl LinuxCell {
     ///
     /// Worth having because the intuition is wrong: the CoW mapping itself is
     /// ~36 µs, and everything else is VM construction and page-fault work. See
-    /// `docs/findings/m1-spawn.md`.
+    /// `make bench-kvm`.
     pub fn fork_from_timed(mote: &Mote) -> Result<(Self, ForkTiming), VmmError> {
         let mut t = ForkTiming::default();
         let mark = Instant::now();

@@ -3,6 +3,11 @@
 **Celln** — run agents in hardware-isolated **cells**, where
 every tool is attested memory the host lends in and can revoke in microseconds.
 
+## How is this different?
+
+Most agent runtimes give an agent a machine. Celln gives it a temporary,
+read-only lease on the tools it needs.
+
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
 
@@ -233,10 +238,10 @@ something: `0` ok · `1` error · `2` spec invalid · `3` host cannot seal cells
 
 ## Isolation and limits
 
-`celln run` seals a hardware-isolated microVM and lends it your tools as
-read-only memory that the guest cannot modify. The hardware test uses a guest that
-enters protected mode and maps the page writable in page tables it wrote itself.
-Revocation reaches a cell that is already running.
+Based on our hardware tests, `celln run` seals a microVM and lends tools as
+read-only memory that the guest cannot modify. `celln verify` runs a guest that
+enters protected mode and maps a sealed page writable in page tables it wrote.
+The test also checks revocation in an already-running cell.
 
 `celln agent` runs agent-authored programs behind a Landlock filesystem boundary
 and a seccomp syscall filter.
@@ -244,14 +249,15 @@ The guest may execute `/tools/program` and write only to `/nous/work`; network,
 mounting, tracing, and privilege gain are refused. `celln run` remains the
 spec-driven sealing path.
 
-Measurements and known gaps: [docs/findings/](docs/findings/).
+Run `celln verify` and `make bench-kvm` on a KVM host to reproduce the hardware
+checks and measurements.
 
 ## Reading
 
 | | |
 |---|---|
 | The five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) |
-| What is proven, and what is not | [docs/findings/](docs/findings/) |
+| Run the hardware checks | `celln verify` and `make bench-kvm` |
 | Why each choice was made | [docs/decisions/](docs/decisions/) — ADRs 0001–0008 |
 | Vocabulary — mote, cell, lane, tier | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) |
 | Working on Celln itself | [AGENTS.md](AGENTS.md), then `make help` |

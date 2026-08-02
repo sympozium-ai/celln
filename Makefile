@@ -49,7 +49,7 @@ demo-kvm: ## run the five-beat proof on REAL KVM (needs /dev/kvm)
 	@$(CARGO) run --quiet -p celln-pilot --features kvm --bin celln-demo-kvm
 
 .PHONY: bench-kvm
-bench-kvm: ## measure the M1/M2 exit criteria on REAL KVM -> bench/results/
+bench-kvm: ## measure the M1/M2 exit criteria on REAL KVM -> target/celln-bench/
 	@$(CARGO) run --quiet --release -p celln-pilot --features kvm --bin celln-bench-kvm
 
 .PHONY: initramfs

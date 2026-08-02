@@ -46,7 +46,7 @@ of the design corpus in `docs/`.
 - Exec gate + lanes + explain + demos: `crates/celln-pilot`
 - Guest-side code: `guest/init/init.c` (freestanding, no libc); guest images built
   by `scripts/mkinitramfs.sh` and `scripts/mktoolfs.sh`
-- Verdicts and measurements: `docs/findings/`, `bench/results/`
+- Hardware checks: `celln verify`; measurements: `make bench-kvm` (local output under `target/celln-bench/`)
 
 ## Proving things
 

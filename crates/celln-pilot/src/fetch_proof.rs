@@ -1,6 +1,6 @@
 //! Hardware proof for the pilot→warden HTTPS fetch capability.
 //!
-//! Run `cargo run -p pilot --features kvm --bin nous-fetch-proof -- URL` on a
+//! Run `cargo run -p celln-pilot --features kvm --bin celln-fetch-proof -- URL` on a
 //! KVM host. A pass means a program running *inside* a real cell invoked the
 //! guest-only `/pilot-fetch` client and received a bounded HTTPS response from
 //! the host broker. It is intentionally a host-authored probe, so no data-lane
@@ -19,7 +19,7 @@ fn main() -> Result<()> {
         .unwrap_or_else(|| "https://example.com/".into());
     let host = host_of(&url)?;
     let root = repo_root()?;
-    let work = std::env::temp_dir().join(format!("nous-fetch-proof-{}", std::process::id()));
+    let work = std::env::temp_dir().join(format!("celln-fetch-proof-{}", std::process::id()));
     std::fs::create_dir_all(&work)?;
 
     let probe = work.join("fetch-probe");
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
             "-o",
         ])
         .arg(&probe)
-        .arg(root.join("examples/fetch_probe.rs"))
+        .arg(root.join("crates/celln-pilot/tests/fixtures/fetch_probe.rs"))
         .status()
         .context("building guest fetch probe")?;
     if !compiled.success() {

@@ -1,7 +1,7 @@
 //! `celln-bench-kvm` — the M1/M2 exit criteria, measured on real hardware.
 //!
 //! The build plan states numeric gates, not adjectives. This harness produces
-//! them and writes the raw results to `bench/results/`:
+//! them and writes the raw results to `target/celln-bench/`:
 //!
 //!   M1  spawn latency p99 < 5 ms · idle cell private RSS < 1 MiB
 //!       · 1,000 concurrent cells, all reaching guest instructions
@@ -711,7 +711,7 @@ fn main() -> anyhow::Result<()> {
         "all_gates_passed": fork_ok && share_ok && revoke_ok && spawn_ok,
     });
 
-    let dir = std::path::Path::new("bench/results");
+    let dir = std::path::Path::new("target/celln-bench");
     std::fs::create_dir_all(dir)?;
     let path = dir.join("m1-m2-kvm.json");
     std::fs::write(&path, serde_json::to_vec_pretty(&all)?)?;

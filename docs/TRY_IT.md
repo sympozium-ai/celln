@@ -262,7 +262,6 @@ laptop, container, CI runner with no virtualization at all.
 
 | | |
 |---|---|
-| What is proven, and what is not | [findings/m2.md](findings/m2.md) |
-| A gate we miss, and why | [findings/m1-spawn.md](findings/m1-spawn.md) |
+| Run hardware checks and measurements | `celln verify` and `make bench-kvm` |
 | Why each design choice was made | [decisions/](decisions/) |
 | Working on Celln itself | [../AGENTS.md](../AGENTS.md), then `make help` |
