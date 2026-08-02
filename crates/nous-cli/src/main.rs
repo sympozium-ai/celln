@@ -229,6 +229,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         } => agent::agent(
             agent::AgentRequest {
                 task: &task.join(" "),
+                state_root: &cli.root,
                 requested_backend: *agent,
                 model: model.as_deref(),
                 trust_agent_code: *trust_agent_code,

@@ -316,6 +316,8 @@ fn which(program: &str) -> Option<PathBuf> {
 
 pub struct AgentRequest<'a> {
     pub task: &'a str,
+    /// Persistent cell registry and store root (`--root` / `NOUS_ROOT`).
+    pub state_root: &'a Path,
     pub requested_backend: Option<Backend>,
     pub model: Option<&'a str>,
     pub trust_agent_code: bool,
@@ -327,6 +329,7 @@ pub struct AgentRequest<'a> {
 pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     let AgentRequest {
         task,
+        state_root,
         requested_backend,
         model,
         trust_agent_code,
@@ -349,7 +352,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
         ));
         return Ok(crate::exit::HOST_INCAPABLE);
     }
-    let root = runtime_root()?;
+    let runtime_root = runtime_root()?;
     let work = tempdir()?;
     // The cell has no ambient network (ADR-0006). Do not make an agent spend
     // time generating a program that cannot possibly perform its stated job.
@@ -513,7 +516,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     // anyone had run `nous agent` first, and would race two concurrent runs.
     let toolfs = work.join("toolfs.img");
     sh(
-        &root,
+        &runtime_root,
         "scripts/mktoolfs.sh",
         &[
             toolfs.display().to_string(),
@@ -525,7 +528,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     // packaging step, and it should not need a cargo toolchain at run time.
     let initrd = work.join("initramfs.cpio");
     sh_env(
-        &root,
+        &runtime_root,
         "scripts/mkinitramfs.sh",
         &[initrd.display().to_string()],
         &[
@@ -534,12 +537,15 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
                 store.join("manifest.json").display().to_string(),
             ),
             ("NOUS_RUN_JSON", run_json.display().to_string()),
-            ("NOUS_PILOT_DIR", root.join("pilot").display().to_string()),
+            (
+                "NOUS_PILOT_DIR",
+                runtime_root.join("pilot").display().to_string(),
+            ),
         ],
     )?;
 
     // ── 4. seal a cell and run it ────────────────────────────────────────
-    run_in_cell(&toolfs, &initrd, allow_hosts, o)
+    run_in_cell(&toolfs, &initrd, allow_hosts, state_root, task, o)
 }
 
 /// Questions do not need a cell: no generated program runs, so there is
@@ -635,7 +641,14 @@ fn discover_backend() -> Option<Backend> {
 }
 
 #[cfg(target_os = "linux")]
-fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) -> Result<u8> {
+fn run_in_cell(
+    toolfs: &Path,
+    initrd: &Path,
+    allow_hosts: &[String],
+    state_root: &Path,
+    _task: &str,
+    o: &Out,
+) -> Result<u8> {
     use warden::vmm::boot::{BootConfig, LinuxCell};
 
     if !Path::new("/dev/kvm").exists() {
@@ -650,19 +663,50 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
         .with_pmem(payload.len())
         .with_initrd(initrd);
 
-    let mut cell = LinuxCell::boot(cfg)?;
+    // Agent-created cells are just as real as spec-created cells. Record them
+    // before the VMM owns the live fd so `nous ps -a` retains the policy
+    // verdict after this short-lived process exits.
+    let mut record = crate::cells::begin(
+        state_root,
+        "agent",
+        Path::new("<agent-generated>"),
+        vec![ALIAS.to_string()],
+    )
+    .ok();
+    let mut cell = match LinuxCell::boot(cfg) {
+        Ok(cell) => cell,
+        Err(e) => {
+            if let Some(record) = record.as_mut() {
+                crate::cells::finish(state_root, record, "kvm", Some(e.to_string()));
+            }
+            return Err(e.into());
+        }
+    };
     if !allow_hosts.is_empty() {
         cell.enable_http_fetch(warden::egress::HttpPolicy::new(allow_hosts.to_vec()));
     }
     let h = nous_manifest::Hash::of(&payload);
-    cell.seal_tool(&h, &payload)?;
+    if let Err(e) = cell.seal_tool(&h, &payload) {
+        if let Some(record) = record.as_mut() {
+            crate::cells::finish(state_root, record, "kvm", Some(e.to_string()));
+        }
+        return Err(e.into());
+    }
     o.event(
         "cell_sealed",
         serde_json::json!({ "hash": h.0, "bytes": payload.len() }),
         format!("  {} cell sealed, tools lent read-only", dim("·")),
     );
 
-    let r = cell.run()?;
+    let r = match cell.run() {
+        Ok(result) => result,
+        Err(e) => {
+            if let Some(record) = record.as_mut() {
+                crate::cells::finish(state_root, record, "kvm", Some(e.to_string()));
+            }
+            return Err(e.into());
+        }
+    };
 
     // pilot's own verdict, which is the part that matters: it re-hashed the
     // bytes it found and decided for itself whether to run them. The exit
@@ -693,6 +737,9 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
 
     match slice_output(&r.console) {
         Some(text) => {
+            if let Some(record) = record.as_mut() {
+                crate::cells::finish(state_root, record, "kvm", None);
+            }
             o.event(
                 "agent_output",
                 serde_json::json!({ "stdout": text }),
@@ -708,12 +755,13 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
         // A refusal is a result, not a failure to produce one. Saying "no
         // output" here would describe the symptom and hide the decision.
         None if refused.is_some() => {
-            o.warn(format!(
-                "pilot refused to run it: {}",
-                refused.unwrap_or_default()
-            ));
+            let reason = refused.unwrap_or_default();
+            if let Some(record) = record.as_mut() {
+                crate::cells::refuse(state_root, record, "kvm", reason.clone());
+            }
+            o.warn(format!("pilot refused to run it: {reason}"));
             o.note(format!(
-                "  {} a model wrote this, so it is agent-authored at any tier and\n  {} belongs in the collared lane. The collar does not exist yet.\n  {} --trust-agent-code runs it anyway; --show-source prints what it wrote.",
+                "  {} this is a safe policy refusal, not a broken cell; `nous ps -a` records it as refused.\n  {} to inspect the generated code, rerun with `--show-source`.\n  {} the safe collar is not implemented yet. To demonstrate execution anyway, rerun with `--trust-agent-code` (unsafe).",
                 dim("·"),
                 dim("·"),
                 dim("·")
@@ -721,6 +769,14 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
             Ok(crate::exit::REFUSED)
         }
         None => {
+            if let Some(record) = record.as_mut() {
+                crate::cells::finish(
+                    state_root,
+                    record,
+                    "kvm",
+                    Some("program produced no output".into()),
+                );
+            }
             o.warn("the program produced no output — see the cell's console");
             Ok(crate::exit::ERROR)
         }
@@ -728,7 +784,14 @@ fn run_in_cell(toolfs: &Path, initrd: &Path, allow_hosts: &[String], o: &Out) ->
 }
 
 #[cfg(not(target_os = "linux"))]
-fn run_in_cell(_toolfs: &Path, _initrd: &Path, _allow_hosts: &[String], o: &Out) -> Result<u8> {
+fn run_in_cell(
+    _toolfs: &Path,
+    _initrd: &Path,
+    _allow_hosts: &[String],
+    _state_root: &Path,
+    _task: &str,
+    o: &Out,
+) -> Result<u8> {
     o.warn("sealing cells needs Linux with /dev/kvm");
     Ok(crate::exit::HOST_INCAPABLE)
 }

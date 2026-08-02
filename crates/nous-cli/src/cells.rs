@@ -29,7 +29,7 @@ pub struct Record {
     /// second granularity would report every run as "0s".
     pub started_ms: u64,
     pub finished_ms: Option<u64>,
-    /// `running` | `dissolved` | `failed`
+    /// `running` | `dissolved` | `refused` | `failed`
     pub status: String,
     pub tools: Vec<String>,
     pub error: Option<String>,
@@ -43,6 +43,8 @@ pub enum Live {
     Running,
     Dissolved,
     Failed,
+    /// The cell ran, and its in-cell policy deliberately refused an exec.
+    Refused,
     /// Marked running, but the process that held it is gone.
     Died,
 }
@@ -53,6 +55,7 @@ impl Live {
             Live::Running => "running",
             Live::Dissolved => "dissolved",
             Live::Failed => "failed",
+            Live::Refused => "refused",
             Live::Died => "died",
         }
     }
@@ -78,6 +81,7 @@ impl Record {
             "running" if pid_alive(self.pid) => Live::Running,
             "running" => Live::Died,
             "failed" => Live::Failed,
+            "refused" => Live::Refused,
             _ => Live::Dissolved,
         }
     }
@@ -149,6 +153,17 @@ pub fn finish(root: &Path, rec: &mut Record, backend: &str, error: Option<String
     }
     .into();
     rec.error = error;
+    let _ = save(root, rec);
+}
+
+/// Close a run which intentionally stopped at a policy boundary. A refusal is
+/// neither a VM failure nor a successful tool execution; keeping it distinct
+/// makes `nous ps -a` useful after the short-lived cell is gone.
+pub fn refuse(root: &Path, rec: &mut Record, backend: &str, reason: String) {
+    rec.finished_ms = Some(now_ms());
+    rec.backend = backend.to_string();
+    rec.status = "refused".into();
+    rec.error = Some(reason);
     let _ = save(root, rec);
 }
 

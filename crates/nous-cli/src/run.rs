@@ -409,6 +409,7 @@ pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
         let status = match (live, r.duration_human()) {
             (crate::cells::Live::Running, _) => green("running"),
             (crate::cells::Live::Dissolved, Some(d)) => format!("dissolved {}", dim(&d)),
+            (crate::cells::Live::Refused, Some(d)) => format!("refused {}", dim(&d)),
             (crate::cells::Live::Failed, _) => red("failed"),
             (crate::cells::Live::Died, _) => red("died"),
             (s, None) => s.label().to_string(),
