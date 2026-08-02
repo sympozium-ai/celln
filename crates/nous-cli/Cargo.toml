@@ -25,6 +25,9 @@ serde.workspace = true
 serde_json.workspace = true
 is-terminal.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 # The real backend only exists on Linux, and only there is it wanted. Everywhere
 # else `nous` still validates specs and runs the mock proof, and says so rather
 # than pretending.

@@ -313,6 +313,7 @@ dependencies = [
  "clap",
  "forge",
  "is-terminal",
+ "libc",
  "nous-manifest",
  "nous-spec",
  "nous-store",

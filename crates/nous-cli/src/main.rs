@@ -99,7 +99,10 @@ enum Cmd {
         show_source: bool,
 
         /// Seconds to wait for the model before giving up.
-        #[arg(long, default_value = "300")]
+        ///
+        /// The happy path is seconds; this is the ceiling before we stop the
+        /// CLI and ask it what went wrong.
+        #[arg(long, default_value = "90")]
         timeout: u64,
 
         /// Which model writes it. See `nous agents`.

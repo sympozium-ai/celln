@@ -23,6 +23,7 @@
 use crate::out::{bold, dim, green, Out};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -100,13 +101,28 @@ impl Backend {
         which(self.program()).is_some()
     }
 
+    /// Whether this backend withholds its result until asked to stop.
+    ///
+    /// `claude -p` can finish the API call in seconds, print nothing, and hang.
+    /// Its stdout stays empty — measured at zero bytes after 40s — and a
+    /// SIGTERM makes it immediately flush a complete result object explaining
+    /// what went wrong. So a timeout here is not "still working"; it is an
+    /// answer being withheld, and terminating politely is how to collect it.
+    /// SIGKILL would destroy exactly the diagnosis we want.
+    fn flushes_on_sigterm(self) -> bool {
+        matches!(self, Backend::Anthropic)
+    }
+
     /// Build the one-shot, non-interactive invocation. Each of these CLIs
     /// spells "answer once and exit" differently.
     fn command(self, prompt: &str, model: Option<&str>) -> Command {
         let mut c = Command::new(self.program());
         match self {
             Backend::Anthropic => {
-                c.arg("-p").arg(prompt);
+                // Structured output, so a failure is a field we can read
+                // rather than something inferred from silence. It also gives
+                // us a completion marker — see `complete_when`.
+                c.arg("-p").arg(prompt).arg("--output-format").arg("json");
                 if let Some(m) = model {
                     c.arg("--model").arg(m);
                 }
@@ -189,6 +205,21 @@ pub fn agent(
             backend.program()
         ));
         return Ok(3);
+    }
+    // The cell has no network at all (ADR-0006), so a task that needs one
+    // cannot work no matter how good the program is. Warn rather than refuse:
+    // the guess is keyword-based and a wrong guess should not block anyone.
+    const NEEDS_EGRESS: &[&str] = &[
+        "crawl", "http", "https", "url", "download", "fetch", "scrape", "api",
+        "website", "web ", "internet", "network", "request",
+    ];
+    let lower = task.to_lowercase();
+    if let Some(w) = NEEDS_EGRESS.iter().find(|w| lower.contains(**w)) {
+        o.warn(format!(
+            "this task mentions \"{}\" — a cell has no network at all, so \
+             anything needing one will build and then do nothing",
+            w.trim()
+        ));
     }
     o.event(
         "agent_brief",
@@ -450,7 +481,11 @@ fn slice_output(console: &str) -> Option<String> {
 /// pipes are drained on threads rather than after exit, because a chatty CLI
 /// (codex echoes the whole prompt) can fill a 64 KiB pipe buffer and deadlock
 /// against a parent that is waiting to reap it first.
-fn output_deadline(mut cmd: Command, limit: Duration) -> Result<std::process::Output> {
+fn output_deadline(
+    mut cmd: Command,
+    limit: Duration,
+    term_first: bool,
+) -> Result<std::process::Output> {
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -459,10 +494,19 @@ fn output_deadline(mut cmd: Command, limit: Duration) -> Result<std::process::Ou
         .context("could not start it — is it installed and on PATH?")?;
     let mut so = child.stdout.take().expect("piped");
     let mut se = child.stderr.take().expect("piped");
+    // Accumulate stdout where the polling loop can see it, so completion can be
+    // detected from the content rather than from the process.
+    let seen: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
     let t_out = std::thread::spawn(move || {
-        let mut v = Vec::new();
-        let _ = so.read_to_end(&mut v);
-        v
+        let mut chunk = [0u8; 8192];
+        loop {
+            match so.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => sink.lock().expect("not poisoned").extend_from_slice(&chunk[..n]),
+            }
+        }
+        Vec::<u8>::new()
     });
     let t_err = std::thread::spawn(move || {
         let mut v = Vec::new();
@@ -471,24 +515,46 @@ fn output_deadline(mut cmd: Command, limit: Duration) -> Result<std::process::Ou
     });
 
     let start = Instant::now();
+    let mut break_on: Option<std::process::ExitStatus> = None;
     let status = loop {
         if let Some(st) = child.try_wait()? {
             break st;
         }
         if start.elapsed() >= limit {
+            // Ask politely first: a backend that withholds its result flushes
+            // it on SIGTERM, which turns an opaque timeout into a diagnosis.
+            if term_first {
+                #[cfg(unix)]
+                unsafe {
+                    libc::kill(child.id() as i32, libc::SIGTERM);
+                }
+                let grace = Instant::now();
+                while grace.elapsed() < Duration::from_secs(5) {
+                    if let Some(st) = child.try_wait()? {
+                        break_on = Some(st);
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if let Some(st) = break_on {
+                    break st;
+                }
+            }
             let _ = child.kill();
             let _ = child.wait();
             bail!(
-                "no answer after {}s — it may still have been working. \
+                "no answer after {}s, and it did not respond to a stop request. \
                  Raise the ceiling with --timeout, or ask for something smaller",
                 limit.as_secs()
             );
         }
         std::thread::sleep(Duration::from_millis(200));
     };
+    let _ = t_out.join();
+    let stdout = seen.lock().expect("not poisoned").clone();
     Ok(std::process::Output {
         status,
-        stdout: t_out.join().unwrap_or_default(),
+        stdout,
         stderr: t_err.join().unwrap_or_default(),
     })
 }
@@ -503,16 +569,58 @@ fn ask_model(
     let program = backend.program();
     // Context names the program; the inner error says what went wrong. Wrapping
     // a timeout in "is it installed?" sends you to debug the wrong thing.
-    let out = output_deadline(backend.command(prompt, model), Duration::from_secs(timeout))
-        .with_context(|| format!("`{program}`"))?;
-    if !out.status.success() {
-        bail!(
-            "{program} exited {}: {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let out = output_deadline(
+        backend.command(prompt, model),
+        Duration::from_secs(timeout),
+        backend.flushes_on_sigterm(),
+    )
+    .with_context(|| format!("`{program}`"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+
+    let text = match backend {
+        Backend::Anthropic => {
+            // The exit status is not consulted here on purpose: when the answer
+            // arrives before the process ends, we killed it, so its status
+            // describes our signal rather than its outcome. The result object
+            // is the authority.
+            let v: serde_json::Value = serde_json::from_str(stdout.trim()).with_context(|| {
+                format!(
+                    "`{program}` produced no result object; it said: {}",
+                    stdout.lines().next().unwrap_or("(nothing)")
+                )
+            })?;
+            if v.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+                let subtype = v
+                    .get("subtype")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("error");
+                bail!(
+                    "`{program}` reported {subtype} after {} ms of API time.\n\
+                     The failure is inside the CLI, not in nous — no program was \
+                     produced. Some prompts trigger this every time, so rewording \
+                     the task is more likely to help than retrying it.",
+                    v.get("duration_api_ms")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0)
+                );
+            }
+            v.get("result")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        }
+        Backend::Openai | Backend::Local => {
+            if !out.status.success() {
+                bail!(
+                    "{program} exited {}: {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            stdout
+        }
+    };
+
     extract_rust(&text)
         .with_context(|| format!("no ```rust block in the reply from {}", backend.label()))
 }
