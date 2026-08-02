@@ -3,7 +3,7 @@
 //! This crate is the vocabulary of the system, in code form. It mirrors
 //! `NAMES_AND_CONVENTIONS.md`:
 //!   * a **mote** is the substrate at rest; a **cell** is a sealed, tool-loaned mote.
-//!   * the **tool lane** is attested (host-lent); the **data lane** is born-in-cell.
+//!   * the **tool lane** is attested (host-lent); the **agent lane** executes agent-authored work.
 //!   * trust **tiers** are Forged (1) / Verified (2) / Unsealed (3).
 //!
 //! Nothing here needs KVM, so it is fully unit-tested and is the trust core the
@@ -78,7 +78,10 @@ impl fmt::Display for Lane {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Lane::Tool => "tool",
-            Lane::Data => "data",
+            // The internal variant is named `Data` because it is selected by
+            // agent-authored input provenance. The user-facing boundary is an
+            // execution lane, so call it what it is.
+            Lane::Data => "agent",
         })
     }
 }
@@ -258,7 +261,7 @@ pub enum Input {
 ///
 /// Given the entry being exec'd and the input it is being fed, decide the lane
 /// the invocation actually runs in. An attested (tool-lane) interpreter fed
-/// tainted (data-lane) input is **demoted to the data lane for that call** —
+/// tainted input is **moved to the agent lane for that call** —
 /// `python evil.py` and `python -c "<tainted>"` both run in the agent lane even though
 /// python itself is attested.
 pub fn resolve_exec_lane(entry: &Entry, input: Input) -> Lane {
@@ -376,7 +379,7 @@ mod tests {
     #[test]
     fn laundering_ban_demotes_interpreter_on_tainted_file() {
         let py = tool("/usr/bin/python", b"python-bytes", true, Tier::Forged);
-        // python evil.py  (evil.py is data-lane)
+        // python evil.py  (evil.py is agent-authored input)
         assert_eq!(resolve_exec_lane(&py, Input::File(Lane::Data)), Lane::Data);
         // python trusted_stdlib.py  (a tool-lane file) stays tool
         assert_eq!(resolve_exec_lane(&py, Input::File(Lane::Tool)), Lane::Tool);

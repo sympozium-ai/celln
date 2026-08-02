@@ -5,7 +5,7 @@
 //! on every exec:
 //!
 //!   1. **exec-by-hash** — refuse anything not attested in the manifest;
-//!   2. **lane resolution** — apply the laundering ban to pick tool vs data lane;
+//!   2. **lane resolution** — apply the laundering ban to pick tool vs agent lane;
 //!   3. **explain** — emit a structured, machine-readable record for any denial,
 //!      because the error surface is an agent steering channel.
 
@@ -39,7 +39,7 @@ impl Explain {
 /// Resolve and gate one exec request.
 ///
 /// `target` is the content hash being executed; `input` describes what it is
-/// being fed (a file or an inline string, tool- or data-lane), so the laundering
+/// being fed (a file or an inline string, tool or agent provenance), so the laundering
 /// ban can apply.
 pub fn exec(manifest: &Manifest, target: &Hash, input: Input) -> ExecOutcome {
     match manifest.permit_exec(target) {

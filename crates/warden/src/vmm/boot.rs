@@ -1975,7 +1975,7 @@ mod tests {
         assert_eq!(r.guest_report("pilot_exec_ls"), Some("permitted:tool"));
         // Attested interpreter fed agent-authored input: demoted. The
         // laundering ban, enforced in-cell rather than asserted on the host.
-        assert_eq!(r.guest_report("pilot_exec_python"), Some("permitted:data"));
+        assert_eq!(r.guest_report("pilot_exec_python"), Some("permitted:agent"));
         // Never attested: refused, whatever the filesystem says about it.
         assert_eq!(r.guest_report("pilot_exec_agent-script"), Some("denied"));
         assert_eq!(r.guest_report("pilot_unattested"), Some("refused"));

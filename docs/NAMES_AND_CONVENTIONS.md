@@ -80,7 +80,7 @@ Rule: **serve fast, upgrade trust async.** Cold requests get Tier 2 now; a Tier-
 |------|---------|
 | **seal** | `seal(intent) → cell`. The lifecycle spawn: CoW-fork a mote, seal it, loan tools. Literally a fork, ~1 ms. |
 | **dissolve** | End of life: exec disabled, workspace harvested read-only, cell struck. Nothing persists unless the workspace volume was made persistent. |
-| **demote** | Move an invocation from tool lane to data lane (the laundering ban in action). |
+| **demote** | Move an invocation from tool lane to agent lane (the laundering ban in action). |
 | **revoke** | Yank a hash from the manifest; execution of it halts in all running cells, < 1 s. |
 
 ---
@@ -103,6 +103,6 @@ Apply strictly: teal is always "lent," amber is always "born." Do not use them d
 - ✔ "Cells are forked from warm motes in the snapshot forest."
 - ✔ "The mote is ~70 syscalls plus pilot; a cell is a sealed mote with tools loaned in."
 - ✔ "warden wraps one microVM per cell."
-- ✔ "The tool ran in the data lane because it was fed a tainted file."
+- ✔ "The tool ran in the agent lane because it was fed agent-authored input."
 - ✘ "Spin up a mote to run the task." → a *cell* runs the task; a mote is the substrate it's forked from.
 - ✘ "The mote dissolved." → *cells* dissolve; motes are immutable images.

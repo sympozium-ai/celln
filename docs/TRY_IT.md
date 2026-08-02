@@ -75,7 +75,7 @@ tools
 
 run
   /usr/bin/python review.py
-  runs in the data lane — demoted: an interpreter fed agent-authored input
+  runs in the agent lane — demoted: an interpreter fed agent-authored input
 ```
 
 **What to notice.** It tells you the *lane your run will land in* before
@@ -111,7 +111,7 @@ nous run agent.toml
   · microVM sealed, phase=Materialise
   · /usr/bin/python sealed read-only into the cell
   · authority ratcheted to Work — no further tools can be lent
-  ✔ /usr/bin/python permitted in the data lane
+  ✔ /usr/bin/python permitted in the agent lane
 ● cell dissolved
 ```
 
@@ -180,7 +180,7 @@ nous agent "print the first 100 primes, space separated"
   · selected sealed runtime: Rust 2021 (static musl); 23 source lines
   + rebuilt, reproduced  blake3:c0d7ceb8…  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
-  ✔ pilot: /agent/program permitted:data
+  ✔ pilot: /agent/program permitted:agent
   ✔ pilot: /agent/program refused:agent-lane-unavailable
 warning: pilot refused to run it: refused:agent-lane-unavailable
 ```

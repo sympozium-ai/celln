@@ -8,7 +8,7 @@ every tool is attested memory the host lends in and can revoke in microseconds.
 
 <p align="center">
   <img src="docs/assets/stack.gif" width="820"
-       alt="A tool is lent from the host store into a hardware-isolated cell, sealed read-only, demoted to the data lane when an interpreter is fed agent-authored input, its write refused by the hardware, and finally revoked out of the running cell.">
+       alt="A tool is lent from the host store into a hardware-isolated cell, sealed read-only, moved to the agent lane when an interpreter is fed agent-authored input, its write refused by the hardware, and finally revoked out of the running cell.">
 </p>
 
 ## Install
@@ -123,7 +123,7 @@ $ nous agent "print the first 100 primes, space separated"
   · selected sealed runtime: Rust 2021 (static musl); 23 source lines  /tmp/nous-agent-1844068/program.rs
   + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
-  ✔ pilot: /agent/program permitted:data
+  ✔ pilot: /agent/program permitted:agent
   ✔ pilot: /agent/program refused:agent-lane-unavailable
 warning: pilot refused to run it: refused:agent-lane-unavailable
 ```

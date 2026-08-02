@@ -124,7 +124,7 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
             .map(|t| t.interpreter)
             .unwrap_or(false);
         let demoted = interp && run.input == nous_spec::Input::Data;
-        let lane = if demoted { "data" } else { "tool" };
+        let lane = if demoted { "agent" } else { "tool" };
         o.say("");
         o.say(bold("run"));
         o.event(

@@ -86,7 +86,7 @@ impl<V: Vmm> Cell<V> {
         &mut self.vmm
     }
 
-    /// Report that the cell just performed its first data-lane exec. This is the
+    /// Report that the cell just performed its first agent-lane exec. This is the
     /// kernel-observable event that ratchets P1 -> P2 and permanently closes
     /// materialisation for this lineage.
     pub fn on_first_tainted_exec(&mut self) {
