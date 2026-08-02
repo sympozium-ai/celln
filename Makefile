@@ -59,6 +59,10 @@ initramfs: ## build the guest initramfs (freestanding init, needs gcc + cpio)
 toolfs: ## build the sealed tool filesystem image (needs e2fsprogs)
 	@./scripts/mktoolfs.sh
 
+.PHONY: diagram
+diagram: ## regenerate the README stack diagram (needs rsvg-convert + ffmpeg)
+	@./scripts/mkdiagram.sh
+
 .PHONY: guest
 guest: initramfs toolfs ## build everything the guest side needs
 

@@ -6,6 +6,11 @@ every tool is attested memory the host lends in and can revoke in microseconds.
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
 
+<p align="center">
+  <img src="docs/assets/stack.gif" width="820"
+       alt="A tool is lent from the host store into a hardware-isolated cell, sealed read-only, demoted to the data lane when an interpreter is fed agent-authored input, its write refused by the hardware, and finally revoked out of the running cell.">
+</p>
+
 ## Install
 
 ```sh
