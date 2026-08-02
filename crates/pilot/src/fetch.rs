@@ -59,5 +59,7 @@ fn main() {
         eprintln!("pilot-fetch: {}", String::from_utf8_lossy(&body));
         std::process::exit(1);
     }
-    std::io::stdout().write_all(&body).expect("writing response");
+    std::io::stdout()
+        .write_all(&body)
+        .expect("writing response");
 }

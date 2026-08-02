@@ -80,19 +80,19 @@ fmt: ## format all crates
 	$(CARGO) fmt
 
 .PHONY: fmt-check
-fmt-check: ## check formatting without writing (skips if rustfmt absent)
-	@command -v rustfmt >/dev/null 2>&1 && $(CARGO) fmt --check || echo "  (rustfmt not installed — skipping fmt-check)"
+fmt-check: ## check formatting without writing
+	$(CARGO) fmt --check
 
 .PHONY: clippy
-clippy: ## lint (warnings as errors; skips if clippy absent)
-	@command -v cargo-clippy >/dev/null 2>&1 && $(CARGO) clippy --all-targets -- -D warnings || echo "  (clippy not installed — skipping)"
+clippy: ## lint (warnings as errors)
+	$(CARGO) clippy --all-targets --all-features -- -D warnings
 
 .PHONY: doctor
 doctor: ## check host readiness for the real (KVM) path
 	@./scripts/doctor.sh
 
 .PHONY: ci
-ci: fmt-check build test ## what CI runs
+ci: fmt-check clippy build test ## what CI runs
 
 .PHONY: clean
 clean: ## remove build artifacts and demo state

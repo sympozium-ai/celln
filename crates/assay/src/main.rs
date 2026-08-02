@@ -8,13 +8,17 @@
 //! than that. It does not build anything.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
 use assay::Assayer;
+use clap::{Parser, Subcommand};
 use nous_manifest::Hash;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "assay", version, about = "Grade and admit artifacts into a Nouscell manifest")]
+#[command(
+    name = "assay",
+    version,
+    about = "Grade and admit artifacts into a Nouscell manifest"
+)]
 struct Cli {
     /// Store root.
     #[arg(long, default_value = ".nous")]
@@ -120,9 +124,9 @@ fn main() -> Result<()> {
             );
             match &entry.recipe {
                 Some(r) => println!("  recipe {r}\n  {}", proof.toolchain),
-                None => eprintln!(
-                    "note: the rebuild did not reproduce — graded Verified, not Forged"
-                ),
+                None => {
+                    eprintln!("note: the rebuild did not reproduce — graded Verified, not Forged")
+                }
             }
         }
         Cmd::Resolve {

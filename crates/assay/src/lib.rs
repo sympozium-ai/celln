@@ -291,7 +291,10 @@ mod tests {
             .unwrap();
         let e = a.manifest().get(&h).unwrap();
         assert_eq!(e.tier, Tier::Forged);
-        assert!(e.recipe.is_some(), "an earned tier records what it was earned from");
+        assert!(
+            e.recipe.is_some(),
+            "an earned tier records what it was earned from"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -330,7 +333,9 @@ mod tests {
     fn revoked_hash_is_not_served_warm() {
         let dir = tempdir().unwrap();
         let mut assayer = Assayer::open(dir.path()).unwrap();
-        let h = assayer.admit_verified("/usr/bin/curl", b"curl", false).unwrap();
+        let h = assayer
+            .admit_verified("/usr/bin/curl", b"curl", false)
+            .unwrap();
         assayer.revoke(&h);
         // resolving again must not return the revoked warm entry; it re-admits
         // fresh bytes at Verified instead.
@@ -342,7 +347,9 @@ mod tests {
     fn manifest_stays_signed_after_mutations() {
         let dir = tempdir().unwrap();
         let mut assayer = Assayer::open(dir.path()).unwrap();
-        assayer.admit_verified("/usr/bin/python", b"py", true).unwrap();
+        assayer
+            .admit_verified("/usr/bin/python", b"py", true)
+            .unwrap();
         assert!(assayer.manifest().verify_standin());
         assayer.resolve("/x", b"xbytes", false).unwrap();
         assert!(assayer.manifest().verify_standin());

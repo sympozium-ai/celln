@@ -67,7 +67,11 @@ fn main() -> Result<()> {
     )?;
 
     let toolfs = work.join("toolfs.img");
-    run(&root, "scripts/mktoolfs.sh", &[toolfs.as_path(), Path::new("32"), &probe])?;
+    run(
+        &root,
+        "scripts/mktoolfs.sh",
+        &[toolfs.as_path(), Path::new("32"), &probe],
+    )?;
     let initrd = work.join("initramfs.cpio");
     let mut init = Command::new(root.join("scripts/mkinitramfs.sh"));
     init.current_dir(&root)
@@ -76,24 +80,36 @@ fn main() -> Result<()> {
         .env("NOUS_RUN_JSON", &run_path);
     let out = init.output().context("building fetch-proof initramfs")?;
     if !out.status.success() {
-        bail!("mkinitramfs: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "mkinitramfs: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
 
     let kernel = BootConfig::host_kernel().context("no KVM-capable host kernel")?;
     let payload = std::fs::read(&toolfs)?;
-    let mut cell = LinuxCell::boot(BootConfig::new(kernel).with_pmem(payload.len()).with_initrd(initrd))?;
+    let mut cell = LinuxCell::boot(
+        BootConfig::new(kernel)
+            .with_pmem(payload.len())
+            .with_initrd(initrd),
+    )?;
     cell.enable_http_fetch(HttpPolicy::new(vec![host]));
     cell.seal_tool(&Hash::of(&payload), &payload)?;
     let report = cell.run()?;
     if !report.console.contains("NOUS_FETCH_OK bytes=") {
-        bail!("guest fetch proof failed; console tail:\n{}", report.tail(40));
+        bail!(
+            "guest fetch proof failed; console tail:\n{}",
+            report.tail(40)
+        );
     }
     println!("PASS: a real cell fetched HTTPS through pilot; no guest network device was present");
     Ok(())
 }
 
 fn host_of(url: &str) -> Result<String> {
-    let rest = url.strip_prefix("https://").context("proof URL must use https")?;
+    let rest = url
+        .strip_prefix("https://")
+        .context("proof URL must use https")?;
     let host = rest.split('/').next().unwrap_or_default();
     if host.is_empty() || host.contains(':') || host.contains('@') {
         bail!("proof URL must have a plain DNS host on port 443")
@@ -110,6 +126,13 @@ fn repo_root() -> Result<PathBuf> {
 }
 
 fn run(root: &Path, script: &str, args: &[&Path]) -> Result<()> {
-    let status = Command::new(root.join(script)).current_dir(root).args(args).status()?;
-    if status.success() { Ok(()) } else { bail!("{script} failed") }
+    let status = Command::new(root.join(script))
+        .current_dir(root)
+        .args(args)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("{script} failed")
+    }
 }

@@ -34,8 +34,8 @@ pub fn default_agent() -> Result<Option<String>> {
     }
     let source = std::fs::read_to_string(&path)
         .with_context(|| format!("reading config {}", path.display()))?;
-    let config: Config = toml::from_str(&source)
-        .with_context(|| format!("parsing config {}", path.display()))?;
+    let config: Config =
+        toml::from_str(&source).with_context(|| format!("parsing config {}", path.display()))?;
     Ok(config.agent.default)
 }
 

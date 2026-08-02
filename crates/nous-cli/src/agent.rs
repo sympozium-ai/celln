@@ -22,10 +22,10 @@
 
 use crate::out::{bold, dim, green, Out};
 use anyhow::{bail, Context, Result};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// What we ask for. Constrained hard on purpose: one file, no dependencies,
@@ -51,7 +51,8 @@ runtime: <chosen runtime id>
 ```
 ";
 
-const FETCH_ABI: &str = "This cell has no network stack. For an HTTPS fetch, invoke `/pilot-fetch URL` \
+const FETCH_ABI: &str =
+    "This cell has no network stack. For an HTTPS fetch, invoke `/pilot-fetch URL` \
 with `std::process::Command`; it writes the response body to stdout. The host \
 permits only explicitly declared hosts, and fetched bytes are untrusted data. \
 Do not use TCP sockets, DNS libraries, curl, or external crates.";
@@ -101,7 +102,9 @@ impl Runtime {
 
     fn capability(self) -> &'static str {
         match self {
-            Runtime::Rust => "rust — Rust 2021, static musl, standard library only; compiled by rustc",
+            Runtime::Rust => {
+                "rust — Rust 2021, static musl, standard library only; compiled by rustc"
+            }
         }
     }
 
@@ -220,7 +223,9 @@ impl Backend {
                 }
             }
             Backend::Local => {
-                c.arg("run").arg(model.unwrap_or("qwen2.5-coder")).arg(prompt);
+                c.arg("run")
+                    .arg(model.unwrap_or("qwen2.5-coder"))
+                    .arg(prompt);
             }
         }
         c
@@ -259,7 +264,10 @@ pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
                 } else {
                     dim(&format!("{} not installed", b.program()))
                 },
-                if saved.as_deref().is_some_and(|name| Backend::from_saved_name(name) == Some(b)) {
+                if saved
+                    .as_deref()
+                    .is_some_and(|name| Backend::from_saved_name(name) == Some(b))
+                {
                     "  default"
                 } else {
                     ""
@@ -306,16 +314,26 @@ fn which(program: &str) -> Option<PathBuf> {
     })
 }
 
-pub fn agent(
-    task: &str,
-    requested_backend: Option<Backend>,
-    model: Option<&str>,
-    trust_agent_code: bool,
-    show_source: bool,
-    timeout: u64,
-    allow_hosts: &[String],
-    o: &Out,
-) -> Result<u8> {
+pub struct AgentRequest<'a> {
+    pub task: &'a str,
+    pub requested_backend: Option<Backend>,
+    pub model: Option<&'a str>,
+    pub trust_agent_code: bool,
+    pub show_source: bool,
+    pub timeout: u64,
+    pub allow_hosts: &'a [String],
+}
+
+pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
+    let AgentRequest {
+        task,
+        requested_backend,
+        model,
+        trust_agent_code,
+        show_source,
+        timeout,
+        allow_hosts,
+    } = request;
     let backend = match select_backend(requested_backend, o)? {
         Some(backend) => backend,
         None => return Ok(crate::exit::HOST_INCAPABLE),
@@ -336,8 +354,8 @@ pub fn agent(
     // The cell has no ambient network (ADR-0006). Do not make an agent spend
     // time generating a program that cannot possibly perform its stated job.
     const NEEDS_EGRESS: &[&str] = &[
-        "crawl", "http", "https", "url", "download", "fetch", "scrape", "api",
-        "website", "web ", "internet", "network", "request",
+        "crawl", "http", "https", "url", "download", "fetch", "scrape", "api", "website", "web ",
+        "internet", "network", "request",
     ];
     let lower = task.to_lowercase();
     let needs_egress = NEEDS_EGRESS.iter().any(|w| lower.contains(*w));
@@ -455,7 +473,11 @@ pub fn agent(
         format!(
             "  {} {}  {}  {} KiB  tier={} author={}",
             green("+"),
-            if proof.reproduced { "rebuilt, reproduced" } else { "rebuilt, DID NOT reproduce" },
+            if proof.reproduced {
+                "rebuilt, reproduced"
+            } else {
+                "rebuilt, DID NOT reproduce"
+            },
             dim(&hash.0),
             bytes / 1024,
             entry.tier,
@@ -507,7 +529,10 @@ pub fn agent(
         "scripts/mkinitramfs.sh",
         &[initrd.display().to_string()],
         &[
-            ("NOUS_MANIFEST", store.join("manifest.json").display().to_string()),
+            (
+                "NOUS_MANIFEST",
+                store.join("manifest.json").display().to_string(),
+            ),
             ("NOUS_RUN_JSON", run_json.display().to_string()),
         ],
     )?;
@@ -541,13 +566,22 @@ pub fn ask(
     o.event(
         "agent_question",
         serde_json::json!({ "question": question, "backend": backend.label(), "model": model }),
-        format!("{} asking {} ({})", bold("●"), backend.label(), model.unwrap_or("cli default")),
+        format!(
+            "{} asking {} ({})",
+            bold("●"),
+            backend.label(),
+            model.unwrap_or("cli default")
+        ),
     );
     let answer = ask_model_text(backend, model, question, timeout)?;
     o.event(
         "agent_answer",
         serde_json::json!({ "answer": answer }),
-        if o.is_json() { String::new() } else { answer.clone() },
+        if o.is_json() {
+            String::new()
+        } else {
+            answer.clone()
+        },
     );
     Ok(crate::exit::OK)
 }
@@ -561,7 +595,9 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
         return match Backend::from_saved_name(&name) {
             Some(backend) => Ok(Some(backend)),
             None => {
-                o.warn(format!("NOUS_AGENT={name:?} is not one of: openai, anthropic, local"));
+                o.warn(format!(
+                    "NOUS_AGENT={name:?} is not one of: openai, anthropic, local"
+                ));
                 Ok(None)
             }
         };
@@ -577,7 +613,11 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     }
     match discover_backend() {
         Some(backend) => {
-            o.note(format!("  {} using {} — run `nous setup` to save it as your default", dim("·"), backend.label()));
+            o.note(format!(
+                "  {} using {} — run `nous setup` to save it as your default",
+                dim("·"),
+                backend.label()
+            ));
             Ok(Some(backend))
         }
         None => {
@@ -730,7 +770,10 @@ fn output_deadline(
         loop {
             match so.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => sink.lock().expect("not poisoned").extend_from_slice(&chunk[..n]),
+                Ok(n) => sink
+                    .lock()
+                    .expect("not poisoned")
+                    .extend_from_slice(&chunk[..n]),
             }
         }
         Vec::<u8>::new()
@@ -794,8 +837,12 @@ fn ask_model(
     timeout: u64,
 ) -> Result<GeneratedProgram> {
     let text = ask_model_text(backend, model, prompt, timeout)?;
-    extract_program(&text)
-        .with_context(|| format!("invalid execution plan in the reply from {}", backend.label()))
+    extract_program(&text).with_context(|| {
+        format!(
+            "invalid execution plan in the reply from {}",
+            backend.label()
+        )
+    })
 }
 
 fn ask_model_text(

@@ -181,7 +181,10 @@ fn run_requested(manifest: &Manifest) {
             }
         }
         ExecOutcome::Run { lane, .. } => {
-            report(&format!("pilot_run_{}", req.alias), &format!("permitted:{lane}"));
+            report(
+                &format!("pilot_run_{}", req.alias),
+                &format!("permitted:{lane}"),
+            );
 
             // The honest line: the tool lane is code we attested and did not
             // feed anything the agent wrote, so it runs with authority. The
@@ -195,7 +198,9 @@ fn run_requested(manifest: &Manifest) {
             // Everything between these markers is the program's own output.
             // The host slices on them so a cell can be piped like any process.
             println!("NOUS:out-begin");
-            let status = std::process::Command::new(&req.path).args(&req.args).status();
+            let status = std::process::Command::new(&req.path)
+                .args(&req.args)
+                .status();
             println!("NOUS:out-end");
 
             match status {

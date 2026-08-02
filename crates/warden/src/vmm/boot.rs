@@ -1005,7 +1005,8 @@ impl LinuxCell {
         };
         // Length framing makes response bytes opaque: HTML, newlines and NULs
         // cross as data, not as a second control protocol.
-        self.fetch_response.extend((bytes.len() as u32).to_le_bytes());
+        self.fetch_response
+            .extend((bytes.len() as u32).to_le_bytes());
         self.fetch_response.extend(bytes);
     }
 

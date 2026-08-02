@@ -231,7 +231,8 @@ mod tests {
     #[test]
     fn a_proof_does_not_transfer_to_different_bytes() {
         let d = scratch("transfer");
-        let (bytes, proof) = build_and_verify(b"fn main() { println!(\"a\"); }", &d).expect("builds");
+        let (bytes, proof) =
+            build_and_verify(b"fn main() { println!(\"a\"); }", &d).expect("builds");
         let tampered = {
             let mut v = bytes.clone();
             v.push(0);

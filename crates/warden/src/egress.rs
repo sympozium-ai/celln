@@ -67,11 +67,20 @@ impl HttpBroker {
         if authority.is_empty() || authority.contains('@') {
             return Err(FetchDenied::Authority);
         }
-        let host = authority.split(':').next().unwrap_or_default().to_ascii_lowercase();
+        let host = authority
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         if host.is_empty() || (authority.contains(':') && !authority.ends_with(":443")) {
             return Err(FetchDenied::Authority);
         }
-        if !self.policy.allow_hosts.iter().any(|h| h.eq_ignore_ascii_case(&host)) {
+        if !self
+            .policy
+            .allow_hosts
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(&host))
+        {
             return Err(FetchDenied::Host(host));
         }
         let ip = (host.as_str(), 443)
@@ -102,7 +111,14 @@ impl HttpBroker {
                 self.used
             ));
             let out = Command::new("curl")
-                .args(["--silent", "--show-error", "--proto", "=https", "--max-redirs", "0"])
+                .args([
+                    "--silent",
+                    "--show-error",
+                    "--proto",
+                    "=https",
+                    "--max-redirs",
+                    "0",
+                ])
                 .arg("--max-time")
                 .arg(self.policy.timeout.as_secs().to_string())
                 .arg("--max-filesize")
@@ -117,7 +133,9 @@ impl HttpBroker {
             let headers = std::fs::read_to_string(&header).unwrap_or_default();
             let _ = std::fs::remove_file(&header);
             if !out.status.success() {
-                return Err(FetchDenied::Fetch(String::from_utf8_lossy(&out.stderr).trim().into()));
+                return Err(FetchDenied::Fetch(
+                    String::from_utf8_lossy(&out.stderr).trim().into(),
+                ));
             }
             if out.stdout.len() > self.policy.max_response_bytes {
                 return Err(FetchDenied::Fetch("response exceeded byte budget".into()));
@@ -130,7 +148,8 @@ impl HttpBroker {
                 }
                 return Ok(out.stdout);
             }
-            let location = location.ok_or_else(|| FetchDenied::Fetch("redirect without Location".into()))?;
+            let location =
+                location.ok_or_else(|| FetchDenied::Fetch("redirect without Location".into()))?;
             url = redirect_url(&url, &location)?;
         }
         Err(FetchDenied::Fetch("too many redirects (limit 5)".into()))
@@ -145,7 +164,8 @@ fn response_status_and_location(headers: &str) -> Option<(u16, Option<String>)> 
     let status = block.split_whitespace().nth(1)?.parse().ok()?;
     let location = block.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("location").then(|| value.trim().to_owned())
+        name.eq_ignore_ascii_case("location")
+            .then(|| value.trim().to_owned())
     });
     Some((status, location))
 }
@@ -157,7 +177,9 @@ fn redirect_url(current: &str, location: &str) -> Result<String, FetchDenied> {
     if let Some(host_relative) = location.strip_prefix("//") {
         return Ok(format!("https://{host_relative}"));
     }
-    let rest = current.strip_prefix("https://").ok_or(FetchDenied::Scheme)?;
+    let rest = current
+        .strip_prefix("https://")
+        .ok_or(FetchDenied::Scheme)?;
     let authority = rest.split('/').next().ok_or(FetchDenied::Authority)?;
     if location.starts_with('/') {
         return Ok(format!("https://{authority}{location}"));
@@ -168,9 +190,9 @@ fn redirect_url(current: &str, location: &str) -> Result<String, FetchDenied> {
 
 fn is_public_v4(o: [u8; 4]) -> bool {
     let [a, b, _, _] = o;
-    !matches!(a, 0 | 10 | 127 | 224..=255)
-        && !(a == 100 && (64..=127).contains(&b))
-        && !(a == 169 && b == 254)
+    !(matches!(a, 0 | 10 | 127 | 224..=255)
+        || a == 100 && (64..=127).contains(&b)
+        || a == 169 && b == 254)
         && !(a == 172 && (16..=31).contains(&b))
         && !(a == 192 && (b == 0 || b == 168))
         && !(a == 198 && (b == 18 || b == 19))
@@ -183,9 +205,18 @@ mod tests {
     #[test]
     fn rejects_ambient_and_undeclared_reach() {
         let b = HttpBroker::new(HttpPolicy::new(vec!["example.com".into()]));
-        assert_eq!(b.authorize("http://example.com/").unwrap_err(), FetchDenied::Scheme);
-        assert!(matches!(b.authorize("https://evil.example/"), Err(FetchDenied::Host(_))));
-        assert_eq!(b.authorize("https://example.com:444/"), Err(FetchDenied::Authority));
+        assert_eq!(
+            b.authorize("http://example.com/").unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert!(matches!(
+            b.authorize("https://evil.example/"),
+            Err(FetchDenied::Host(_))
+        ));
+        assert_eq!(
+            b.authorize("https://example.com:444/"),
+            Err(FetchDenied::Authority)
+        );
     }
 
     #[test]

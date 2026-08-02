@@ -227,13 +227,15 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             timeout,
             allow_hosts,
         } => agent::agent(
-            &task.join(" "),
-            *agent,
-            model.as_deref(),
-            *trust_agent_code,
-            *show_source,
-            *timeout,
-            allow_hosts,
+            agent::AgentRequest {
+                task: &task.join(" "),
+                requested_backend: *agent,
+                model: model.as_deref(),
+                trust_agent_code: *trust_agent_code,
+                show_source: *show_source,
+                timeout: *timeout,
+                allow_hosts,
+            },
             o,
         ),
         Cmd::Ask {

@@ -452,7 +452,8 @@ fn visible_len(s: &str) -> usize {
 
 /// `nous tools` — what this host has attested.
 pub fn tools(root: &Path, o: &Out) -> Result<u8> {
-    let assayer = Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
+    let assayer =
+        Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
     let m = assayer.manifest();
     if m.is_empty() {
         o.note(dim(
