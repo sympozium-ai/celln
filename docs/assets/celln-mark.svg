@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">Celln mark: cells scaling to n</title>
+  <rect width="256" height="256" rx="62" fill="#fbfcf9"/>
+  <rect x="22" y="111" width="30" height="30" rx="9" fill="#165a47"/>
+  <rect x="55" y="92" width="57" height="57" rx="17" fill="none" stroke="#165a47" stroke-width="11"/>
+  <rect x="119" y="54" width="116" height="116" rx="34" fill="none" stroke="#d9f65c" stroke-width="15"/>
+  <path d="M146 143l55-55m-19 0h19v19" fill="none" stroke="#17221e" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

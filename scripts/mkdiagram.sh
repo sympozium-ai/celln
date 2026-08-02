@@ -23,13 +23,13 @@ command -v ffmpeg       >/dev/null || { echo "need ffmpeg" >&2; exit 1; }
 mkdir -p "$out"
 
 W=900; H=430
-BG="#14120f"       # warm near-black; readable on light and dark READMEs alike
-PANEL="#1c1915"
-INK="#f2eee6"      # cream
-DIM="#8b8477"
-ACCENT="#c24a1a"   # burnt orange — attested, sealed, ours
-WARN="#e8553d"     # refused
-OK="#7fa650"       # permitted
+BG="#fbfcf9"
+PANEL="#ffffff"
+INK="#17221e"
+DIM="#5c675f"
+ACCENT="#165a47"
+WARN="#b44a32"
+OK="#7fa650"
 
 # frame(index, cell_op, tool_x, tool_op, sealed, agent_op, strike_op, revoke_op,
 #       lane, caption, beat)

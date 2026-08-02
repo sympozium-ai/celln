@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 180" role="img" aria-labelledby="title">
+  <title id="title">Celln</title>
+  <rect x="18" y="74" width="35" height="35" rx="10" fill="#165a47"/>
+  <rect x="57" y="55" width="65" height="65" rx="19" fill="none" stroke="#165a47" stroke-width="12"/>
+  <rect x="132" y="22" width="132" height="132" rx="38" fill="none" stroke="#d9f65c" stroke-width="16"/>
+  <path d="M163 117L225 55M203 55h22v22" fill="none" stroke="#17221e" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="302" y="118" fill="#17221e" font-family="Arial, Helvetica, sans-serif" font-size="100" font-weight="700" letter-spacing="-8">cell<tspan fill="#165a47">n</tspan></text>
+</svg>

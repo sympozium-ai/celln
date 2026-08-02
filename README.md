@@ -1,4 +1,6 @@
-# Celln
+<p>
+  <img src="docs/assets/celln-lockup.svg" width="360" alt="Celln">
+</p>
 
 **Celln** runs agents in isolated **cells** that borrow verified tools instead
 of rebuilding Linux environments.
