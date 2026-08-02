@@ -64,12 +64,20 @@ frame() {
   <!-- ── host ─────────────────────────────────────────── -->
   <text x="40" y="126" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">HOST</text>
   <rect x="40" y="140" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="167" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">assay</text>
-  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">grades · tiers · revocation</text>
+  <text x="58" y="167" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">forge</text>
+  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">rebuilds · proves it reproduced</text>
+
+  <path d="M165 202 L165 212" stroke="$DIM" stroke-width="1"/>
+  <path d="M161 208 L165 215 L169 208" fill="none" stroke="$DIM" stroke-width="1"/>
+  <text x="178" y="213" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">bytes + proof</text>
 
   <rect x="40" y="216" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="243" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">forge</text>
-  <text x="58" y="263" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">rebuilds · proves it reproduced</text>
+  <text x="58" y="243" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">assay</text>
+  <text x="58" y="263" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">grades the proof · tiers</text>
+
+  <path d="M165 278 L165 288" stroke="$DIM" stroke-width="1"/>
+  <path d="M161 284 L165 291 L169 284" fill="none" stroke="$DIM" stroke-width="1"/>
+  <text x="178" y="289" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">attested tool</text>
 
   <rect x="40" y="292" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
   <text x="58" y="319" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">warden</text>
