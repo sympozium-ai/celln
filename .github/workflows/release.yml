@@ -33,7 +33,7 @@ jobs:
       - name: update the formula in-tree
         run: |
           sed -i \
-            -e "s|tag: \"v[^\"]*\"|tag: \"${GITHUB_REF_NAME}\"|" \
+            -e "s|tag:[[:space:]]*\"v[^\"]*\"|tag:      \"${GITHUB_REF_NAME}\"|" \
             -e "s|revision: \"[0-9a-f]*\"|revision: \"${{ steps.release.outputs.revision }}\"|" \
             Formula/nouscell.rb
           grep -E 'url|tag:|revision:' Formula/nouscell.rb
