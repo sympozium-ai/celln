@@ -5,9 +5,9 @@
 
 use std::io::Write;
 
-const TX: u16 = 0x2f8;
-const CALL: u16 = 0x2f9;
-const RX: u16 = 0x2fa;
+const TX: u16 = 0x500;
+const CALL: u16 = 0x501;
+const RX: u16 = 0x502;
 
 #[inline]
 unsafe fn out(port: u16, byte: u8) {

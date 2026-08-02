@@ -133,10 +133,11 @@ const PCI_CONFIG_ADDR: u16 = 0xcf8;
 const LIVE_SIGNAL_PORT: u16 = 0x3f0;
 /// Four I/O ports forming the deliberately tiny pilot→warden fetch channel.
 /// This is not a NIC: the guest gets no packet interface and no socket API.
-pub const PILOT_FETCH_TX: u16 = 0x2f8;
-pub const PILOT_FETCH_CALL: u16 = 0x2f9;
-pub const PILOT_FETCH_RX: u16 = 0x2fa;
-pub const PILOT_FETCH_STATUS: u16 = 0x2fb;
+// 0x2f8 is COM2 and Linux probes it; use an otherwise-unassigned range.
+pub const PILOT_FETCH_TX: u16 = 0x500;
+pub const PILOT_FETCH_CALL: u16 = 0x501;
+pub const PILOT_FETCH_RX: u16 = 0x502;
+pub const PILOT_FETCH_STATUS: u16 = 0x503;
 
 // ---- setup_header / boot_params offsets (Documentation/x86/boot.rst) ----
 

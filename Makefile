@@ -70,6 +70,10 @@ guest: initramfs toolfs ## build everything the guest side needs
 boot-kvm: guest ## boot a STOCK kernel and prove the VFS<->memslot join (needs /dev/kvm)
 	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-boot-kvm
 
+.PHONY: fetch-proof
+fetch-proof: ## prove a real cell fetches HTTPS through pilot (needs /dev/kvm + egress)
+	@$(CARGO) run --quiet -p pilot --features kvm --bin nous-fetch-proof
+
 .PHONY: fmt
 fmt: ## format all crates
 	$(CARGO) fmt
