@@ -21,7 +21,8 @@ const KEEP: usize = 500;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     pub id: String,
-    pub name: String,
+    #[serde(alias = "name")]
+    pub description: String,
     pub spec: PathBuf,
     pub backend: String,
     pub pid: u32,
@@ -109,7 +110,12 @@ fn dir(root: &Path) -> PathBuf {
 
 /// Start a record. Written immediately so a cell is visible while it runs, not
 /// only once it is over.
-pub fn begin(root: &Path, name: &str, spec: &Path, tools: Vec<String>) -> std::io::Result<Record> {
+pub fn begin(
+    root: &Path,
+    description: &str,
+    spec: &Path,
+    tools: Vec<String>,
+) -> std::io::Result<Record> {
     let started_ms = now_ms();
     let pid = std::process::id();
     let nanos = SystemTime::now()
@@ -117,7 +123,7 @@ pub fn begin(root: &Path, name: &str, spec: &Path, tools: Vec<String>) -> std::i
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
     // Short, stable, and collision-resistant enough for a local registry.
-    let seed = format!("{name}:{started_ms}:{nanos}:{pid}");
+    let seed = format!("{description}:{started_ms}:{nanos}:{pid}");
     let id = celln_manifest::Hash::of(seed.as_bytes())
         .0
         .trim_start_matches("blake3:")
@@ -127,7 +133,7 @@ pub fn begin(root: &Path, name: &str, spec: &Path, tools: Vec<String>) -> std::i
 
     let rec = Record {
         id,
-        name: name.to_string(),
+        description: description.to_string(),
         spec: spec.to_path_buf(),
         backend: String::new(),
         pid,
@@ -232,7 +238,7 @@ mod tests {
     fn a_record_whose_process_is_gone_reads_as_died() {
         let mut rec = Record {
             id: "x".into(),
-            name: "n".into(),
+            description: "n".into(),
             spec: PathBuf::new(),
             backend: String::new(),
             // pid 1 is always alive; a very high pid almost certainly is not.
@@ -261,7 +267,7 @@ mod tests {
 
         let all = list(&tmp);
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].name, "second", "newest first");
+        assert_eq!(all[0].description, "second", "newest first");
         assert_eq!(all[0].live(), Live::Failed);
         assert_eq!(all[0].error.as_deref(), Some("boom"));
         assert_eq!(all[1].live(), Live::Dissolved);

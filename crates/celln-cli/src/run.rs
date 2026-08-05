@@ -375,7 +375,7 @@ pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
             o.event(
                 "cell",
                 serde_json::json!({
-                    "id": r.id, "name": r.name, "status": r.live().label(),
+                    "id": r.id, "description": r.description, "status": r.live().label(),
                     "tools": r.tools, "spec": r.spec, "backend": r.backend,
                     "started_ms": r.started_ms, "finished_ms": r.finished_ms,
                     "duration_ms": r.duration_ms(), "pid": r.pid, "error": r.error,
@@ -400,8 +400,8 @@ pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
     println!(
         "{}",
         bold(&format!(
-            "{:<14} {:<18} {:<12} {:>5}  {}",
-            "CELL ID", "NAME", "STATUS", "TOOLS", "CREATED"
+            "{:<14} {:<28} {:<12} {:>5}  {}",
+            "CELL ID", "DESCRIPTION", "STATUS", "TOOLS", "CREATED"
         ))
     );
     for r in &records {
@@ -416,10 +416,11 @@ pub fn ps(root: &Path, all: bool, o: &Out) -> Result<u8> {
         };
         // Pad on the visible text, not the escape codes, or the columns wander.
         let pad = 12usize.saturating_sub(visible_len(&status));
+        let desc = ellipsis(&r.description, 28);
         println!(
-            "{:<14} {:<18} {}{:pad$} {:>5}  {}",
+            "{:<14} {:<28} {}{:pad$} {:>5}  {}",
             r.id,
-            r.name,
+            desc,
             status,
             "",
             r.tools.len(),
@@ -449,6 +450,17 @@ fn visible_len(s: &str) -> usize {
         }
     }
     n
+}
+
+fn ellipsis(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max - 1; // leave room for '…'
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// `celln tools` — what this host has attested.

@@ -773,11 +773,11 @@ fn run_in_cell(
         .with_pmem(payload.len())
         .with_initrd(initrd);
 
-    // Derive a readable name from the task, truncated to fit the ps table.
-    let name = if task.len() <= 48 {
+    // Derive a readable description from the task.
+    let name = if task.len() <= 30 {
         task.to_string()
     } else {
-        let mut end = 48;
+        let mut end = 30;
         while !task.is_char_boundary(end) {
             end -= 1;
         }
