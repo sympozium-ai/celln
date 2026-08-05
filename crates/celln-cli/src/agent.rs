@@ -160,6 +160,53 @@ impl Backend {
         which(self.program()).is_some()
     }
 
+    /// Check whether the credentials or daemon this backend needs are
+    /// actually present. Availability means the CLI is on PATH; validation
+    /// means it can actually do work.
+    fn validate(self) -> Result<(), String> {
+        match self {
+            Backend::Anthropic => {
+                if std::env::var("ANTHROPIC_API_KEY").is_err()
+                    && std::env::var("CLAUDE_API_KEY").is_err()
+                {
+                    return Err(
+                        "ANTHROPIC_API_KEY is not set — `claude` needs it to authenticate".into(),
+                    );
+                }
+                Ok(())
+            }
+            Backend::Openai => {
+                if std::env::var("OPENAI_API_KEY").is_err() {
+                    return Err(
+                        "OPENAI_API_KEY is not set — `codex` needs it to authenticate".into(),
+                    );
+                }
+                Ok(())
+            }
+            Backend::Deepseek => {
+                if std::env::var("DEEPSEEK_API_KEY").is_err() {
+                    return Err(
+                        "DEEPSEEK_API_KEY is not set — `deepseek-api` needs it to call api.deepseek.com".into(),
+                    );
+                }
+                Ok(())
+            }
+            Backend::Local => {
+                // ollama needs the daemon running. Quick check: does `ollama list`
+                // exit successfully?
+                let out = std::process::Command::new("ollama")
+                    .args(["list"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status();
+                match out {
+                    Ok(s) if s.success() => Ok(()),
+                    _ => Err("ollama daemon is not running — start it with `ollama serve`".into()),
+                }
+            }
+        }
+    }
+
     /// Whether this backend withholds its result until asked to stop.
     ///
     /// `claude -p` can finish the API call in seconds, print nothing, and hang.
@@ -224,6 +271,18 @@ pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
             serde_json::json!({"backend": backend.saved_name(), "config": path}),
             format!("✔ default agent: {} ({})", backend.label(), path.display()),
         );
+        match backend.validate() {
+            Ok(()) => {
+                o.event(
+                    "agent_validated",
+                    serde_json::json!({"backend": backend.saved_name()}),
+                    format!("✔ {} credentials verified", backend.label()),
+                );
+            }
+            Err(msg) => {
+                o.warn(format!("{}: {msg}", backend.label()));
+            }
+        }
     }
     let saved = crate::config::default_agent()?;
     for b in [
@@ -308,6 +367,20 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
         serde_json::json!({"backend": backend.saved_name(), "config": path}),
         format!("✔ default agent: {} ({})", backend.label(), path.display()),
     );
+
+    // Validate credentials so the user finds out now, not on first use.
+    match backend.validate() {
+        Ok(()) => {
+            o.event(
+                "agent_validated",
+                serde_json::json!({"backend": backend.saved_name()}),
+                format!("✔ {} credentials verified", backend.label()),
+            );
+        }
+        Err(msg) => {
+            o.warn(format!("{}: {msg}", backend.label()));
+        }
+    }
 
     // Install runtime assets (scripts, pilot binaries) into ~/.celln/runtime/
     // so the binary is self-contained and doesn't need the source checkout.
