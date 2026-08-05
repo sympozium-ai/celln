@@ -288,7 +288,133 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
         serde_json::json!({"backend": backend.saved_name(), "config": path}),
         format!("✔ default agent: {} ({})", backend.label(), path.display()),
     );
+
+    // Install runtime assets (scripts, pilot binaries) into ~/.celln/runtime/
+    // so the binary is self-contained and doesn't need the source checkout.
+    match install_runtime_assets() {
+        Ok(dest) => {
+            o.event(
+                "runtime_assets",
+                serde_json::json!({"destination": dest.display().to_string()}),
+                format!("✔ runtime assets installed to {}", dest.display()),
+            );
+        }
+        Err(e) => {
+            o.warn(format!("could not install runtime assets: {e:#}"));
+        }
+    }
+
     Ok(crate::exit::OK)
+}
+
+/// Copy the guest runtime assets (scripts, pilot) into `~/.celln/runtime/`.
+/// This makes the installed binary self-contained — no env vars, no checkout
+/// required. The source is found via the compile-time manifest directory.
+fn install_runtime_assets() -> Result<PathBuf> {
+    bootstrap_runtime().with_context(|| "installing runtime assets")
+}
+
+/// Core bootstrap logic, separated so it can be called lazily from runtime_root
+/// (no Out reference) as well as from `celln setup`.
+fn bootstrap_runtime() -> Result<PathBuf> {
+    let dest = resolve_runtime_home()?;
+    std::fs::create_dir_all(dest.join("scripts"))?;
+    std::fs::create_dir_all(dest.join("guest/init"))?;
+    std::fs::create_dir_all(dest.join("pilot"))?;
+
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest
+        .ancestors()
+        .find(|d| d.join("scripts/mkinitramfs.sh").exists())
+        .with_context(|| {
+            "source checkout not found — run from the repo or set CELLN_RUNTIME_DIR"
+        })?;
+
+    // ── scripts ────────────────────────────────────────────────────
+    for script in ["scripts/mkinitramfs.sh", "scripts/mktoolfs.sh"] {
+        let src = workspace.join(script);
+        let dst = dest.join(script);
+        if src.exists() {
+            std::fs::copy(&src, &dst).with_context(|| format!("copying {script}"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&dst)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&dst, perms)?;
+            }
+        }
+    }
+
+    // ── guest init source ──────────────────────────────────────────
+    let init_src = workspace.join("guest/init/init.c");
+    if init_src.exists() {
+        std::fs::copy(&init_src, dest.join("guest/init/init.c"))?;
+    }
+
+    // ── pilot binaries ─────────────────────────────────────────────
+    // Try the musl target (as the initramfs script does), then the
+    // host target as a fallback.
+    let pilot_dirs = [
+        workspace.join("target/x86_64-unknown-linux-musl/release"),
+        workspace.join("target/release"),
+        workspace.join("target/debug"),
+    ];
+    let mut found = false;
+    for dir in &pilot_dirs {
+        let pilot = dir.join("celln-pilot");
+        let fetch = dir.join("pilot-fetch");
+        if pilot.exists() && fetch.exists() {
+            std::fs::copy(&pilot, dest.join("pilot/celln-pilot"))?;
+            std::fs::copy(&fetch, dest.join("pilot/pilot-fetch"))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                for bin in ["pilot/celln-pilot", "pilot/pilot-fetch"] {
+                    let mut perms = std::fs::metadata(dest.join(bin))?.permissions();
+                    perms.set_mode(0o755);
+                    std::fs::set_permissions(dest.join(bin), perms)?;
+                }
+            }
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        // Try building them from the workspace
+        eprintln!("  · building pilot binaries (one-time)...");
+        let status = std::process::Command::new("cargo")
+            .args([
+                "build",
+                "--release",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "-p",
+                "celln-pilot",
+                "--bin",
+                "celln-pilot",
+                "--bin",
+                "pilot-fetch",
+            ])
+            .current_dir(workspace)
+            .status()
+            .context("building pilot binaries")?;
+        if !status.success() {
+            anyhow::bail!("cargo build of pilot binaries failed");
+        }
+        let dir = workspace.join("target/x86_64-unknown-linux-musl/release");
+        std::fs::copy(dir.join("celln-pilot"), dest.join("pilot/celln-pilot"))?;
+        std::fs::copy(dir.join("pilot-fetch"), dest.join("pilot/pilot-fetch"))?;
+    }
+
+    Ok(dest)
+}
+
+fn resolve_runtime_home() -> Result<PathBuf> {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    Ok(home.join(".celln/runtime"))
 }
 
 fn which(program: &str) -> Option<PathBuf> {
@@ -630,7 +756,7 @@ fn run_in_cell(
     initrd: &Path,
     allow_hosts: &[String],
     state_root: &Path,
-    _task: &str,
+    task: &str,
     o: &Out,
 ) -> Result<u8> {
     use warden::vmm::boot::{BootConfig, LinuxCell};
@@ -647,12 +773,23 @@ fn run_in_cell(
         .with_pmem(payload.len())
         .with_initrd(initrd);
 
+    // Derive a readable name from the task, truncated to fit the ps table.
+    let name = if task.len() <= 48 {
+        task.to_string()
+    } else {
+        let mut end = 48;
+        while !task.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &task[..end])
+    };
+
     // Agent-created cells are just as real as spec-created cells. Record them
     // before the VMM owns the live fd so `celln ps -a` retains the policy
     // verdict after this short-lived process exits.
     let mut record = crate::cells::begin(
         state_root,
-        "agent",
+        &name,
         Path::new("<agent-generated>"),
         vec![ALIAS.to_string()],
     )
@@ -1053,6 +1190,37 @@ fn runtime_root() -> Result<PathBuf> {
             let packaged = prefix.join("share/celln");
             if packaged.join("scripts/mkinitramfs.sh").exists() {
                 return Ok(packaged);
+            }
+        }
+    }
+    // Compile-time fallback: when installed from a local checkout with
+    // `cargo install --path`, the manifest directory points at the
+    // crate source. Walk up from there to find the workspace root.
+    {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for dir in manifest.ancestors() {
+            if dir.join("scripts/mkinitramfs.sh").exists() {
+                return Ok(dir.to_path_buf());
+            }
+        }
+    }
+    // Self-bootstrapped: celln setup copies the runtime assets into
+    // the cell state directory so the binary is self-contained. If the
+    // directory exists but assets are missing, try a lazy bootstrap.
+    {
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("."));
+        let bootstrapped = home.join(".celln/runtime");
+        if bootstrapped.join("scripts/mkinitramfs.sh").exists() {
+            return Ok(bootstrapped);
+        }
+        // Lazy first-time bootstrap — the binary carries its own source
+        // path via CARGO_MANIFEST_DIR. If that checkout still exists,
+        // install assets transparently.
+        if let Ok(dest) = bootstrap_runtime() {
+            if dest.join("scripts/mkinitramfs.sh").exists() {
+                return Ok(dest);
             }
         }
     }
