@@ -1,4 +1,4 @@
-//! `nous-pilot` — pilot, running **inside the cell**.
+//! `celln-pilot` — pilot, running **inside the cell**.
 //!
 //! Everything else in this crate is a library the host links against. This is
 //! the binary that runs in the guest, and it is the first piece of pilot to do
@@ -27,7 +27,7 @@ use std::ffi::CString;
 use std::io;
 use std::os::unix::process::CommandExt;
 
-const WORKSPACE: &str = "/nous/work";
+const WORKSPACE: &str = "/celln/work";
 
 #[repr(C)]
 struct LandlockRulesetAttr {
@@ -128,6 +128,17 @@ fn enter_agent_lane() -> io::Result<()> {
             "/tools/program",
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
         )?;
+        // pilot-fetch uses I/O ports to talk to the host broker, not sockets.
+        // On the stock guest kernel, Landlock only authorises execve from this
+        // initramfs when EXECUTE is granted on its root hierarchy; a rule for
+        // the binary or its directory still returns EACCES. The kernel also
+        // requires READ_FILE for this static execve. The image is immutable;
+        // write access remains limited to the workspace, and egress remains
+        // host-authorised by the broker.
+        add(
+            "/",
+            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+        )?;
         add(WORKSPACE, FS_ALL)?;
         if libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0) != 0 {
             return Err(io::Error::last_os_error());
@@ -219,20 +230,20 @@ fn install_network_seccomp() -> io::Result<()> {
 }
 
 /// Report an observation the host can assert on, same protocol the guest init
-/// uses: one `NOUS:key=value` line per fact, on the console.
+/// uses: one `CELLN:key=value` line per fact, on the console.
 fn report(key: &str, val: &str) {
-    println!("NOUS:{key}={val}");
+    println!("CELLN:{key}={val}");
 }
 
 /// Where the host stages the cell's manifest and the tools it attested.
-const MANIFEST: &str = "/nous/manifest.json";
-const TOOLS_DIR: &str = "/nous/tools";
+const MANIFEST: &str = "/celln/manifest.json";
+const TOOLS_DIR: &str = "/celln/tools";
 
 /// What the host asked this cell to run, if anything. Staged next to the
 /// manifest rather than passed on the kernel cmdline: a request to run
 /// something is data, and it goes through the same hash check as everything
 /// else regardless of how it arrived.
-const RUN_REQUEST: &str = "/nous/run.json";
+const RUN_REQUEST: &str = "/celln/run.json";
 
 #[derive(Deserialize)]
 struct RunRequest {
@@ -309,7 +320,7 @@ fn main() {
                     report(&format!("pilot_exec_{name}"), "denied");
                     // The structured record, on the console, for the agent.
                     for line in e.to_json().lines() {
-                        println!("NOUS:explain {line}");
+                        println!("CELLN:explain {line}");
                     }
                 }
             }
@@ -368,7 +379,7 @@ fn run_requested(manifest: &Manifest) {
         ExecOutcome::Denied(e) => {
             report(&format!("pilot_run_{}", req.alias), "denied");
             for line in e.to_json().lines() {
-                println!("NOUS:explain {line}");
+                println!("CELLN:explain {line}");
             }
         }
         ExecOutcome::Run { lane, .. } => {
@@ -379,7 +390,7 @@ fn run_requested(manifest: &Manifest) {
 
             // Everything between these markers is the program's own output.
             // The host slices on them so a cell can be piped like any process.
-            println!("NOUS:out-begin");
+            println!("CELLN:out-begin");
             let mut command = std::process::Command::new(&req.path);
             command.args(&req.args);
             if lane != Lane::Tool {
@@ -388,7 +399,7 @@ fn run_requested(manifest: &Manifest) {
                 }
             }
             let status = command.status();
-            println!("NOUS:out-end");
+            println!("CELLN:out-end");
 
             match status {
                 Ok(s) => report(
@@ -411,7 +422,7 @@ fn run_requested(manifest: &Manifest) {
 /// machine as root would otherwise reboot their machine, which is not a
 /// mistake anyone should be able to make twice.
 fn finish(code: i32) {
-    println!("NOUS:done");
+    println!("CELLN:done");
     if std::process::id() == 1 {
         unsafe {
             libc::sync();

@@ -19,5 +19,5 @@ fn main() {
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!result.stdout.is_empty(), "broker returned an empty response");
-    println!("NOUS_FETCH_OK bytes={}", result.stdout.len());
+    println!("CELLN_FETCH_OK bytes={}", result.stdout.len());
 }

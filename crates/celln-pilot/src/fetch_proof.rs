@@ -3,8 +3,9 @@
 //! Run `cargo run -p celln-pilot --features kvm --bin celln-fetch-proof -- URL` on a
 //! KVM host. A pass means a program running *inside* a real cell invoked the
 //! guest-only `/pilot-fetch` client and received a bounded HTTPS response from
-//! the host broker. It is intentionally a host-authored probe, so no data-lane
-//! exception is involved in proving the transport.
+//! the host broker. It deliberately runs in the agent lane, which is the
+//! public `celln agent --allow-host` path and the one that must be able to
+//! execute the broker client without receiving authority over other guest code.
 
 use anyhow::{bail, Context, Result};
 use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
@@ -22,7 +23,7 @@ fn main() -> Result<()> {
     let work = std::env::temp_dir().join(format!("celln-fetch-proof-{}", std::process::id()));
     std::fs::create_dir_all(&work)?;
 
-    let probe = work.join("fetch-probe");
+    let probe = work.join("program");
     let compiled = Command::new("rustc")
         .current_dir(&root)
         .args([
@@ -51,7 +52,7 @@ fn main() -> Result<()> {
         hash,
         tier: Tier::Verified,
         interpreter: false,
-        author: Author::Host,
+        author: Author::Agent,
         recipe: None,
     });
     manifest.sign_standin();
@@ -61,8 +62,8 @@ fn main() -> Result<()> {
     std::fs::write(
         &run_path,
         serde_json::to_vec(&serde_json::json!({
-            "path": "/tools/fetch-probe", "alias": "/probe", "args": [url],
-            "agent_authored_input": false,
+            "path": "/tools/program", "alias": "/probe", "args": [url],
+            "agent_authored_input": true,
         }))?,
     )?;
 
@@ -76,8 +77,8 @@ fn main() -> Result<()> {
     let mut init = Command::new(root.join("scripts/mkinitramfs.sh"));
     init.current_dir(&root)
         .arg(&initrd)
-        .env("NOUS_MANIFEST", &manifest_path)
-        .env("NOUS_RUN_JSON", &run_path);
+        .env("CELLN_MANIFEST", &manifest_path)
+        .env("CELLN_RUN_JSON", &run_path);
     let out = init.output().context("building fetch-proof initramfs")?;
     if !out.status.success() {
         bail!(
@@ -96,7 +97,11 @@ fn main() -> Result<()> {
     cell.enable_http_fetch(HttpPolicy::new(vec![host]));
     cell.seal_tool(&Hash::of(&payload), &payload)?;
     let report = cell.run()?;
-    if !report.console.contains("NOUS_FETCH_OK bytes=") {
+    if !report
+        .console
+        .contains("CELLN:pilot_run_/probe=permitted:agent")
+        || !report.console.contains("CELLN_FETCH_OK bytes=")
+    {
         bail!(
             "guest fetch proof failed; console tail:\n{}",
             report.tail(40)

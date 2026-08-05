@@ -619,7 +619,7 @@ fn which(program: &str) -> Option<PathBuf> {
 
 pub struct AgentRequest<'a> {
     pub task: &'a str,
-    /// Persistent cell registry and store root (`--root` / `NOUS_ROOT`).
+    /// Persistent cell registry and store root (`--root` / `CELLN_ROOT`).
     pub state_root: &'a Path,
     pub requested_backend: Option<Backend>,
     pub model: Option<&'a str>,
@@ -827,12 +827,12 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
         &[initrd.display().to_string()],
         &[
             (
-                "NOUS_MANIFEST",
+                "CELLN_MANIFEST",
                 store.join("manifest.json").display().to_string(),
             ),
-            ("NOUS_RUN_JSON", run_json.display().to_string()),
+            ("CELLN_RUN_JSON", run_json.display().to_string()),
             (
-                "NOUS_PILOT_DIR",
+                "CELLN_PILOT_DIR",
                 runtime_root.join("pilot").display().to_string(),
             ),
         ],
@@ -891,10 +891,7 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     if let Some(backend) = requested {
         return Ok(Some(backend));
     }
-    if let Some(name) = std::env::var_os("CELLN_AGENT")
-        .or_else(|| std::env::var_os("CELL_AGENT"))
-        .or_else(|| std::env::var_os("NOUS_AGENT"))
-    {
+    if let Some(name) = std::env::var_os("CELLN_AGENT").or_else(|| std::env::var_os("CELL_AGENT")) {
         let name = name.to_string_lossy();
         return match Backend::from_saved_name(&name) {
             Some(backend) => Ok(Some(backend)),
@@ -1028,7 +1025,7 @@ fn run_in_cell(
     let mut code = 0u8;
     let mut refused: Option<String> = None;
     for line in r.console.lines() {
-        let Some(rest) = line.strip_prefix("NOUS:pilot_run_") else {
+        let Some(rest) = line.strip_prefix("CELLN:pilot_run_") else {
             continue;
         };
         let Some((key, val)) = rest.split_once('=') else {
@@ -1128,9 +1125,9 @@ fn run_in_cell(
 
 /// Everything pilot printed between its markers is the program's own output.
 fn slice_output(console: &str) -> Option<String> {
-    let start = console.find("NOUS:out-begin")?;
+    let start = console.find("CELLN:out-begin")?;
     let after = console[start..].find('\n')? + start + 1;
-    let end = console[after..].find("NOUS:out-end")? + after;
+    let end = console[after..].find("CELLN:out-end")? + after;
     let text = console[after..end].trim_end_matches(['\r', '\n']);
     (!text.trim().is_empty()).then(|| text.replace("\r\n", "\n"))
 }
@@ -1358,9 +1355,8 @@ fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) ->
 /// executable's prefix. `CELLN_RUNTIME_DIR` is an explicit override for unusual
 /// layouts and downstream packagers.
 fn runtime_root() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("CELLN_RUNTIME_DIR")
-        .or_else(|| std::env::var_os("CELL_RUNTIME_DIR"))
-        .or_else(|| std::env::var_os("NOUS_RUNTIME_DIR"))
+    if let Some(p) =
+        std::env::var_os("CELLN_RUNTIME_DIR").or_else(|| std::env::var_os("CELL_RUNTIME_DIR"))
     {
         let p = PathBuf::from(p);
         if p.join("scripts/mkinitramfs.sh").exists() {
@@ -1422,7 +1418,7 @@ fn runtime_root() -> Result<PathBuf> {
 }
 
 fn tempdir() -> Result<PathBuf> {
-    let base = std::env::temp_dir().join(format!("nous-agent-{}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("celln-agent-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     Ok(base)
 }

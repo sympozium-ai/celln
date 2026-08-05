@@ -52,6 +52,6 @@ of the design corpus in `docs/`.
 
 Claims about what a guest can or cannot do are proven by **guest code that
 actually tries**, not by host-side assertion — see the hostile-guest test in
-`vmm/kvm.rs` and the `NOUS:key=value` reporting channel in `guest/init/init.c`.
+`vmm/kvm.rs` and the `CELLN:key=value` reporting channel in `guest/init/init.c`.
 Hardware tests skip (not fail) when `/dev/kvm`, a readable kernel image, or the
 initramfs toolchain is absent, so `make ci` stays green on any host.

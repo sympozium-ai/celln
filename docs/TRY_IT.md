@@ -117,7 +117,7 @@ celln run agent.toml
 
 - `cold — verified now, forged queued`: an unseen tool is admitted at Verified
   in seconds and a hermetic rebuild is queued *behind* the traffic. Launch is
-  never slow; trust upgrades asynchronously. Run it again and it is `warm — page
+  never slow; trust upgrades asynchrocellnly. Run it again and it is `warm — page
   map, no build`.
 - `authority ratcheted to Work`: once any agent-authored code has run, the cell
   can never be lent another tool. Authority only shrinks, and the host enforces

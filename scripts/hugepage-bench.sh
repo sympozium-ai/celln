@@ -36,7 +36,7 @@ run_as="${SUDO_USER:-$USER}"
 bench() {
   local label="$1"; shift
   printf '\n\033[1;36m═══ %s\033[0m\n' "$label"
-  sudo -u "$run_as" --preserve-env=NOUS_HUGEPAGE,NOUS_HUGETLB,PATH,HOME \
+  sudo -u "$run_as" --preserve-env=CELLN_HUGEPAGE,CELLN_HUGETLB,PATH,HOME \
     env "$@" cargo run --quiet --release -p celln-pilot --features kvm \
     --bin celln-bench-kvm 2>&1 |
     sed -n '/THESIS/,/memslot budget/p' |
@@ -44,14 +44,14 @@ bench() {
 }
 
 echo "baseline: shmem_enabled=$orig_thp nr_hugepages=$orig_huge"
-bench "A — baseline: 4 KiB pages" NOUS_X=1
+bench "A — baseline: 4 KiB pages" CELLN_X=1
 
 echo advise > "$THP"
-bench "B — shmem THP via MADV_HUGEPAGE" NOUS_HUGEPAGE=1
+bench "B — shmem THP via MADV_HUGEPAGE" CELLN_HUGEPAGE=1
 
 # 512 x 2 MiB = 1 GiB, enough for a 256 MiB mote plus its forks' private copies.
 if sysctl -q -w vm.nr_hugepages=512 && [ "$(cat /proc/sys/vm/nr_hugepages)" -ge 256 ]; then
-  bench "C — explicit hugetlbfs (MFD_HUGETLB)" NOUS_HUGETLB=1
+  bench "C — explicit hugetlbfs (MFD_HUGETLB)" CELLN_HUGETLB=1
 else
   printf '\n\033[33mC skipped: could not reserve huge pages (fragmented memory?)\033[0m\n'
 fi

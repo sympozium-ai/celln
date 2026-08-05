@@ -28,8 +28,7 @@ pub fn path() -> PathBuf {
 }
 
 fn legacy_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("CELL_CONFIG").or_else(|| std::env::var_os("NOUS_CONFIG"))
-    {
+    if let Some(path) = std::env::var_os("CELL_CONFIG") {
         return Some(PathBuf::from(path));
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")

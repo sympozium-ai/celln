@@ -168,7 +168,7 @@ print(f'  exit={d[\"exit_code\"]}  wall={d[\"duration_ms\"]}ms')
 
   # Show key lines from output
   if [[ -f "$LOG_FILE" ]]; then
-    grep -E '(pilot:|replied|admitted|CELL_ACCEPT|NOUS:)' "$LOG_FILE" 2>/dev/null | head -8 || true
+    grep -E '(pilot:|replied|admitted|CELL_ACCEPT|CELLN:)' "$LOG_FILE" 2>/dev/null | head -8 || true
     echo ""
   fi
 done

@@ -2,13 +2,13 @@
 //!
 //! A KVM VM has no identity outside the process that made it — it is a file
 //! descriptor, and there is no `/proc/kvm` to enumerate. `virsh list` will
-//! never show a nous cell, because libvirt only knows about domains libvirt
+//! never show a celln cell, because libvirt only knows about domains libvirt
 //! created. So if a cell is to be visible after the fact, something has to
 //! write it down. This does.
 //!
-//! One JSON file per cell under `$NOUS_ROOT/cells/`, which makes the whole
+//! One JSON file per cell under `$CELLN_ROOT/cells/`, which makes the whole
 //! thing greppable, diffable, and trivially removable — and means a crashed
-//! `nous` leaves a record behind rather than losing the run.
+//! `celln` leaves a record behind rather than losing the run.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -37,7 +37,7 @@ pub struct Record {
 }
 
 /// What `ps` should say, which is not always what is on disk: a record still
-/// marked `running` whose process is gone means `nous` was killed mid-cell.
+/// marked `running` whose process is gone means `celln` was killed mid-cell.
 /// The cell died with it — a VM cannot outlive the fd that holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Live {
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn records_round_trip_and_list_newest_first() {
-        let tmp = std::env::temp_dir().join(format!("nous-ps-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("celln-ps-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
 
         let mut a = begin(&tmp, "first", Path::new("a.toml"), vec!["/bin/ls".into()]).unwrap();

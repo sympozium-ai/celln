@@ -90,7 +90,7 @@ pub const TOOL_WINDOW_SIZE: u64 = 32 << 20;
 
 /// Marker at the start of the probe tool, so the guest can tell "I mapped the
 /// sealed page-set" apart from "I mapped something plausible".
-pub const PROBE_MAGIC: &[u8; 8] = b"NOUSTOOL";
+pub const PROBE_MAGIC: &[u8] = b"CELLNTOOL";
 /// Offset of the callable function within the probe tool.
 pub const PROBE_FN_OFF: usize = 16;
 /// What that function returns.
@@ -129,7 +129,7 @@ const PCI_CONFIG_ADDR: u16 = 0xcf8;
 /// Unused port the guest writes to signal "this cell is doing userspace work".
 /// One exit, timestamped by the host — the cheapest observable a guest can
 /// produce. Saying it on the console instead measures our 8250 emulation, not
-/// spawn latency. Must match NOUS_LIVE_PORT in guest/init/init.c.
+/// spawn latency. Must match CELLN_LIVE_PORT in guest/init/init.c.
 const LIVE_SIGNAL_PORT: u16 = 0x3f0;
 /// Four I/O ports forming the deliberately tiny pilot→warden fetch channel.
 /// This is not a NIC: the guest gets no packet interface and no socket API.
@@ -239,19 +239,19 @@ impl BootReport {
     /// Did a cell forked from a parked mote reach userspace and do work?
     /// This is what "spawn is a fork, not a boot" has to mean concretely.
     pub fn cell_went_live(&self) -> bool {
-        self.console.contains("NOUS:cell=live")
+        self.console.contains("CELLN:cell=live")
     }
 
     /// Did our guest init actually run? Distinct from a hand-off that panics.
     pub fn guest_init_ran(&self) -> bool {
-        self.console.contains("NOUS:init=alive")
+        self.console.contains("CELLN:init=alive")
     }
 
     /// The value guest init reported for `key`, if it reported one. This is how
     /// guest-side claims reach the host: the guest states what it observed, the
     /// host asserts on it.
     pub fn guest_report(&self, key: &str) -> Option<&str> {
-        let needle = format!("NOUS:{key}=");
+        let needle = format!("CELLN:{key}=");
         self.console
             .lines()
             .find_map(|l| l.split_once(&needle).map(|(_, v)| v.trim()))
@@ -389,7 +389,7 @@ impl BootConfig {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
-            .map(|root| root.join("target/nous-initramfs.cpio"))?;
+            .map(|root| root.join("target/celln-initramfs.cpio"))?;
         p.exists().then_some(p)
     }
 
@@ -503,14 +503,14 @@ impl Serial {
     }
 }
 
-/// Ask for transparent huge pages when `NOUS_HUGEPAGE=1`.
+/// Ask for transparent huge pages when `CELLN_HUGEPAGE=1`.
 ///
 /// A no-op unless the host allows shmem THP. Kept as advice rather than a hard
 /// requirement so the same binary measures both ways: the point is the fault
 /// count, and whether 2 MiB pages actually reduce it for a CoW-forked guest is
 /// exactly the open question.
 fn maybe_hugepage(ptr: *mut libc::c_void, len: usize) {
-    if std::env::var_os("NOUS_HUGEPAGE").is_some() {
+    if std::env::var_os("CELLN_HUGEPAGE").is_some() {
         unsafe { libc::madvise(ptr, len, libc::MADV_HUGEPAGE) };
     }
 }
@@ -538,17 +538,17 @@ impl Mem {
     /// Two huge-page paths, both off by default because both need host state
     /// this project will not change on its own; `make bench-kvm` measures it:
     ///
-    /// * `NOUS_HUGEPAGE=1` — `MADV_HUGEPAGE` on the mapping. Needs
+    /// * `CELLN_HUGEPAGE=1` — `MADV_HUGEPAGE` on the mapping. Needs
     ///   `/sys/kernel/mm/transparent_hugepage/shmem_enabled` set to `advise` or
     ///   `always`; it is `never` on stock Fedora, where this is a silent no-op.
-    /// * `NOUS_HUGETLB=1` — back the memfd with hugetlbfs outright. Needs
+    /// * `CELLN_HUGETLB=1` — back the memfd with hugetlbfs outright. Needs
     ///   `vm.nr_hugepages` reserved, and **fails loudly** rather than falling
     ///   back, because a silent fallback would report a huge-page result for a
     ///   4 KiB run.
     fn memfd_shared(len: usize, name: &str) -> Result<Self, VmmError> {
         let cname =
             CString::new(name).map_err(|_| VmmError::Backend("memfd name contains NUL".into()))?;
-        let hugetlb = std::env::var_os("NOUS_HUGETLB").is_some();
+        let hugetlb = std::env::var_os("CELLN_HUGETLB").is_some();
         let flags = if hugetlb {
             libc::MFD_CLOEXEC | libc::MFD_HUGETLB
         } else {
@@ -607,7 +607,7 @@ impl Mem {
 
     /// A copy-on-write view of a parked mote. This is the fork.
     ///
-    /// `NOUS_PREFAULT=1` populates the mapping up front instead of letting the
+    /// `CELLN_PREFAULT=1` populates the mapping up front instead of letting the
     /// resumed guest fault its working set in one page at a time. That is not
     /// obviously a win — it moves cost from activation to the fork call and
     /// touches every page — which is exactly why it is measurable rather than
@@ -627,7 +627,7 @@ impl Mem {
             return Err(errno("mmap guest RAM (CoW)"));
         }
         maybe_hugepage(ptr, len);
-        if std::env::var_os("NOUS_PREFAULT").is_some() {
+        if std::env::var_os("CELLN_PREFAULT").is_some() {
             // MADV_POPULATE_READ: fault in the shared pages now, read-only, so
             // sharing survives; a guest write still takes its own CoW fault.
             unsafe {
@@ -867,7 +867,7 @@ impl LinuxCell {
         vm.create_pit2(Default::default())
             .map_err(|e| kvm_err("create_pit2", e))?;
 
-        let mem = Mem::memfd_shared(cfg.mem_size, "nous-mote-ram")?;
+        let mem = Mem::memfd_shared(cfg.mem_size, "celln-mote-ram")?;
         // RAM in two memslots, with the sealed tool window as a hole between
         // them. The host allocation stays contiguous, so a GPA is still an
         // offset into it; the hole is simply never mapped as RAM.
@@ -1001,7 +1001,7 @@ impl LinuxCell {
         };
         let bytes = match body {
             Ok(body) => body,
-            Err(e) => format!("NOUS_FETCH_ERROR:{e}").into_bytes(),
+            Err(e) => format!("CELLN_FETCH_ERROR:{e}").into_bytes(),
         };
         // Length framing makes response bytes opaque: HTML, newlines and NULs
         // cross as data, not as a second control protocol.
@@ -1629,7 +1629,7 @@ mod tests {
             return;
         };
         let Some(initrd) = BootConfig::built_initramfs() else {
-            eprintln!("skipping: no target/nous-initramfs.cpio — run `make initramfs`");
+            eprintln!("skipping: no target/celln-initramfs.cpio — run `make initramfs`");
             return;
         };
         let mut cell = LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)).unwrap();
@@ -1695,7 +1695,7 @@ mod tests {
             return;
         };
         let Some(initrd) = BootConfig::built_initramfs() else {
-            eprintln!("skipping: no target/nous-initramfs.cpio — run `make initramfs`");
+            eprintln!("skipping: no target/celln-initramfs.cpio — run `make initramfs`");
             return;
         };
         let mut cell = LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)).unwrap();
@@ -1753,7 +1753,7 @@ mod tests {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|p| p.parent())
-            .map(|root| root.join("target/nous-toolfs.img"))?;
+            .map(|root| root.join("target/celln-toolfs.img"))?;
         p.exists().then_some(p)
     }
 
@@ -1779,7 +1779,7 @@ mod tests {
             return;
         };
         let Some(toolfs) = built_toolfs() else {
-            eprintln!("skipping: no target/nous-toolfs.img — run `make toolfs`");
+            eprintln!("skipping: no target/celln-toolfs.img — run `make toolfs`");
             return;
         };
         if BootConfig::modules_dir_for(&kernel).is_none() {
@@ -1802,7 +1802,7 @@ mod tests {
         assert_eq!(gpa, TOOL_WINDOW_GPA, "pmem cmdline names this address");
         // Beat 5 of the five-beat proof, against a real kernel: revoke while
         // the guest holds the tool open and mapped.
-        cell.revoke_when_guest_prints(&h, "NOUS:dax_revoke_ready=now");
+        cell.revoke_when_guest_prints(&h, "CELLN:dax_revoke_ready=now");
 
         let r = cell.run().unwrap();
         assert!(r.guest_init_ran(), "console tail:\n{}", r.tail(30));
@@ -1844,7 +1844,7 @@ mod tests {
                 "DAX chain broke at {key} (got {got:?}); guest said: {}",
                 r.console
                     .lines()
-                    .filter(|l| l.contains("NOUS:"))
+                    .filter(|l| l.contains("CELLN:"))
                     .collect::<Vec<_>>()
                     .join(" | ")
             );
@@ -1916,7 +1916,7 @@ mod tests {
 
         // Boot once. This is the slow part, and it happens off the hot path.
         let mut template = LinuxCell::boot(BootConfig::new(&kernel).with_initrd(initrd)).unwrap();
-        template.stop_when_guest_prints("NOUS:mote=parked");
+        template.stop_when_guest_prints("CELLN:mote=parked");
         let boot = template.run().unwrap();
         assert_eq!(
             boot.end,
@@ -1930,7 +1930,7 @@ mod tests {
         // Now the hot path: fork cells from the parked mote.
         for i in 0..3 {
             let mut cell = LinuxCell::fork_from(&mote).unwrap();
-            cell.stop_when_guest_prints("NOUS:cell=live");
+            cell.stop_when_guest_prints("CELLN:cell=live");
             let r = cell.run().unwrap();
             assert!(
                 r.cell_went_live(),

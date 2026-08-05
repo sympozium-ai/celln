@@ -31,7 +31,7 @@ toml.workspace = true
 libc.workspace = true
 
 # The real backend only exists on Linux, and only there is it wanted. Everywhere
-# else `nous` still validates specs and runs the mock proof, and says so rather
+# else `celln` still validates specs and runs the mock proof, and says so rather
 # than pretending.
 [target.'cfg(target_os = "linux")'.dependencies]
 celln-warden = { version = "0.4.0", path = "../celln-warden", features = ["kvm"] }

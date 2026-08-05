@@ -399,7 +399,7 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
             return (serde_json::json!({"skipped": e.to_string()}), true);
         }
     };
-    template.stop_when_guest_prints("NOUS:mote=parked");
+    template.stop_when_guest_prints("CELLN:mote=parked");
     let boot = template.run().expect("template run");
     let boot_ms = t_boot.elapsed().as_secs_f64() * 1e3;
     if boot.end != BootEnd::Parked {
@@ -498,9 +498,9 @@ fn bench_real_cell_spawn(n: usize) -> (serde_json::Value, bool) {
         format!("{boot_ms:.0} ms"),
         None,
     );
-    let mem_mode = if std::env::var_os("NOUS_HUGETLB").is_some() {
+    let mem_mode = if std::env::var_os("CELLN_HUGETLB").is_some() {
         "hugetlbfs (2 MiB)"
-    } else if std::env::var_os("NOUS_HUGEPAGE").is_some() {
+    } else if std::env::var_os("CELLN_HUGEPAGE").is_some() {
         "memfd + MADV_HUGEPAGE"
     } else {
         "memfd, 4 KiB pages"

@@ -7,7 +7,7 @@ use std::process::Command;
 /// Canonical arguments shared by both independent builds.
 pub const RUSTC_ARGS: &[&str] = &[
     // Prevent absolute source paths in panic metadata from changing the binary.
-    "--remap-path-prefix=%BUILD_DIR%=/nous/build",
+    "--remap-path-prefix=%BUILD_DIR%=/celln/build",
     "--edition",
     "2021",
     "-O",

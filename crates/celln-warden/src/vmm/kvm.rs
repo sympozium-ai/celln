@@ -65,7 +65,7 @@ const MAX_EXITS: usize = 10_000;
 
 /// The marker bytes a template for `snapshot` carries at [`MARK_OFF`].
 pub fn template_marker(snapshot: &str) -> Vec<u8> {
-    format!("NOUSMOTE:{snapshot}").into_bytes()
+    format!("CELLNMOTE:{snapshot}").into_bytes()
 }
 
 fn errno(what: &str) -> VmmError {
@@ -90,7 +90,7 @@ fn template_for(snapshot: &str) -> Result<Arc<OwnedFd>, VmmError> {
     if let Some(fd) = reg.get(snapshot) {
         return Ok(fd.clone());
     }
-    let cname = CString::new(format!("nous-mote-{snapshot}"))
+    let cname = CString::new(format!("celln-mote-{snapshot}"))
         .map_err(|_| VmmError::Backend("snapshot name contains NUL".into()))?;
     let raw = unsafe { libc::memfd_create(cname.as_ptr(), libc::MFD_CLOEXEC) };
     if raw < 0 {

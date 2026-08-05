@@ -1,6 +1,6 @@
 //! `assay` CLI — a thin front end over the [`assay::Assayer`] library so the
 //! store and tiered resolution can be driven from shell scripts and the Makefile
-//! demo. State lives under `--root` (default `./.nous`).
+//! demo. State lives under `--root` (default `./.celln`).
 //!
 //! Named for what it does: an assay office determines what a piece of metal
 //! actually is and stamps it with a grade. This does the same for bytes — hash
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 )]
 struct Cli {
     /// Store root.
-    #[arg(long, default_value = ".nous")]
+    #[arg(long, default_value = ".celln")]
     root: PathBuf,
     #[command(subcommand)]
     cmd: Cmd,

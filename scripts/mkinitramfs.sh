@@ -8,7 +8,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-out="${1:-$root/target/nous-initramfs.cpio}"
+out="${1:-$root/target/celln-initramfs.cpio}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -35,7 +35,7 @@ gcc -static -nostdlib -nostartfiles -ffreestanding -fno-stack-protector \
 # /dev must exist for init to mount devtmpfs onto it. Device nodes themselves
 # cannot be created without privilege, which is why init mounts devtmpfs.
 mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
-         "$work/nous/tools" "$work/nous/work"
+         "$work/celln/tools" "$work/celln/work"
 
 # ---- pilot, and the manifest it enforces ----------------------------------
 #
@@ -48,7 +48,7 @@ mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
 # that they are what the host said. Three tools, to exercise all three
 # outcomes — an attested interpreter (demoted when fed agent-authored input),
 # an attested binary (not demoted), and one that is simply not in the manifest.
-pilot_dir="${NOUS_PILOT_DIR:-$root/pilot}"
+pilot_dir="${CELLN_PILOT_DIR:-$root/pilot}"
 if [ -x "$pilot_dir/celln-pilot" ] && [ -x "$pilot_dir/pilot-fetch" ]; then
   # An installed distribution ships these two static guest binaries. Keeping
   # them out of the host's PATH prevents an installed `celln agent` from needing
@@ -65,69 +65,69 @@ else
 fi
 
 if [ -x "$work/pilot" ]; then
-  printf '#!/attested/python\nprint("attested interpreter")\n' > "$work/nous/tools/python"
-  printf 'attested binary bytes, not an interpreter\n'          > "$work/nous/tools/ls"
-  printf 'code the agent wrote, never attested\n'               > "$work/nous/tools/agent-script"
+  printf '#!/attested/python\nprint("attested interpreter")\n' > "$work/celln/tools/python"
+  printf 'attested binary bytes, not an interpreter\n'          > "$work/celln/tools/ls"
+  printf 'code the agent wrote, never attested\n'               > "$work/celln/tools/agent-script"
 
   # A caller that has already attested its own artifacts hands us the manifest
   # and the run request, and we only pack them. Attestation is not a packaging
   # step: doing it here would mean `celln agent` needed a cargo toolchain and a
   # source tree at run time, which is not something an installed binary has.
-  if [ -n "${NOUS_MANIFEST:-}" ]; then
-    cp "$NOUS_MANIFEST" "$work/nous/manifest.json"
-    [ -n "${NOUS_RUN_JSON:-}" ] && cp "$NOUS_RUN_JSON" "$work/nous/run.json"
+  if [ -n "${CELLN_MANIFEST:-}" ]; then
+    cp "$CELLN_MANIFEST" "$work/celln/manifest.json"
+    [ -n "${CELLN_RUN_JSON:-}" ] && cp "$CELLN_RUN_JSON" "$work/celln/run.json"
     # The demo tools below belong to the demo, not to a real agent cell.
-    rm -f "$work/nous/tools/python" "$work/nous/tools/ls" "$work/nous/tools/agent-script"
+    rm -f "$work/celln/tools/python" "$work/celln/tools/ls" "$work/celln/tools/agent-script"
     printf 'manifest: supplied by caller (%s entr%s)\n' \
-      "$(grep -c '"alias"' "$work/nous/manifest.json")" \
-      "$([ "$(grep -c '"alias"' "$work/nous/manifest.json")" = 1 ] && echo y || echo ies)"
+      "$(grep -c '"alias"' "$work/celln/manifest.json")" \
+      "$([ "$(grep -c '"alias"' "$work/celln/manifest.json")" = 1 ] && echo y || echo ies)"
     packed_manifest=1
   fi
 
   store="$(mktemp -d)"
   if [ -z "${packed_manifest:-}" ]; then
   ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
-      admit /usr/bin/python "$work/nous/tools/python" --interpreter >/dev/null )
+      admit /usr/bin/python "$work/celln/tools/python" --interpreter >/dev/null )
   ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
-      admit /usr/bin/ls "$work/nous/tools/ls" >/dev/null )
+      admit /usr/bin/ls "$work/celln/tools/ls" >/dev/null )
   # `agent-script` is deliberately NOT preforged: pilot must refuse it.
 
   # A program for the cell to actually run, if one was staged. It is attested
   # here on the host and sealed into the tool filesystem separately, so the
   # only thing crossing into the cell is bytes plus a hash to check them
   # against — pilot re-hashes whatever it finds at that path before running it.
-  if [ -n "${NOUS_RUN_PROG:-}" ]; then
-    prog_alias="${NOUS_RUN_ALIAS:-/$(basename "$NOUS_RUN_PROG")}"
+  if [ -n "${CELLN_RUN_PROG:-}" ]; then
+    prog_alias="${CELLN_RUN_ALIAS:-/$(basename "$CELLN_RUN_PROG")}"
     # Agent-authored source stays agent-authored through the compiler. Forging
     # it is fine and gives a reproducible artifact; granting it the tool lane
     # is not, so the author rides into the manifest with the hash.
     ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
-        admit "$prog_alias" "$NOUS_RUN_PROG" \
-        ${NOUS_RUN_AGENT_AUTHORED:+--agent-authored} >/dev/null )
+        admit "$prog_alias" "$CELLN_RUN_PROG" \
+        ${CELLN_RUN_AGENT_AUTHORED:+--agent-authored} >/dev/null )
 
     args_json="[]"
-    if [ -n "${NOUS_RUN_ARGS:-}" ]; then
+    if [ -n "${CELLN_RUN_ARGS:-}" ]; then
       args_json="["; sep=""
-      for a in $NOUS_RUN_ARGS; do args_json="$args_json$sep\"$a\""; sep=","; done
+      for a in $CELLN_RUN_ARGS; do args_json="$args_json$sep\"$a\""; sep=","; done
       args_json="$args_json]"
     fi
-    cat > "$work/nous/run.json" <<JSON
+    cat > "$work/celln/run.json" <<JSON
 {
-  "path": "/tools/$(basename "$NOUS_RUN_PROG")",
+  "path": "/tools/$(basename "$CELLN_RUN_PROG")",
   "alias": "$prog_alias",
   "args": $args_json,
-  "agent_authored_input": ${NOUS_RUN_TAINTED:-false}
+  "agent_authored_input": ${CELLN_RUN_TAINTED:-false}
 }
 JSON
     printf 'run:      %s (sealed at /tools/%s)\n' \
-      "$prog_alias" "$(basename "$NOUS_RUN_PROG")"
+      "$prog_alias" "$(basename "$CELLN_RUN_PROG")"
   fi
 
-  cp "$store/manifest.json" "$work/nous/manifest.json"
+  cp "$store/manifest.json" "$work/celln/manifest.json"
   fi
   rm -rf "$store"
   printf 'pilot:    staged (static musl) with a %s-entry manifest\n' \
-    "$(grep -o '"alias"' "$work/nous/manifest.json" | wc -l)"
+    "$(grep -o '"alias"' "$work/celln/manifest.json" | wc -l)"
 fi
 
 # Stage the nvdimm modules the DAX probe needs. They ship xz-compressed;

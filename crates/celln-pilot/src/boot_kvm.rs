@@ -1,4 +1,4 @@
-//! `nous-boot-kvm` — boot a stock Linux kernel in a Celln microVM.
+//! `celln-boot-kvm` — boot a stock Linux kernel in a Celln microVM.
 //!
 //! M1/M2 proved the enforcement layer against hand-assembled guests. This
 //! carries a real, unmodified distro kernel on the same substrate: the 64-bit
@@ -53,12 +53,12 @@ fn main() -> anyhow::Result<()> {
     // whole image and declare it persistent memory, so the guest can reach the
     // tool the way a real one would: by path, under DAX. Otherwise we seal the
     // raw probe tool, which only the /dev/mem path can reach.
-    let toolfs = std::path::Path::new("target/nous-toolfs.img");
+    let toolfs = std::path::Path::new("target/celln-toolfs.img");
     let (payload, sealed_what) = if toolfs.exists() {
         cfg = cfg.with_pmem(std::fs::metadata(toolfs)?.len() as usize);
         (std::fs::read(toolfs)?, "ext2 tool filesystem (DAX path)")
     } else {
-        println!("(no target/nous-toolfs.img — run `make toolfs` for the file-path proof)");
+        println!("(no target/celln-toolfs.img — run `make toolfs` for the file-path proof)");
         (warden::vmm::boot::probe_tool(), "raw probe tool")
     };
 
@@ -70,11 +70,11 @@ fn main() -> anyhow::Result<()> {
     //
     // Revocation is the whole point here, but it also ends the cell's access to
     // the tool filesystem — so anything that wants to *run* a sealed program
-    // afterwards needs the pages left in place. NOUS_NO_REVOKE keeps them.
-    if std::env::var_os("NOUS_NO_REVOKE").is_none() {
-        cell.revoke_when_guest_prints(&h, "NOUS:dax_revoke_ready=now");
+    // afterwards needs the pages left in place. CELLN_NO_REVOKE keeps them.
+    if std::env::var_os("CELLN_NO_REVOKE").is_none() {
+        cell.revoke_when_guest_prints(&h, "CELLN:dax_revoke_ready=now");
     } else {
-        println!("(NOUS_NO_REVOKE set — the revocation beat is skipped)");
+        println!("(CELLN_NO_REVOKE set — the revocation beat is skipped)");
     }
     println!("sealed: {sealed_what}");
     println!("  {h}");
@@ -86,7 +86,7 @@ fn main() -> anyhow::Result<()> {
     let r = cell.run()?;
 
     // Debugging a guest means reading all of it; head/tail hides the middle.
-    if std::env::var_os("NOUS_CONSOLE").is_some() {
+    if std::env::var_os("CELLN_CONSOLE").is_some() {
         println!("{}", r.console);
     }
     println!("\x1b[1;36m── first 20 console lines\x1b[0m");

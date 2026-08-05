@@ -15,7 +15,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-out="${1:-$root/target/nous-toolfs.img}"
+out="${1:-$root/target/celln-toolfs.img}"
 # 32 MiB: comfortably above the pmem namespace minimum, 2 MiB-aligned sizing
 # keeps the DAX mapping path happy, and it leaves room for a real binary — a
 # static musl Rust program is a few MiB before it has done anything.
@@ -36,11 +36,11 @@ mkdir -p "$work/root"
 # The probe tool. Layout is shared with warden::vmm::boot::probe_tool and with
 # guest/init/init.c; the magic is what makes drift between the three fail loudly
 # instead of silently passing.
-#   +0  "NOUSTOOL"        magic — "I mapped the sealed page-set"
+#   +0  "CELLNTOOL"        magic — "I mapped the sealed page-set"
 #   +16 mov eax,0x5a; ret a function the guest calls out of the mapping
 {
-  printf 'NOUSTOOL'
-  printf '\0\0\0\0\0\0\0\0'
+  printf 'CELLNTOOL'
+  printf '\0\0\0\0\0\0\0'
   printf '\xb8\x5a\x00\x00\x00\xc3'
 } > "$work/root/probe"
 # Pad to a full page so the mapping covers allocated blocks.
@@ -56,7 +56,7 @@ rm -f "$out"
 mke2fs -q -t ext2 -b 4096 -d "$work/root" -F "$out" "$((size_mb * 256))" >/dev/null
 
 # Fail loudly here rather than in a guest three layers down.
-if ! grep -q NOUSTOOL "$out"; then
+if ! grep -q CELLNTOOL "$out"; then
   echo "toolfs image does not contain the probe magic — mke2fs -d did not populate it" >&2
   exit 1
 fi

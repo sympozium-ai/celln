@@ -106,7 +106,7 @@ impl HttpBroker {
             let (host, ip) = self.authorize(&url)?;
             self.used += 1;
             let header = std::env::temp_dir().join(format!(
-                "nous-fetch-{}-{}",
+                "celln-fetch-{}-{}",
                 std::process::id(),
                 self.used
             ));

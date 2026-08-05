@@ -55,7 +55,7 @@ fn main() {
     for b in &mut body {
         *b = unsafe { input(RX) };
     }
-    if body.starts_with(b"NOUS_FETCH_ERROR:") {
+    if body.starts_with(b"CELLN_FETCH_ERROR:") {
         eprintln!("pilot-fetch: {}", String::from_utf8_lossy(&body));
         std::process::exit(1);
     }

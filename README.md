@@ -134,7 +134,7 @@ $ celln agent "print the first 100 primes, space separated"
 ● asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
   · waiting for claude (up to 90s; --timeout changes it)
   · replied in 5s
-  · selected sealed runtime: Rust 2021 (static musl); 23 source lines  /tmp/nous-agent-1844068/program.rs
+  · selected sealed runtime: Rust 2021 (static musl); 23 source lines  /tmp/celln-agent-1844068/program.rs
   + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
   · cell sealed, tools lent read-only
   ✔ pilot: /agent/program permitted:agent
@@ -252,7 +252,7 @@ The test also checks revocation in an already-running cell.
 
 `celln agent` runs agent-authored programs behind a Landlock filesystem boundary
 and a seccomp syscall filter.
-The guest may execute `/tools/program` and write only to `/nous/work`; network,
+The guest may execute `/tools/program` and write only to `/celln/work`; network,
 mounting, tracing, and privilege gain are refused. `celln run` remains the
 spec-driven sealing path.
 

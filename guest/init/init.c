@@ -11,7 +11,7 @@
  * the scaffold that lets the VFS<->memslot join be tested before pilot exists.
  *
  * Protocol with the host: every observation is printed to the console as a
- * line starting with "NOUS:" so the host can assert on it without parsing
+ * line starting with "CELLN:" so the host can assert on it without parsing
  * kernel log noise. The last thing we do is reboot, which the host sees as a
  * clean KVM shutdown exit.
  */
@@ -35,7 +35,7 @@
 /* Unused I/O port the guest pokes to say "I am live", so the host can
  * timestamp a cell reaching userspace in a single exit. Must match
  * LIVE_SIGNAL_PORT in crates/celln-warden/src/vmm/boot.rs. */
-#define NOUS_LIVE_PORT 0x3f0
+#define CELLN_LIVE_PORT 0x3f0
 
 #define O_RDONLY 0
 #define O_RDWR 2
@@ -52,7 +52,7 @@
  * the magic below: if the two ever drift, the guest reads garbage and says so
  * rather than silently passing. */
 #define TOOL_GPA 0x6000000UL
-#define TOOL_MAGIC "NOUSTOOL"
+#define TOOL_MAGIC "CELLNTOOL"
 /* Offset within the sealed page of a function the guest is meant to call. */
 #define TOOL_FN_OFF 16
 #define TOOL_FN_EXPECT 0x5a
@@ -85,7 +85,7 @@ static void out(const char *s) { sys(SYS_write, console, (long)s, slen(s), 0, 0,
 
 /* Report an observation the host can assert on. */
 static void report(const char *key, const char *val) {
-	out("NOUS:");
+	out("CELLN:");
 	out(key);
 	out("=");
 	out(val);
@@ -98,7 +98,7 @@ static void report_hex(const char *key, unsigned long v) {
 	int i;
 	for (i = 0; i < 16; i++) buf[i] = digits[(v >> ((15 - i) * 4)) & 0xf];
 	buf[16] = 0;
-	out("NOUS:");
+	out("CELLN:");
 	out(key);
 	out("=");
 	out(buf);
@@ -206,7 +206,7 @@ static void grep_file(const char *tag, const char *path, const char *needle) {
 		buf[i] = 0;
 		for (long j = start; j + (long)nl <= i; j++) {
 			if (same(&buf[j], needle, nl)) {
-				out("NOUS:");
+				out("CELLN:");
 				out(tag);
 				out("=");
 				out(&buf[start]);
@@ -268,7 +268,7 @@ static void probe_tool_by_path(void) {
 	report("e820_pmem_dev", pd >= 0 ? "present" : "absent");
 	if (pd >= 0) sys(SYS_close, pd, 0, 0, 0, 0, 0);
 
-	/* Device probing is asynchronous; wait for devtmpfs to publish it. */
+	/* Device probing is asynchrocelln; wait for devtmpfs to publish it. */
 	long dev = -1;
 	for (int i = 0; i < 50 && dev < 0; i++) {
 		dev = sys(SYS_open, (long) "/dev/pmem0", O_RDONLY, 0, 0, 0, 0);
@@ -410,7 +410,7 @@ void _start(void) {
 	if (sys(SYS_iopl, 3, 0, 0, 0, 0, 0) == 0) {
 		__asm__ volatile("outb %0, %1"
 		                 :
-		                 : "a"((unsigned char)0x5a), "Nd"((unsigned short)NOUS_LIVE_PORT));
+		                 : "a"((unsigned char)0x5a), "Nd"((unsigned short)CELLN_LIVE_PORT));
 	}
 	report("cell", "live");
 
@@ -432,7 +432,7 @@ void _start(void) {
 
 	/* Only reached if pilot is absent; the substrate proofs above still ran. */
 	report("pilot", "absent");
-	out("NOUS:done\n");
+	out("CELLN:done\n");
 	sys(SYS_reboot, REBOOT_MAGIC1, REBOOT_MAGIC2, REBOOT_CMD_RESTART, 0, 0, 0);
 	sys(SYS_exit, 0, 0, 0, 0, 0, 0);
 	for (;;) {}

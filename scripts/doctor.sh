@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # doctor.sh — is this host ready for the real (KVM) Celln path?
 # The POC's mock backend runs anywhere; this checks the bare-metal prerequisites
-# for M1/M2 (see NOUSCELL_BUILD_PLAN.md §2).
+# for M1/M2 (see CELLN_BUILD_PLAN.md §2).
 set -euo pipefail
 
 pass() { printf '  \033[32m✔\033[0m %s\n' "$1"; }
