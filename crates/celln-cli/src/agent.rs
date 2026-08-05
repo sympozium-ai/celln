@@ -2,7 +2,9 @@
 
 use crate::out::{bold, dim, green, Out};
 use anyhow::{bail, Context, Result};
+use is_terminal::IsTerminal;
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -274,13 +276,31 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
             ));
             return Ok(crate::exit::HOST_INCAPABLE);
         }
-        None => match discover_backend() {
-            Some(backend) => backend,
-            None => {
-                o.warn("no agent CLI found — install and authenticate codex, claude, deepseek, or ollama, then rerun `celln setup`");
-                return Ok(crate::exit::HOST_INCAPABLE);
+        None => {
+            // Interactive: show available backends and let the user pick.
+            // Non-interactive (piped): fall back to auto-discovery.
+            if std::io::stdout().is_terminal() {
+                match interactive_backend_select(o)? {
+                    Some(backend) => backend,
+                    None => return Ok(crate::exit::HOST_INCAPABLE),
+                }
+            } else {
+                match discover_backend() {
+                    Some(backend) => {
+                        o.note(format!(
+                            "  {} auto-discovered {} — run `celln setup` interactively to choose",
+                            dim("·"),
+                            backend.label()
+                        ));
+                        backend
+                    }
+                    None => {
+                        o.warn("no agent CLI found — install and authenticate codex, claude, deepseek, or ollama, then rerun `celln setup`");
+                        return Ok(crate::exit::HOST_INCAPABLE);
+                    }
+                }
             }
-        },
+        }
     };
     let path = crate::config::set_default_agent(backend.saved_name())?;
     o.event(
@@ -305,6 +325,105 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
     }
 
     Ok(crate::exit::OK)
+}
+
+/// List available backends interactively and prompt the user to pick one.
+/// Returns `None` if no backends are available or the user cancels.
+fn interactive_backend_select(o: &Out) -> Result<Option<Backend>> {
+    let all = [
+        Backend::Anthropic,
+        Backend::Openai,
+        Backend::Deepseek,
+        Backend::Local,
+    ];
+
+    let available: Vec<Backend> = all.iter().copied().filter(|b| b.available()).collect();
+
+    if available.is_empty() {
+        o.say("no agent CLI found on this host.");
+        o.say("");
+        o.say("install one of these and rerun `celln setup`:");
+        for b in &all {
+            o.say(format!(
+                "  {} — {} ({})",
+                b.label(),
+                b.default_model().unwrap_or("(cli default)"),
+                b.program()
+            ));
+        }
+        return Ok(None);
+    }
+
+    if available.len() == 1 {
+        let b = available[0];
+        o.say(format!(
+            "only {} ({}) is available — selecting it automatically.",
+            b.label(),
+            b.program()
+        ));
+        return Ok(Some(b));
+    }
+
+    o.say("available agent backends:");
+    o.say("");
+    for (i, b) in available.iter().enumerate() {
+        let model = b.default_model().unwrap_or("(cli default)");
+        o.say(format!(
+            "  [{}] {:<10}  {:<22}  ({})",
+            i + 1,
+            b.label(),
+            model,
+            b.program(),
+        ));
+    }
+    o.say("");
+
+    loop {
+        // Print the prompt directly — no Out wrapper, because we need
+        // the prompt to appear even when the terminal is being watched.
+        eprint!("select default agent [1-{}]: ", available.len());
+        let _ = std::io::stderr().flush();
+
+        let mut input = String::new();
+        if std::io::stdin().read_line(&mut input).is_err() {
+            o.warn("could not read input — run `celln setup --agent <name>` instead");
+            return Ok(None);
+        }
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            o.say(format!(
+                "  {} no selection — run `celln setup --agent <name>` to set one later",
+                dim("·")
+            ));
+            return Ok(None);
+        }
+
+        match trimmed.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= available.len() => {
+                return Ok(Some(available[n - 1]));
+            }
+            _ => {
+                // Try matching by name
+                if let Some(b) = Backend::from_saved_name(trimmed) {
+                    if b.available() {
+                        return Ok(Some(b));
+                    }
+                    o.say(format!(
+                        "  {} {} is not installed — pick a number from the list",
+                        dim("·"),
+                        b.label()
+                    ));
+                    continue;
+                }
+                o.say(format!(
+                    "  {} enter a number 1-{}, or press enter to skip",
+                    dim("·"),
+                    available.len()
+                ));
+            }
+        }
+    }
 }
 
 /// Copy the guest runtime assets (scripts, pilot) into `~/.celln/runtime/`.
