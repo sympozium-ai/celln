@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MODEL="deepseek-chat"
+PROMPT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model) MODEL="$2"; shift 2 ;;
+    *) PROMPT="$*"; break ;;
+  esac
+done
+
+if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+  echo "fatal: DEEPSEEK_API_KEY is not set" >&2
+  exit 1
+fi
+
+if [[ -z "$PROMPT" ]]; then
+  echo "fatal: no prompt provided" >&2
+  exit 1
+fi
+
+ESCAPED=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$PROMPT")
+
+PAYLOAD=$(cat <<EOF
+{
+  "model": "$MODEL",
+  "messages": [{"role": "user", "content": $ESCAPED}],
+  "stream": false,
+  "temperature": 0.7,
+  "max_tokens": 4096
+}
+EOF
+)
+
+RESPONSE=$(curl -s -w '\n%{http_code}' https://api.deepseek.com/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+  -d "$PAYLOAD" \
+  --connect-timeout 10 \
+  --max-time 120)
+
+HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+BODY=$(echo "$RESPONSE" | sed '$d')
+
+if [[ "$HTTP_CODE" != "200" ]]; then
+  echo "deepseek API returned HTTP $HTTP_CODE: $BODY" >&2
+  exit 1
+fi
+
+python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+content = data['choices'][0]['message']['content']
+sys.stdout.write(content)
+" <<< "$BODY"

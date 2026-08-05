@@ -45,8 +45,8 @@ struct Cli {
     #[arg(short, long, global = true)]
     quiet: bool,
     /// Where cell state and the tool store live.
-    #[arg(long, global = true, default_value = ".celln", env = "CELLN_ROOT")]
-    root: PathBuf,
+    #[arg(long, global = true, env = "CELLN_ROOT")]
+    root: Option<PathBuf>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -189,7 +189,17 @@ fn main() -> ExitCode {
     ExitCode::from(code)
 }
 
+fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
+    if let Some(p) = explicit {
+        return p.clone();
+    }
+    std::env::var("HOME")
+        .map(|h| PathBuf::from(h).join(".celln"))
+        .unwrap_or_else(|_| PathBuf::from(".celln"))
+}
+
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
+    let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::Doctor => Ok(doctor(o)),
         Cmd::Spec(SpecCmd::Init) => {
@@ -199,9 +209,9 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             Ok(exit::OK)
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),
-        Cmd::Run { spec, dry_run } => run::run(spec, &cli.root, *dry_run, o),
-        Cmd::Ps { all } => run::ps(&cli.root, *all, o),
-        Cmd::Tools => run::tools(&cli.root, o),
+        Cmd::Run { spec, dry_run } => run::run(spec, &root, *dry_run, o),
+        Cmd::Ps { all } => run::ps(&root, *all, o),
+        Cmd::Tools => run::tools(&root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
         Cmd::Agent {
@@ -214,7 +224,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         } => agent::agent(
             agent::AgentRequest {
                 task: &task.join(" "),
-                state_root: &cli.root,
+                state_root: &root,
                 requested_backend: *agent,
                 model: model.as_deref(),
                 show_source: *show_source,

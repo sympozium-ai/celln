@@ -43,6 +43,8 @@ pub enum Backend {
     Anthropic,
     /// OpenAI, via the `codex` CLI.
     Openai,
+    /// DeepSeek, via the `deepseek` API shim script.
+    Deepseek,
     /// A local model, via `ollama`. No egress at all.
     Local,
 }
@@ -102,6 +104,7 @@ impl Backend {
         match self {
             Backend::Anthropic => "anthropic",
             Backend::Openai => "openai",
+            Backend::Deepseek => "deepseek",
             Backend::Local => "local",
         }
     }
@@ -110,6 +113,7 @@ impl Backend {
         match name.trim().to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => Some(Backend::Anthropic),
             "openai" | "codex" => Some(Backend::Openai),
+            "deepseek" => Some(Backend::Deepseek),
             "local" | "ollama" => Some(Backend::Local),
             _ => None,
         }
@@ -120,6 +124,7 @@ impl Backend {
         match self {
             Backend::Anthropic => "claude",
             Backend::Openai => "codex",
+            Backend::Deepseek => "deepseek-api",
             Backend::Local => "ollama",
         }
     }
@@ -133,6 +138,7 @@ impl Backend {
         match self {
             Backend::Anthropic => Some("claude-opus-5"),
             Backend::Openai => None,
+            Backend::Deepseek => Some("deepseek-chat"),
             // `ollama run` takes the model as a positional, so this one is
             // required rather than optional. It has to be pulled first.
             Backend::Local => Some("qwen2.5-coder"),
@@ -143,6 +149,7 @@ impl Backend {
         match self {
             Backend::Anthropic => "anthropic",
             Backend::Openai => "openai",
+            Backend::Deepseek => "deepseek",
             Backend::Local => "local",
         }
     }
@@ -189,6 +196,12 @@ impl Backend {
                     c.arg("-m").arg(m);
                 }
             }
+            Backend::Deepseek => {
+                c.arg(prompt);
+                if let Some(m) = model {
+                    c.arg("--model").arg(m);
+                }
+            }
             Backend::Local => {
                 c.arg("run")
                     .arg(model.unwrap_or("qwen2.5-coder"))
@@ -211,7 +224,12 @@ pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
         );
     }
     let saved = crate::config::default_agent()?;
-    for b in [Backend::Anthropic, Backend::Openai, Backend::Local] {
+    for b in [
+        Backend::Anthropic,
+        Backend::Openai,
+        Backend::Deepseek,
+        Backend::Local,
+    ] {
         let ok = b.available();
         o.event(
             "agent_backend",
@@ -259,7 +277,7 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
         None => match discover_backend() {
             Some(backend) => backend,
             None => {
-                o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then rerun `celln setup`");
+                o.warn("no agent CLI found — install and authenticate codex, claude, deepseek, or ollama, then rerun `celln setup`");
                 return Ok(crate::exit::HOST_INCAPABLE);
             }
         },
@@ -564,7 +582,7 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
             Some(backend) => Ok(Some(backend)),
             None => {
                 o.warn(format!(
-                    "CELLN_AGENT={name:?} is not one of: openai, anthropic, local"
+                    "CELLN_AGENT={name:?} is not one of: openai, anthropic, deepseek, local"
                 ));
                 Ok(None)
             }
@@ -574,7 +592,7 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
         return match Backend::from_saved_name(&name) {
             Some(backend) => Ok(Some(backend)),
             None => {
-                o.warn(format!("saved default {name:?} is not one of: openai, anthropic, local; run `celln setup`"));
+                o.warn(format!("saved default {name:?} is not one of: openai, anthropic, deepseek, local; run `celln setup`"));
                 Ok(None)
             }
         };
@@ -596,9 +614,14 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
 }
 
 fn discover_backend() -> Option<Backend> {
-    [Backend::Openai, Backend::Anthropic, Backend::Local]
-        .into_iter()
-        .find(|backend| backend.available())
+    [
+        Backend::Openai,
+        Backend::Anthropic,
+        Backend::Deepseek,
+        Backend::Local,
+    ]
+    .into_iter()
+    .find(|backend| backend.available())
 }
 
 #[cfg(target_os = "linux")]
@@ -936,7 +959,7 @@ fn ask_model_text(
                 .unwrap_or_default()
                 .to_string()
         }
-        Backend::Openai | Backend::Local => {
+        Backend::Openai | Backend::Deepseek | Backend::Local => {
             if !out.status.success() {
                 bail!(
                     "{program} exited {}: {}",

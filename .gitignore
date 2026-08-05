@@ -2,3 +2,4 @@
 /.nous
 Cargo.lock.bak
 *.tmp
+/.celln
