@@ -30,8 +30,7 @@ celln agent "Build me something dangerous that should only run in an isolated en
 ## Install
 
 ```sh
-brew tap sympozium-ai/tap
-brew install sympozium-ai/tap/celln
+brew install sympozium-ai/celln/celln
 ```
 
 The tap and source repository are public. On Linux, enable the one static

@@ -8,67 +8,103 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: require a main-based release tag
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-
-      # Refuse to tag something that does not build and pass.
       - run: cargo test --workspace
-      - run: cargo build --release -p celln-cli
 
-      # The public tap installs the immutable source archive for this tag.
-      # Pin its digest so Homebrew verifies exactly what it builds.
-      - name: pin the formula to this release
-        id: release
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: build static release bundle
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          SOURCE_URL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          curl --fail --location --silent --show-error "$SOURCE_URL" --output celln.tar.gz
-          echo "source_url=$SOURCE_URL" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(sha256sum celln.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          cargo zigbuild --release --target "${{ matrix.target }}" -p celln-cli
+          cargo zigbuild --release --target "${{ matrix.target }}" -p celln-pilot \
+            --bin celln-pilot --bin pilot-fetch
+      - name: package
+        run: |
+          target="${{ matrix.target }}"
+          bundle="celln-${target}"
+          mkdir -p "$bundle/bin" "$bundle/share/celln/pilot"
+          cp "target/$target/release/celln" "$bundle/bin/"
+          cp "target/$target/release/celln-pilot" "$bundle/share/celln/pilot/"
+          cp "target/$target/release/pilot-fetch" "$bundle/share/celln/pilot/"
+          cp -R scripts guest "$bundle/share/celln/"
+          tar -C "$bundle" -czf "$bundle.tar.gz" .
+          sha256sum "$bundle.tar.gz" > "$bundle.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: celln-${{ matrix.target }}
+          path: |
+            celln-${{ matrix.target }}.tar.gz
+            celln-${{ matrix.target }}.tar.gz.sha256
 
-      - name: update the formula in-tree
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: pin the Homebrew formula to this source release
+        id: source
+        run: |
+          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          curl --fail --location --silent --show-error "$source_url" --output celln.tar.gz
+          echo "url=$source_url" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum celln.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: update sympozium-ai/homebrew-celln
+        uses: actions/checkout@v4
+        with:
+          repository: sympozium-ai/homebrew-celln
+          path: homebrew-celln
+          token: ${{ secrets.HOMEBREW_CELLN_TOKEN }}
+      - name: commit formula update
+        working-directory: homebrew-celln
+        env:
+          SOURCE_URL: ${{ steps.source.outputs.url }}
+          SOURCE_SHA256: ${{ steps.source.outputs.sha256 }}
+          VERSION: ${{ github.ref_name }}
         run: |
           sed -i \
-            -e "s|^  url \".*\"|  url \"${{ steps.release.outputs.source_url }}\"|" \
-            -e "s|^  sha256 \"[0-9a-f]*\"|  sha256 \"${{ steps.release.outputs.sha256 }}\"|" \
+            -e "s|^  url \".*\"|  url \"$SOURCE_URL\"|" \
+            -e "s|^  sha256 \"[0-9a-f]*\"|  sha256 \"$SOURCE_SHA256\"|" \
             Formula/celln.rb
-          grep -E 'url|sha256' Formula/celln.rb
-
-      - name: publish
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/celln.rb
+          git diff --cached --quiet || git commit -m "celln ${VERSION}"
+          git push
+      - name: publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: |
-            target/release/celln
-            Formula/celln.rb
+          files: dist/*
           body: |
             ## Install
 
-            ```sh
-            brew install sympozium-ai/tap/celln
-            ```
-
-            Then:
+            Linux release archives are available for x86_64 and ARM64.
 
             ```sh
-            celln doctor
-            celln spec init > agent.toml
-            celln run agent.toml
+            brew install sympozium-ai/celln/celln
             ```
-
-            Sealing cells needs Linux with `/dev/kvm`; `celln doctor` reports
-            what this machine can do.
-
-            **Formula maintainers:** copy the attached `celln.rb` into the
-            public tap. It pins this release's public source archive and digest.
