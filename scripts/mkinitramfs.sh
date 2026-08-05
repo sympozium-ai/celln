@@ -86,9 +86,9 @@ if [ -x "$work/pilot" ]; then
 
   store="$(mktemp -d)"
   if [ -z "${packed_manifest:-}" ]; then
-  ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
+  ( cd "$root" && cargo run --quiet -p celln-assay --bin assay -- --root "$store" \
       admit /usr/bin/python "$work/celln/tools/python" --interpreter >/dev/null )
-  ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
+  ( cd "$root" && cargo run --quiet -p celln-assay --bin assay -- --root "$store" \
       admit /usr/bin/ls "$work/celln/tools/ls" >/dev/null )
   # `agent-script` is deliberately NOT preforged: pilot must refuse it.
 
@@ -101,7 +101,7 @@ if [ -x "$work/pilot" ]; then
     # Agent-authored source stays agent-authored through the compiler. Forging
     # it is fine and gives a reproducible artifact; granting it the tool lane
     # is not, so the author rides into the manifest with the hash.
-    ( cd "$root" && cargo run --quiet -p assay -- --root "$store" \
+    ( cd "$root" && cargo run --quiet -p celln-assay --bin assay -- --root "$store" \
         admit "$prog_alias" "$CELLN_RUN_PROG" \
         ${CELLN_RUN_AGENT_AUTHORED:+--agent-authored} >/dev/null )
 
