@@ -17,6 +17,8 @@ jobs:
       - name: require a main-based release tag
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
       - run: cargo test --workspace
 
   build:
