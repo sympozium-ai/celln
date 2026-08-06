@@ -33,12 +33,17 @@ celln agent "Build me something dangerous that should only run in an isolated en
 brew install sympozium-ai/celln/celln
 ```
 
-The tap and source repository are public. On Linux, enable the one static
+Homebrew names the `sympozium-ai/homebrew-celln` repository as the
+`sympozium-ai/celln` tap. The tap and source repository are public. On Linux,
+enable the one static
 target that the local build plane uses for generated programs:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
 ```
+
+Release archives target Linux x86_64; Celln does not publish an ARM64 archive
+while its KVM backend is x86-specific.
 
 <details>
 <summary>or from source</summary>

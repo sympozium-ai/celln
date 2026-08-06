@@ -27,12 +27,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+        # Warden's KVM backend serialises x86 vCPU state. Do not publish an
+        # ARM64 bundle until that backend has an equivalent, proven ABI.
+        target: [x86_64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # cargo-zigbuild is the Cargo frontend; it still needs a Zig compiler.
+      # Keep it pinned so both release architectures use the same linker.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-zigbuild
@@ -105,7 +112,7 @@ jobs:
           body: |
             ## Install
 
-            Linux release archives are available for x86_64 and ARM64.
+            A static Linux x86_64 release archive is available.
 
             ```sh
             brew install sympozium-ai/celln/celln

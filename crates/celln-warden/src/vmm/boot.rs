@@ -1271,7 +1271,10 @@ impl LinuxCell {
     pub fn run(&mut self) -> Result<BootReport, VmmError> {
         install_wake_handler();
         let stop = Arc::new(AtomicBool::new(false));
-        let tid = unsafe { libc::pthread_self() };
+        // `pthread_t` is opaque and may be pointer-shaped, so it cannot cross
+        // the watchdog thread directly. It is only an identifier here: retain
+        // its bits and restore them for `pthread_kill` while this thread lives.
+        let tid = unsafe { libc::pthread_self() as usize };
         let watchdog = {
             let stop = stop.clone();
             let timeout = self.cfg.timeout;
@@ -1286,7 +1289,7 @@ impl LinuxCell {
                 stop.store(true, Ordering::Relaxed);
                 // Interrupt KVM_RUN, repeatedly in case we race the entry.
                 for _ in 0..20 {
-                    unsafe { libc::pthread_kill(tid, libc::SIGUSR1) };
+                    unsafe { libc::pthread_kill(tid as libc::pthread_t, libc::SIGUSR1) };
                     std::thread::sleep(Duration::from_millis(5));
                 }
             })
