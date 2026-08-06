@@ -35,8 +35,9 @@ brew install sympozium-ai/celln/celln
 
 Homebrew names the `sympozium-ai/homebrew-celln` repository as the
 `sympozium-ai/celln` tap. The tap and source repository are public. On Linux,
-enable the one static
-target that the local build plane uses for generated programs:
+the formula downloads the static release archive; it does not build Celln with
+Rust locally. Building from source needs the one static target that the local
+build plane uses for generated programs:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
