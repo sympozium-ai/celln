@@ -75,35 +75,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: pin the Homebrew formula to this source release
-        id: source
-        run: |
-          source_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          curl --fail --location --silent --show-error "$source_url" --output celln.tar.gz
-          echo "url=$source_url" >> "$GITHUB_OUTPUT"
-          echo "sha256=$(sha256sum celln.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-      - name: update sympozium-ai/homebrew-celln
-        uses: actions/checkout@v4
-        with:
-          repository: sympozium-ai/homebrew-celln
-          path: homebrew-celln
-          token: ${{ secrets.HOMEBREW_CELLN_TOKEN }}
-      - name: commit formula update
-        working-directory: homebrew-celln
-        env:
-          SOURCE_URL: ${{ steps.source.outputs.url }}
-          SOURCE_SHA256: ${{ steps.source.outputs.sha256 }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          sed -i \
-            -e "s|^  url \".*\"|  url \"$SOURCE_URL\"|" \
-            -e "s|^  sha256 \"[0-9a-f]*\"|  sha256 \"$SOURCE_SHA256\"|" \
-            Formula/celln.rb
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/celln.rb
-          git diff --cached --quiet || git commit -m "celln ${VERSION}"
-          git push
       - name: publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
@@ -117,3 +88,31 @@ jobs:
             ```sh
             brew install sympozium-ai/celln/celln
             ```
+      - name: pin the Homebrew formula to the release archive
+        id: archive
+        run: |
+          archive="celln-x86_64-unknown-linux-musl.tar.gz"
+          echo "url=https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${archive}" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "dist/$archive" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+      - name: update sympozium-ai/homebrew-celln
+        uses: actions/checkout@v4
+        with:
+          repository: sympozium-ai/homebrew-celln
+          path: homebrew-celln
+          token: ${{ secrets.HOMEBREW_CELLN_TOKEN }}
+      - name: commit formula update
+        working-directory: homebrew-celln
+        env:
+          ARCHIVE_URL: ${{ steps.archive.outputs.url }}
+          ARCHIVE_SHA256: ${{ steps.archive.outputs.sha256 }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          sed -i \
+            -e "s|^  url \".*\"|  url \"$ARCHIVE_URL\"|" \
+            -e "s|^  sha256 \"[0-9a-f]*\"|  sha256 \"$ARCHIVE_SHA256\"|" \
+            Formula/celln.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/celln.rb
+          git diff --cached --quiet || git commit -m "celln ${VERSION}"
+          git push
