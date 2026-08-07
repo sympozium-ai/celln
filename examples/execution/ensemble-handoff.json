@@ -1,0 +1,36 @@
+{
+  "apiVersion": "celln.dev/v1alpha1",
+  "id": "sympozium-review-0002",
+  "workload": {
+    "id": "reviewer",
+    "caller": "sympozium:demo/architecture-review-0002"
+  },
+  "mote": {
+    "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "inputs": [
+    {
+      "name": "research-report",
+      "hash": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "mediaType": "text/markdown",
+      "bytes": 1024
+    }
+  ],
+  "tools": [
+    {
+      "alias": "/tools/review",
+      "hash": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "capabilities": {
+    "workspace": "read-only",
+    "egress": [],
+    "timeoutMs": 30000,
+    "memoryBytes": 268435456,
+    "outputBytes": 65536
+  },
+  "execution": {
+    "lane": "agent",
+    "requireHardwareIsolation": true
+  }
+}

@@ -1,0 +1,19 @@
+# Headless Service for Celln dispatcher pods.
+# Each pod gets a DNS A record at <pod>.<service>.<ns>.svc.cluster.local.
+# The router discovers healthy backends by resolving this name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: celln-dispatcher
+  namespace: celln-system
+  labels:
+    app.kubernetes.io/name: celln-dispatcher
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: celln-dispatcher
+  ports:
+  - name: http
+    port: 8787
+    targetPort: 8787
+    protocol: TCP

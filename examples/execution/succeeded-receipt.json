@@ -1,0 +1,23 @@
+{
+  "apiVersion": "celln.dev/v1alpha1",
+  "requestId": "sympozium-review-0002",
+  "phase": "succeeded",
+  "node": "node-a",
+  "cellId": "cell-a",
+  "resolved": {
+    "mote": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tools": [
+      "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "inputs": [
+      "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    ]
+  },
+  "output": {
+    "hash": "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "mediaType": "text/plain",
+    "bytes": 42
+  },
+  "startedAt": "2026-08-06T10:00:00Z",
+  "completedAt": "2026-08-06T10:00:01Z"
+}

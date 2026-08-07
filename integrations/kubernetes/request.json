@@ -1,0 +1,23 @@
+{
+  "apiVersion": "celln.dev/v1alpha1",
+  "id": "sympozium-kind-probe",
+  "workload": {
+    "id": "sympozium-agent-run",
+    "caller": "sympozium:sympozium-system/kind-probe"
+  },
+  "mote": {
+    "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "tools": [],
+  "capabilities": {
+    "workspace": "none",
+    "egress": [],
+    "timeoutMs": 30000,
+    "memoryBytes": 268435456,
+    "outputBytes": 65536
+  },
+  "execution": {
+    "lane": "agent",
+    "requireHardwareIsolation": true
+  }
+}

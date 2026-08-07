@@ -1,0 +1,23 @@
+{
+  "apiVersion": "celln.dev/v1alpha1",
+  "id": "sympozium-agent-run-42",
+  "workload": {
+    "id": "code-review",
+    "caller": "sympozium:default/agent-run-42"
+  },
+  "mote": {
+    "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "tools": [],
+  "capabilities": {
+    "workspace": "read-write",
+    "egress": [],
+    "timeoutMs": 30000,
+    "memoryBytes": 268435456,
+    "outputBytes": 65536
+  },
+  "execution": {
+    "lane": "agent",
+    "requireHardwareIsolation": true
+  }
+}

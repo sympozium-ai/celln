@@ -1,0 +1,11 @@
+# The Celln dispatcher runs as a host-level systemd service, NOT as a
+# Kubernetes DaemonSet. KVM persistent-memory mappings (KVM_MEM_READONLY)
+# do not survive container layers — even with /dev/kvm passed through.
+#
+# Install the host dispatcher with:
+#   sudo bash scripts/setup-host.sh
+#
+# The Router (Deployment) remains in Kubernetes for DNS discovery and
+# scaling. See router-deployment.yaml.
+#
+# This file is kept for reference. Do not apply it directly.

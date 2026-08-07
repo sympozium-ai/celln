@@ -39,7 +39,8 @@ Do not use TCP sockets, DNS libraries, curl, or external crates.";
 const ALIAS: &str = "/agent/program";
 
 /// Supported authenticated CLI backends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
     /// Claude, via the `claude` CLI.
     Anthropic,
@@ -101,6 +102,22 @@ struct GeneratedProgram {
     source: String,
 }
 
+/// A user may authenticate an agent CLI interactively rather than exporting a
+/// long-lived API key. Both are credentials, and the CLI remains the authority
+/// for checking its own saved session.
+fn authenticated(has_api_key: bool, cli_status_ok: bool) -> bool {
+    has_api_key || cli_status_ok
+}
+
+fn cli_login_ok(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 impl Backend {
     fn saved_name(self) -> &'static str {
         match self {
@@ -141,8 +158,6 @@ impl Backend {
             Backend::Anthropic => Some("claude-opus-5"),
             Backend::Openai => None,
             Backend::Deepseek => Some("deepseek-chat"),
-            // `ollama run` takes the model as a positional, so this one is
-            // required rather than optional. It has to be pulled first.
             Backend::Local => Some("qwen2.5-coder"),
         }
     }
@@ -166,19 +181,24 @@ impl Backend {
     fn validate(self) -> Result<(), String> {
         match self {
             Backend::Anthropic => {
-                if std::env::var("ANTHROPIC_API_KEY").is_err()
-                    && std::env::var("CLAUDE_API_KEY").is_err()
-                {
+                if !authenticated(
+                    std::env::var("ANTHROPIC_API_KEY").is_ok()
+                        || std::env::var("CLAUDE_API_KEY").is_ok(),
+                    cli_login_ok("claude", &["auth", "status"]),
+                ) {
                     return Err(
-                        "ANTHROPIC_API_KEY is not set — `claude` needs it to authenticate".into(),
+                        "`claude` has no saved login and ANTHROPIC_API_KEY is not set — authenticate it or set a key".into(),
                     );
                 }
                 Ok(())
             }
             Backend::Openai => {
-                if std::env::var("OPENAI_API_KEY").is_err() {
+                if !authenticated(
+                    std::env::var("OPENAI_API_KEY").is_ok(),
+                    cli_login_ok("codex", &["login", "status"]),
+                ) {
                     return Err(
-                        "OPENAI_API_KEY is not set — `codex` needs it to authenticate".into(),
+                        "`codex` has no saved login and OPENAI_API_KEY is not set — authenticate it or set a key".into(),
                     );
                 }
                 Ok(())
@@ -983,6 +1003,16 @@ fn run_in_cell(
         vec![ALIAS.to_string()],
     )
     .ok();
+    // A dispatcher must obtain the actual registry identity before it reports
+    // a running action upstream. Emitting it at creation keeps a future
+    // transport from deriving or fabricating a cell ID after the VM exits.
+    if let Some(record) = record.as_ref() {
+        o.event(
+            "cell_started",
+            serde_json::json!({ "cellId": record.id, "description": record.description }),
+            format!("  {} cell {} started", dim("·"), record.id),
+        );
+    }
     let mut cell = match LinuxCell::boot(cfg) {
         Ok(cell) => cell,
         Err(e) => {
@@ -1426,6 +1456,13 @@ fn tempdir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_cli_login_is_accepted_without_an_api_key() {
+        assert!(authenticated(false, true));
+        assert!(authenticated(true, false));
+        assert!(!authenticated(false, false));
+    }
 
     #[test]
     fn execution_plan_uses_the_runtime_the_agent_selected() {

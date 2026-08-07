@@ -1,0 +1,17 @@
+# Service exposing the Celln router. The Sympozium control plane
+# (or any API consumer) sends actions to this endpoint.
+apiVersion: v1
+kind: Service
+metadata:
+  name: celln-router
+  namespace: celln-system
+  labels:
+    app.kubernetes.io/name: celln-router
+spec:
+  selector:
+    app.kubernetes.io/name: celln-router
+  ports:
+  - name: http
+    port: 8787
+    targetPort: 8787
+    protocol: TCP
