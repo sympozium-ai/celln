@@ -141,6 +141,7 @@ fi
 #
 # The dispatcher reads /etc/celln/agent-key at startup via EnvironmentFile=.
 KEY_FILE="${HOST}/etc/celln/agent-key"
+mkdir -p "$(dirname "$KEY_FILE")"
 rm -f "$KEY_FILE"  # Start fresh, we'll populate below
 PROVIDER=""
 if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
