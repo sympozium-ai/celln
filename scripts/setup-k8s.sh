@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install-k8s.sh — Prepare framework for a single-node kubeadm cluster
+# setup-k8s.sh — Prepare framework for a single-node kubeadm cluster
 # with containerd. After this, run setup-host.sh to install the Celln
 # host-level dispatcher, and then deploy the router.
 #
@@ -13,6 +13,11 @@ GREEN='\033[0;32m'
 NC='\033[0m'
 info()  { echo -e "${GREEN}→${NC} $*"; }
 err()   { echo -e "${RED}✘${NC} $*" >&2; exit 1; }
+
+TARGET_USER="${SUDO_USER:-$(id -un)}"
+TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+CELLN_DIR="${CELLN_DIR:-$TARGET_HOME/Code/celln}"
+SYMPOZIUM_DIR="${SYMPOZIUM_DIR:-$TARGET_HOME/Code/sympozium}"
 
 # ── 1. Kernel modules + sysctl ───────────────────────────────────────
 info "loading kernel modules …"
@@ -60,11 +65,11 @@ systemctl enable --now kubelet
 info "initialising cluster (single-node, pod CIDR 10.244.0.0/16 for flannel) …"
 kubeadm init --pod-network-cidr=10.244.0.0/16
 
-# ── 6. Configure kubectl for the axjns user ───────────────────────────
+# ── 6. Configure kubectl for the target user ──────────────────────────
 info "configuring kubectl …"
-mkdir -p /home/axjns/.kube
-cp -f /etc/kubernetes/admin.conf /home/axjns/.kube/config
-chown -R axjns:axjns /home/axjns/.kube
+mkdir -p "$TARGET_HOME/.kube"
+cp -f /etc/kubernetes/admin.conf "$TARGET_HOME/.kube/config"
+chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.kube"
 
 # ── 7. Untaint control-plane node so pods can schedule ────────────────
 export KUBECONFIG=/etc/kubernetes/admin.conf
@@ -90,16 +95,16 @@ kubectl get pods -A
 
 # ── 10. Sympozium CRDs ────────────────────────────────────────────────
 info "installing Sympozium CRDs …"
-kubectl apply -f /home/axjns/Code/sympozium/charts/sympozium-crds/templates/sympozium.ai_agentruns.yaml 2>/dev/null || true
+kubectl apply -f "$SYMPOZIUM_DIR/charts/sympozium-crds/templates/sympozium.ai_agentruns.yaml" 2>/dev/null || true
 
 echo ""
 echo "Done. Next steps:"
 echo ""
 echo "  1. Install the host-level Celln dispatcher:"
-echo "     sudo bash ~/Code/celln/scripts/setup-host.sh"
+echo "     sudo bash $CELLN_DIR/scripts/setup-host.sh"
 echo ""
 echo "  2. Deploy Sympozium (Helm):"
-echo "     cd ~/Code/sympozium && helm install sympozium ./charts/sympozium \\"
+echo "     cd $SYMPOZIUM_DIR && helm install sympozium ./charts/sympozium \\"
 echo "       --namespace sympozium-system --create-namespace \\"
 echo "       --set image.registry=ghcr.io/sympozium-ai/sympozium \\"
 echo "       --set image.tag=v0.10.43 \\"
@@ -108,8 +113,8 @@ echo "       --set controller.image.tag=celln-dev \\"
 echo "       --set apiserver.image.tag=celln-dev"
 echo ""
 echo "  3. Deploy the Celln router (Kubernetes Pod):"
-echo "     kubectl apply -f ~/Code/celln/integrations/kubernetes/router-deployment.yaml"
-echo "     kubectl apply -f ~/Code/celln/integrations/kubernetes/router-service.yaml"
+echo "     kubectl apply -f $CELLN_DIR/integrations/kubernetes/router-deployment.yaml"
+echo "     kubectl apply -f $CELLN_DIR/integrations/kubernetes/router-service.yaml"
 echo ""
 echo "  4. Run a demo:"
-echo "     kubectl apply -f ~/Code/sympozium/examples/celln-demo.yaml"
+echo "     kubectl apply -f $SYMPOZIUM_DIR/examples/celln-demo.yaml"
