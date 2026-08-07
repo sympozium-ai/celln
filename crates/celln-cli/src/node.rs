@@ -26,7 +26,7 @@ pub struct NodeEligibility {
 }
 
 impl NodeEligibility {
-    fn from_probe(args: &NodeProbeArgs) -> Self {
+    pub(crate) fn from_probe(args: &NodeProbeArgs) -> Self {
         let host = Host::probe();
         Self {
             node_name: args.node_name.clone(),

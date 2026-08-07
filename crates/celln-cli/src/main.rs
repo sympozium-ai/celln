@@ -73,6 +73,10 @@ enum Cmd {
         /// File containing the bearer token accepted from the control plane.
         #[arg(long)]
         token_file: PathBuf,
+        /// This node's identity and capacity, used to admit
+        /// `celln.dev/v1alpha1` ExecutionRequests posted to `/v1/executions`.
+        #[command(flatten)]
+        probe: NodeProbeArgs,
     },
 
     /// Route actions across dispatcher backends. Picks a healthy node per
@@ -236,7 +240,7 @@ enum NodeCmd {
     },
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 struct NodeProbeArgs {
     #[arg(long, env = "CELLN_NODE_NAME", default_value = "local")]
     node_name: String,
@@ -286,14 +290,24 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::Doctor => Ok(doctor(o)),
-        Cmd::Dispatcher { listen, token_file } => dispatcher::serve(listen, token_file, root),
+        Cmd::Dispatcher {
+            listen,
+            token_file,
+            probe,
+        } => dispatcher::serve(listen, token_file, root, probe),
         Cmd::Route {
             listen,
             backends,
             backends_srv,
             mode,
             token_file,
-        } => router::serve(listen, backends.to_vec(), backends_srv.as_deref(), *mode, token_file.as_deref()),
+        } => router::serve(
+            listen,
+            backends.to_vec(),
+            backends_srv.as_deref(),
+            *mode,
+            token_file.as_deref(),
+        ),
         Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe),
         Cmd::Node(NodeCmd::Admit { request, probe }) => node::admit_file(request, probe),
         Cmd::Node(NodeCmd::Resolve {

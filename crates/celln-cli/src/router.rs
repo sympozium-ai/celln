@@ -7,6 +7,7 @@
 //! admission ("can this node spawn another cell?") via the health check.
 //! One accepted request = one warden = one cell — no multiplexing.
 
+use crate::dispatcher::{read_bounded_line, MAX_HEADER_COUNT, MAX_HEADER_LINE, MAX_REQUEST_LINE};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -22,10 +23,24 @@ const ROUTER_TOKEN_BYTES: usize = 24;
 /// How the router selects a dispatcher backend for each action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum RoutingMode {
-    /// Cycle through backends deterministically, skipping unhealthy ones.
+    /// Deterministic per action id (an FNV-1a hash of the id, modulo the
+    /// backend count), skipping unhealthy backends. This is what lets a
+    /// caller retry a POST with the same id and land on the same backend
+    /// it reached the first time, instead of wherever a shared rotating
+    /// cursor happens to point on the retry.
     RoundRobin,
     /// Pick a backend at random; fall through to the next if unhealthy.
     Random,
+}
+
+/// FNV-1a. Only needs to be a stable, well-distributed hash — not
+/// cryptographic — so retries of the same action id are deterministic.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+    bytes.iter().fold(OFFSET, |hash, byte| {
+        (hash ^ *byte as u64).wrapping_mul(PRIME)
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,9 +78,7 @@ pub fn serve(
                     }
                 }
             }
-            Err(e) => eprintln!(
-                "celln route: warning: could not resolve {addr}: {e}"
-            ),
+            Err(e) => eprintln!("celln route: warning: could not resolve {addr}: {e}"),
         }
     }
 
@@ -79,14 +92,15 @@ pub fn serve(
                 .trim()
                 .to_owned();
             if t.len() < ROUTER_TOKEN_BYTES {
-                bail!("router token must contain at least {ROUTER_TOKEN_BYTES} non-whitespace bytes");
+                bail!(
+                    "router token must contain at least {ROUTER_TOKEN_BYTES} non-whitespace bytes"
+                );
             }
             Some(t)
         }
         None => None,
     };
-    let listener =
-        TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
+    let listener = TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
     let state = Arc::new(RouterState {
         backends: urls.clone(),
         mode,
@@ -94,7 +108,10 @@ pub fn serve(
         actions: Mutex::new(HashMap::new()),
         token,
     });
-    eprintln!("celln route listening on {listen} ({} backends, {mode:?})", urls.len());
+    eprintln!(
+        "celln route listening on {listen} ({} backends, {mode:?})",
+        urls.len()
+    );
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -121,27 +138,39 @@ struct RouterState {
 
 fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
+    let request_line = read_bounded_line(&mut reader, MAX_REQUEST_LINE)?;
     let Some((method, raw_path)) = request_line.trim_end().split_once(' ') else {
-        return reply(&mut stream, 400, &serde_json::json!({"error":"malformed request line"}));
+        return reply(
+            &mut stream,
+            400,
+            &serde_json::json!({"error":"malformed request line"}),
+        );
     };
-    let path = raw_path.split_whitespace().next().unwrap_or_default();
+    let path = raw_path
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let method = method.to_owned();
 
     let mut length = 0usize;
+    let mut header_count = 0usize;
     loop {
-        let mut header = String::new();
-        reader.read_line(&mut header)?;
+        let header = read_bounded_line(&mut reader, MAX_HEADER_LINE)?;
         let header = header.trim_end();
         if header.is_empty() {
             break;
+        }
+        header_count += 1;
+        if header_count > MAX_HEADER_COUNT {
+            bail!("too many headers (max {MAX_HEADER_COUNT})");
         }
         if let Some(value) = header.strip_prefix("Content-Length: ") {
             length = value.parse().context("invalid Content-Length")?;
         }
     }
 
-    match (method, path) {
+    match (method.as_str(), path.as_str()) {
         ("POST", "/v1/actions") => {
             if length == 0 || length > 64 * 1024 {
                 return reply(
@@ -155,7 +184,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
 
             let action_id = extract_action_id(&body)?;
 
-            let backend = pick_backend(state)?;
+            let backend = pick_backend(state, &action_id)?;
             let resp = forward_post(&backend, "/v1/actions", &body, &state.token)?;
             let status = parse_status(&resp);
 
@@ -199,10 +228,10 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     Ok(())
 }
 
-fn pick_backend(state: &RouterState) -> Result<String> {
+fn pick_backend(state: &RouterState, action_id: &str) -> Result<String> {
     let n = state.backends.len();
     let start = match state.mode {
-        RoutingMode::RoundRobin => state.cursor.fetch_add(1, Ordering::Relaxed) % n,
+        RoutingMode::RoundRobin => (fnv1a(action_id.as_bytes()) as usize) % n,
         RoutingMode::Random => {
             // Fast non-crypto random from the cursor.
             let t = state.cursor.fetch_add(1, Ordering::Relaxed);
@@ -216,7 +245,7 @@ fn pick_backend(state: &RouterState) -> Result<String> {
 
     for offset in 0..n {
         let backend = &state.backends[(start + offset) % n];
-            if is_healthy(backend, &state.token)? {
+        if is_healthy(backend, &state.token)? {
             return Ok(backend.clone());
         }
     }
@@ -243,7 +272,10 @@ fn forward_get(backend: &str, path: &str, token: &Option<String>) -> Result<Stri
     if let Some(t) = token {
         write!(stream, "GET {path} HTTP/1.1\r\nHost: {backend}\r\nAuthorization: Bearer {t}\r\nConnection: close\r\n\r\n")?;
     } else {
-        write!(stream, "GET {path} HTTP/1.1\r\nHost: {backend}\r\nConnection: close\r\n\r\n")?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: {backend}\r\nConnection: close\r\n\r\n"
+        )?;
     }
     stream.flush()?;
     read_response(&mut stream)
@@ -365,4 +397,59 @@ fn reply(stream: &mut TcpStream, status: u16, body: &serde_json::Value) -> Resul
 fn raw_reply(stream: &mut TcpStream, response: &str) -> Result<()> {
     stream.write_all(response.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fnv1a_is_deterministic_and_spreads_similar_keys() {
+        assert_eq!(fnv1a(b"action-1"), fnv1a(b"action-1"));
+        assert_ne!(fnv1a(b"action-1"), fnv1a(b"action-2"));
+    }
+
+    #[test]
+    fn round_robin_selection_is_stable_for_the_same_action_id_across_backend_counts() {
+        // The bug this closes: retrying a POST for the same action id must
+        // land on the same backend index every time, for a fixed backend
+        // count — not wherever a shared rotating cursor happens to be.
+        let n = 5usize;
+        let first = (fnv1a(b"same-action-id") as usize) % n;
+        let second = (fnv1a(b"same-action-id") as usize) % n;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn extract_action_id_reads_the_id_field() {
+        let body = br#"{"id":"run-42","task":"do a thing"}"#;
+        assert_eq!(extract_action_id(body).unwrap(), "run-42");
+    }
+
+    #[test]
+    fn extract_action_id_fails_without_an_id() {
+        let body = br#"{"task":"do a thing"}"#;
+        assert!(extract_action_id(body).is_err());
+    }
+
+    #[test]
+    fn parse_status_reads_the_numeric_status_code() {
+        assert_eq!(
+            parse_status("HTTP/1.1 202 OK\r\nContent-Length: 0\r\n\r\n"),
+            202
+        );
+        assert_eq!(parse_status("not a status line"), 502);
+    }
+
+    #[test]
+    fn extract_body_finds_the_content_after_the_blank_line() {
+        let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+        assert_eq!(extract_body(response), "ok");
+    }
+
+    #[test]
+    fn backend_to_addr_defaults_to_port_80_without_an_explicit_port() {
+        assert_eq!(backend_to_addr("http://node1").unwrap(), "node1:80");
+        assert_eq!(backend_to_addr("https://node1:9000").unwrap(), "node1:9000");
+    }
 }

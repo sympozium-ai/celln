@@ -1154,7 +1154,7 @@ fn run_in_cell(
 }
 
 /// Everything pilot printed between its markers is the program's own output.
-fn slice_output(console: &str) -> Option<String> {
+pub(crate) fn slice_output(console: &str) -> Option<String> {
     let start = console.find("CELLN:out-begin")?;
     let after = console[start..].find('\n')? + start + 1;
     let end = console[after..].find("CELLN:out-end")? + after;
@@ -1363,11 +1363,16 @@ fn extract_program(reply: &str) -> Result<GeneratedProgram> {
     Ok(GeneratedProgram { runtime, source })
 }
 
-fn sh(root: &Path, script: &str, args: &[String]) -> Result<()> {
+pub(crate) fn sh(root: &Path, script: &str, args: &[String]) -> Result<()> {
     sh_env(root, script, args, &[])
 }
 
-fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) -> Result<()> {
+pub(crate) fn sh_env(
+    root: &Path,
+    script: &str,
+    args: &[String],
+    env: &[(&str, String)],
+) -> Result<()> {
     let mut c = Command::new(root.join(script));
     c.current_dir(root).args(args);
     for (k, v) in env {
@@ -1384,7 +1389,7 @@ fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) ->
 /// while a packaged install places the same tree in `share/celln` beside the
 /// executable's prefix. `CELLN_RUNTIME_DIR` is an explicit override for unusual
 /// layouts and downstream packagers.
-fn runtime_root() -> Result<PathBuf> {
+pub(crate) fn runtime_root() -> Result<PathBuf> {
     if let Some(p) =
         std::env::var_os("CELLN_RUNTIME_DIR").or_else(|| std::env::var_os("CELL_RUNTIME_DIR"))
     {
@@ -1447,7 +1452,7 @@ fn runtime_root() -> Result<PathBuf> {
     )
 }
 
-fn tempdir() -> Result<PathBuf> {
+pub(crate) fn tempdir() -> Result<PathBuf> {
     let base = std::env::temp_dir().join(format!("celln-agent-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     Ok(base)
