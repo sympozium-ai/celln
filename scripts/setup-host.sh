@@ -89,14 +89,43 @@ else
     echo "✓ Rust toolchain already present"
 fi
 
-# ── 6. API key file ────────────────────────────────────────────────────
+# ── 6. Provider API key ──────────────────────────────────────────────────
+# Celln supports multiple backends. Any of these env vars trigger
+# automatic key-file creation for the dispatcher.
+#
+#   OpenAI:      OPENAI_API_KEY=sk-...   (also needs `codex` CLI on PATH)
+#   Anthropic:   ANTHROPIC_API_KEY=sk-... (also needs `claude` CLI on PATH)
+#   DeepSeek:    DEEPSEEK_API_KEY=sk-...
+#   Local:       no key needed            (needs `ollama` daemon running)
+#
+# The dispatcher reads /etc/celln/agent-key at startup via EnvironmentFile=.
+KEY_FILE="${HOST}/etc/celln/agent-key"
+rm -f "$KEY_FILE"  # Start fresh, we'll populate below
+PROVIDER=""
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> "$KEY_FILE"
+    PROVIDER="Anthropic"
+fi
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+    echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> "$KEY_FILE"
+    [ -n "${OPENAI_BASE_URL:-}" ] && echo "OPENAI_BASE_URL=$OPENAI_BASE_URL" >> "$KEY_FILE"
+    [ -z "$PROVIDER" ] && PROVIDER="OpenAI"
+fi
 if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
-    mkdir -p "${HOST}/etc/celln"
-    echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" > "${HOST}/etc/celln/deepseek-key"
-    chmod 600 "${HOST}/etc/celln/deepseek-key"
-    echo "✓ DeepSeek API key configured"
+    echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" >> "$KEY_FILE"
+    [ -z "$PROVIDER" ] && PROVIDER="DeepSeek"
+fi
+chmod 600 "$KEY_FILE" 2>/dev/null || true
+
+if [ -n "$PROVIDER" ]; then
+    echo "✓ $PROVIDER API key configured ($KEY_FILE)"
+elif [ -f /usr/local/bin/ollama ] || command -v ollama >/dev/null 2>&1; then
+    echo "✓ using ollama (local) — no API key needed"
 else
-    echo "⚠ DEEPSEEK_API_KEY not set — create /etc/celln/deepseek-key manually"
+    echo "⚠ no agent API key found"
+    echo "  Set one of in your Helm values: openaiApiKey, anthropicApiKey, deepseekApiKey"
+    echo "  Or install ollama on the host for local inference"
+    echo "  Or create $KEY_FILE manually"
 fi
 
 # ── 7. Dispatcher token ────────────────────────────────────────────────
@@ -121,8 +150,7 @@ Restart=always
 RestartSec=5
 Environment=PATH=/root/.cargo/bin:/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin
 Environment=CELLN_RUNTIME_DIR=/opt/celln/runtime
-Environment=CELLN_AGENT=deepseek
-EnvironmentFile=-/etc/celln/deepseek-key
+EnvironmentFile=-/etc/celln/agent-key
 User=root
 LimitNOFILE=65536
 
