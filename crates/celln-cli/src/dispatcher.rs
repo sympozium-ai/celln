@@ -227,7 +227,8 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
     let (length, authorization) = read_headers(&mut reader)?;
     let authorized = authorization
         .is_some_and(|value| constant_time_eq(value.as_bytes(), state.token.as_bytes()));
-    if !authorized && !(method == "GET" && path == "/v1/health") {
+    let is_public_health_check = method == "GET" && path == "/v1/health";
+    if !authorized && !is_public_health_check {
         return reply(
             &mut stream,
             401,
