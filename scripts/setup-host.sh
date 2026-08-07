@@ -89,7 +89,48 @@ else
     echo "✓ Rust toolchain already present"
 fi
 
-# ── 6. Provider API key ──────────────────────────────────────────────────
+# ── 5.5. Agent backend detection ──────────────────────────────────────────
+# Auto-detect which agent CLIs are available on the host and report
+# exactly what backends the dispatcher can use.
+echo "→ detecting agent backends..."
+DETECTED=""
+if [ -x "${HOST}/usr/local/bin/codex" ] || command -v codex >/dev/null 2>&1; then
+    echo "  ✓ codex (OpenAI) detected"
+    DETECTED="$DETECTED openai"
+fi
+if [ -x "${HOST}/usr/local/bin/claude" ] || command -v claude >/dev/null 2>&1; then
+    echo "  ✓ claude (Anthropic) detected"
+    DETECTED="$DETECTED anthropic"
+fi
+if [ -x "${HOST}/opt/celln/runtime/scripts/deepseek-api" ] || command -v deepseek-api >/dev/null 2>&1; then
+    echo "  ✓ deepseek-api (DeepSeek) detected"
+    DETECTED="$DETECTED deepseek"
+fi
+if [ -x "${HOST}/usr/local/bin/ollama" ] || command -v ollama >/dev/null 2>&1; then
+    if ollama list >/dev/null 2>&1; then
+        echo "  ✓ ollama (local) detected and running"
+        DETECTED="$DETECTED local"
+    else
+        echo "  ⚠ ollama binary found but daemon is not running — start it with: ollama serve"
+    fi
+fi
+
+if [ -z "$DETECTED" ]; then
+    echo "  ✘ no agent CLI detected"
+    echo "    Install one of: codex (openai), claude (anthropic), deepseek-api, or ollama"
+    echo "    See: https://github.com/sympozium-ai/celln#agent-backends"
+fi
+
+# Run celln setup to save the default backend
+if $CONTAINER_MODE; then
+    nsenter --target 1 --mount -- /bin/sh -c "PATH=/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin /usr/local/bin/celln --root /var/lib/celln setup 2>&1" | while IFS= read -r line; do
+        echo "  $line"
+    done
+else
+    PATH=/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin /usr/local/bin/celln --root /var/lib/celln setup 2>&1 | while IFS= read -r line; do
+        echo "  $line"
+    done
+fi
 # Celln supports multiple backends. Any of these env vars trigger
 # automatic key-file creation for the dispatcher.
 #
