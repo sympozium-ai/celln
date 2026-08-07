@@ -14,7 +14,7 @@
 <div class="eyebrow">REDESIGNED INTEGRATION · HERMITIC ACTIONS FIRST</div>
 <h1>Celln is a first-class execution choice for hermetic actions—not an Ensemble runtime.</h1>
 <p class="lede">Sympozium continues to own normal agents, AgentRuns, pipelines, delegation, shared memory, retries, and NATS/IPC. Celln is selected when a user or a parent agent needs one bounded, risky, or sensitive computation to execute in a sealed cell and return an immutable receipt.</p>
-<div class="notice"><strong>Truthful availability:</strong> this is the approved product architecture, not a currently selectable backend. The Celln dispatcher still cannot launch a request. Until it returns a real receipt, the Sympozium control plane must show Celln as unavailable and must never fall back to a Job, gVisor, or Agent Sandbox while calling the action “Celln.”</div>
+<div class="notice"><strong>Truthful availability:</strong> this is the approved product architecture, not a currently selectable backend. The Celln dispatcher can now admit, resolve, launch, and return a real <code>ExecutionReceipt</code> for a <code>celln.dev/v1alpha1</code> request (<a href="dispatcher.html">dispatcher progress</a>) — what's still missing is the Sympozium-side <code>CellnAction</code> controller/backend and UX described below. Until that exists, the Sympozium control plane must show Celln as unavailable and must never fall back to a Job, gVisor, or Agent Sandbox while calling the action “Celln.”</div>
 
 <h2>Execution choice in the Sympozium UX</h2>
 <div class="grid3">

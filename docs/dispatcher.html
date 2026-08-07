@@ -21,7 +21,7 @@
   <div class="eyebrow">CELLN #13 · EXECUTION RUNTIME</div>
   <h1>From immutable request to one sealed cell.</h1>
   <p class="lede">The dispatcher is the missing execution boundary between Sympozium’s control plane and Celln’s Warden. It is a native Celln runtime—not a CRI shim, RuntimeClass, or Kubernetes Job fallback.</p>
-  <div class="callout"><strong>Current implementation state:</strong> the dispatcher now resolves a content-addressed <code>MoteBundle</code>, its kernel/initrd/toolfs objects, and the explicit requested program from integrity-checking stores. It does <em>not yet</em> launch that resolved bundle, harvest output, or publish a receipt. Those stages remain visibly marked below.</div>
+  <div class="callout"><strong>Current implementation state:</strong> <code>POST /v1/executions</code> on a running dispatcher now validates a request, admits it against real node capacity, resolves the content-addressed <code>MoteBundle</code> and program, boots a real cell, and returns a genuine <code>ExecutionReceipt</code> — verified end-to-end on real KVM hardware. One gap remains, called out below rather than hidden: the guest still boots this host's own kernel, not the mote bundle's declared kernel/initrd hashes.</div>
 
   <h2>Runtime shape</h2>
   <div class="flow" role="img" aria-label="Dispatcher state flow from request through verified stores and Warden to receipt">
@@ -34,10 +34,10 @@
       <path d="M462 188 H530" class="line"/>
       <rect x="532" y="115" width="190" height="146" rx="12" class="box done"/><text x="557" y="150" class="label">Verified stores</text><text x="557" y="177" class="small">mote bundle</text><text x="557" y="199" class="small">kernel · initrd · toolfs</text><text x="557" y="221" class="small">selected program</text><text x="557" y="243" class="small">integrity-checked reads</text>
       <path d="M722 188 H792" class="line"/>
-      <rect x="794" y="115" width="155" height="146" rx="12" class="box build"/><text x="818" y="150" class="label">Warden</text><text x="818" y="177" class="small">write temp assets</text><text x="818" y="199" class="small">boot / fork mote</text><text x="818" y="221" class="small">seal toolfs</text><text x="818" y="243" class="small">run Pilot</text>
+      <rect x="794" y="115" width="155" height="146" rx="12" class="box done"/><text x="818" y="150" class="label">Warden</text><text x="818" y="177" class="small">write temp assets</text><text x="818" y="199" class="small">boot host kernel</text><text x="818" y="221" class="small">seal toolfs</text><text x="818" y="243" class="small">run Pilot</text>
       <path d="M949 188 H1008" class="line"/>
-      <rect x="1008" y="115" width="70" height="146" rx="12" class="box future"/><text x="1022" y="161" class="label">Receipt</text><text x="1022" y="190" class="small">output</text><text x="1022" y="209" class="small">hash</text><text x="1022" y="228" class="small">status</text>
-      <text x="35" y="330" class="small">Green: implemented resolver. Amber: next implementation slice. Blue: required terminal transport.</text>
+      <rect x="1008" y="115" width="70" height="146" rx="12" class="box done"/><text x="1022" y="161" class="label">Receipt</text><text x="1022" y="190" class="small">output</text><text x="1022" y="209" class="small">hash</text><text x="1022" y="228" class="small">status</text>
+      <text x="35" y="330" class="small">Green: implemented and running. Boot still uses the host's own kernel — see the gap called out below.</text>
     </svg>
   </div>
 
@@ -45,13 +45,16 @@
   <div class="state"><span class="badge done">DONE</span><div><strong>Explicit execution intent.</strong> <code>ExecutionRequest.invocation</code> selects one declared tool alias plus argv. It is validated against immutable <code>tools[]</code>; the tool list is not treated as an implicit command.</div></div>
   <div class="state"><span class="badge done">DONE</span><div><strong>Resolvable mote-bundle contract.</strong> A <code>MoteBundle</code> is fetched from the hash named by <code>request.mote</code>. It binds the selected alias/program hash to immutable kernel, initrd, and toolfs hashes.</div></div>
   <div class="state"><span class="badge done">DONE</span><div><strong>Integrity-checked resolution.</strong> <code>celln node resolve REQUEST --mote-store … --tool-store …</code> uses <code>celln-store::Store::get</code> for the bundle, program, kernel, initrd, and toolfs. A missing or corrupt blob is a refusal—not a host-path substitution.</div></div>
-  <div class="state"><span class="badge done">DONE</span><div><strong>Receipt contract.</strong> <code>ExecutionReceipt</code> binds request, cell/node identity, resolved authority, output hash, and terminal phase. It is not yet produced by a dispatcher.</div></div>
+  <div class="state"><span class="badge done">DONE</span><div><strong>Node admission.</strong> <code>POST /v1/executions</code> checks the request against this node's real, live-probed capacity (<code>crate::node::admit</code>) before anything is resolved or run — refused requests never reach a cell.</div></div>
+  <div class="state"><span class="badge done">DONE</span><div><strong>Native launcher.</strong> The exact program <code>resolve_bundle</code> verified is written into a fresh toolfs, admitted into this node's attested manifest, sealed read-only into a real <code>LinuxCell</code>, and run — no model asked to write the code, no forge step. Verified end-to-end on real KVM hardware.</div></div>
+  <div class="state"><span class="badge done">DONE</span><div><strong>Bounded output and receipt.</strong> Pilot's output markers are parsed, output is truncated to <code>capabilities.outputBytes</code> and content-addressed into an output store, and a validated <code>ExecutionReceipt</code> is recorded and served from <code>GET /v1/executions/:id</code>.</div></div>
 
-  <h2>Next executable slice</h2>
-  <div class="state"><span class="badge build">BUILDING</span><div><strong>Native launcher.</strong> Materialize resolved kernel/initrd/toolfs only into dispatcher-controlled temporary files, construct <code>LinuxCell</code>, seal the exact toolfs pages, and run the in-guest Pilot. The first proof can cold-boot; the hot path must retain/fork a warm mote.</div></div>
-  <div class="state"><span class="badge future">NEXT</span><div><strong>Bounded output and receipt.</strong> Accept only Pilot terminal markers, cap stdout to <code>outputBytes</code>, place it in a content-addressed output store after dissolution, validate and serialize the receipt.</div></div>
+  <h2>Known gap</h2>
+  <div class="state"><span class="badge build">PARTIAL</span><div><strong>Kernel/initrd are verified, not booted.</strong> <code>resolve_bundle</code> proves the mote bundle's declared <code>kernel</code>/<code>initrd</code> hashes exist and match — but the cell still boots via <code>BootConfig::host_kernel()</code>, this node's own installed kernel, because DAX/nvdimm module loading checks kernel-module vermagic exactly against <code>/lib/modules/&lt;version&gt;</code> on the host. Booting an arbitrary stored kernel image would need its matching modules shipped alongside it, which the mote bundle contract does not carry yet. The sealed program is still the exact hash-verified bytes the request declared; only kernel provenance is a same-host assumption today.</div></div>
   <div class="state"><span class="badge future">NEXT</span><div><strong>Sympozium hermetic action.</strong> Present Celln as the preferred execution choice for eligible high-risk work, alongside gVisor/Agent Sandbox. It must use a dedicated <code>CellnAction</code> receipt API; it must not turn an AgentRun, its secrets, NATS, or shared memory into a fake Celln request.</div></div>
   <div class="state"><span class="badge blocked">INTENTIONALLY EXCLUDED</span><div><strong>Full Ensemble backend.</strong> A Celln action is not an AgentRun executor. Ensembles retain the existing agent-runner, ipc-bridge, shared <code>/ipc</code>, NATS, workflow memory, delegation, retry, and token lifecycle. A future parent may await one immutable Celln-action receipt, but Celln does not participate in agent-to-agent workflow semantics.</div></div>
+
+  <p class="lede" style="margin-top:24px"><code>POST /v1/actions</code> (a free-form <code>{id, task, backend, model}</code> submitted to an LLM, forged, and run) remains a separate, older endpoint on the same dispatcher — the prompt-driven path <code>celln agent</code> already used before this contract existed. It is not the hermetic path described here and does not produce an <code>ExecutionReceipt</code>.</p>
 
   <h2>Wire contract</h2>
   <pre><code>ExecutionRequest.mote.hash ──▶ Store.get(bundle)
