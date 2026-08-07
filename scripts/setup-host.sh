@@ -1,99 +1,114 @@
-# Celln — bare-metal node setup.
+#!/usr/bin/env bash
+# setup-host.sh — Install Celln dispatcher on a KVM-capable node.
 #
-# Installs celln on a KVM-capable host and configures the systemd service
-# so the Celln dispatcher starts on boot and survives restarts.
+# Runs either directly on the host (sudo bash setup-host.sh) or inside a
+# privileged container (DaemonSet) that mounts the host filesystem at /host.
+# When running in a container, files are copied to /host/usr/local/bin etc.
 #
-# Run as root:
-#   sudo bash setup-host.sh
-#
-# Pre-requisites (already present on framework):
-#   - /dev/kvm
-#   - /boot/vmlinuz-*  (guest kernel)
-#   - DeepSeek API key in ~/.zshrc or ~/.bashrc (DEEPSEEK_API_KEY=sk-...)
-#   - Rust toolchain (curl -sSf https://sh.rustup.rs | sh)
-#   - Containerd or Docker (for the celln-node image used by the router)
-#
+# Idempotent: if celln is already installed, just verifies the service is
+# running and exits (or sleeps in container mode).
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-NC='\033[0m'
-info()  { echo -e "${GREEN}→${NC} $*"; }
-err()   { echo -e "${RED}✘${NC} $*" >&2; exit 1; }
+CONTAINER_MODE=false
+HOST=""
+if [ -d /host/usr ] && [ -f /host/etc/os-release ]; then
+    CONTAINER_MODE=true
+    HOST="/host"
+    echo "→ running in container mode, host at $HOST"
+else
+    echo "→ running in host mode"
+fi
 
-# ── 1. Celln binary ───────────────────────────────────────────────────
-info "installing celln binary …"
-if ! command -v celln >/dev/null 2>&1; then
-    # Build from the repo if it exists, otherwise expect the binary nearby
-    if [ -f "$(dirname "$0")/target/release/celln" ]; then
-        cp "$(dirname "$0")/target/release/celln" /usr/local/bin/celln
-    elif [ -f /home/axjns/bin/celln ]; then
-        cp /home/axjns/bin/celln /usr/local/bin/celln
-    else
-        err "celln binary not found — build it first: cargo build --release --target x86_64-unknown-linux-musl -p celln-cli"
+# ── 1. Check if already installed ─────────────────────────────────────
+ALREADY_INSTALLED=false
+if $CONTAINER_MODE; then
+    if [ -x "${HOST}/usr/local/bin/celln" ] && nsenter --target 1 --mount -- systemctl is-active --quiet celln-dispatcher 2>/dev/null; then
+        ALREADY_INSTALLED=true
+    fi
+else
+    if [ -x "${HOST}/usr/local/bin/celln" ] && systemctl is-active --quiet celln-dispatcher 2>/dev/null; then
+        ALREADY_INSTALLED=true
     fi
 fi
-chmod +x /usr/local/bin/celln
-restorecon -v /usr/local/bin/celln 2>/dev/null || true  # SELinux
 
-# ── 2. Runtime assets ─────────────────────────────────────────────────
-info "installing runtime assets …"
-RUNTIME="${CELLN_RUNTIME_DIR:-/opt/celln/runtime}"
-mkdir -p "$RUNTIME"/{scripts,pilot,guest/init}
-# Look for assets in the repo checkout or a pre-built location
-REPO="${CELLN_REPO:-/home/axjns/Code/celln}"
-if [ -d "$REPO/scripts" ]; then
-    cp -r "$REPO/scripts"/* "$RUNTIME/scripts/"
-    cp -r "$REPO/guest"/*   "$RUNTIME/guest/"
-fi
-if [ -d "$REPO/target/x86_64-unknown-linux-musl/release" ]; then
-    cp "$REPO/target/x86_64-unknown-linux-musl/release/celln-pilot"  "$RUNTIME/pilot/" 2>/dev/null || true
-    cp "$REPO/target/x86_64-unknown-linux-musl/release/pilot-fetch" "$RUNTIME/pilot/" 2>/dev/null || true
-fi
-restorecon -Rv "$RUNTIME" 2>/dev/null || true  # SELinux
-
-# ── 3. State directory ───────────────────────────────────────────────
-info "creating state directory …"
-mkdir -p /var/lib/celln/{motes,tools,cells}
-
-# ── 4. Rust toolchain (for forge compile step) ────────────────────────
-info "checking Rust toolchain …"
-if ! sudo -u "${SUDO_USER:-root}" bash -c 'command -v rustc' >/dev/null 2>&1; then
-    info "installing Rust for root …"
-    curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-    source /root/.cargo/env
-    rustup target add x86_64-unknown-linux-musl
+if $ALREADY_INSTALLED; then
+    echo "✓ celln dispatcher already installed and running"
+    if $CONTAINER_MODE; then
+        echo "  sleeping (installer DaemonSet health check)..."
+        exec sleep infinity
+    fi
+    exit 0
 fi
 
-# ── 5. API key file ───────────────────────────────────────────────────
-info "configuring API key …"
-# Source the user's shell profile to pick up DEEPSEEK_API_KEY
-USER_HOME=$(eval echo "~${SUDO_USER:-root}")
-if [ -f "$USER_HOME/.zshrc" ]; then
-    source "$USER_HOME/.zshrc" 2>/dev/null || true
-elif [ -f "$USER_HOME/.bashrc" ]; then
-    source "$USER_HOME/.bashrc" 2>/dev/null || true
-fi
-if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
-    mkdir -p /etc/celln
-    echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" > /etc/celln/deepseek-key
-    chmod 600 /etc/celln/deepseek-key
-    info "DeepSeek key configured"
+# ── 2. Copy celln binary ──────────────────────────────────────────────
+mkdir -p "${HOST}/usr/local/bin"
+# Stop existing dispatcher briefly to replace the binary
+if $CONTAINER_MODE; then
+    nsenter --target 1 --mount -- systemctl stop celln-dispatcher 2>/dev/null || true
 else
-    echo "WARNING: DEEPSEEK_API_KEY not found — set it in ~/.zshrc and re-run" >&2
+    systemctl stop celln-dispatcher 2>/dev/null || true
+fi
+if [ -f /usr/local/bin/celln ]; then
+    cp /usr/local/bin/celln "${HOST}/usr/local/bin/celln"
+    chmod 755 "${HOST}/usr/local/bin/celln"
+    echo "✓ celln binary installed"
+else
+    echo "✘ celln binary not found in container — build it first"
+    exit 1
 fi
 
-# ── 6. Dispatcher token ───────────────────────────────────────────────
-info "generating dispatcher token …"
-mkdir -p /etc/celln/dispatcher-token
-if [ ! -f /etc/celln/dispatcher-token/token ]; then
-    openssl rand -base64 32 > /etc/celln/dispatcher-token/token
-    chmod 600 /etc/celln/dispatcher-token/token
+# ── 3. Copy runtime assets ─────────────────────────────────────────────
+mkdir -p "${HOST}/opt/celln/runtime/"{scripts,pilot,guest/init}
+for dir in scripts pilot guest; do
+    if [ -d "/opt/celln/runtime/$dir" ]; then
+        cp -r "/opt/celln/runtime/$dir"/* "${HOST}/opt/celln/runtime/$dir/" 2>/dev/null || true
+    fi
+done
+echo "✓ runtime assets installed"
+
+# ── 4. State directory ─────────────────────────────────────────────────
+mkdir -p "${HOST}/var/lib/celln/"{motes,tools,cells}
+echo "✓ state directory created"
+
+# ── 5. Install Rust for root (needed by forge to compile generated code)
+if ! [ -x "${HOST}/root/.cargo/bin/rustc" ]; then
+    echo "  installing Rust toolchain for root (one-time)..."
+    if $CONTAINER_MODE; then
+        # In container mode, Rust is already installed in the container.
+        # Copy it to the host.
+        mkdir -p "${HOST}/root/.cargo/bin"
+        cp -r /root/.cargo/* "${HOST}/root/.cargo/" 2>/dev/null || true
+        nsenter --target 1 --mount -- /root/.cargo/bin/rustup target add x86_64-unknown-linux-musl 2>/dev/null || true
+    else
+        curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+        source /root/.cargo/env
+        rustup target add x86_64-unknown-linux-musl
+    fi
+    echo "✓ Rust toolchain installed"
+else
+    echo "✓ Rust toolchain already present"
 fi
 
-# ── 7. Systemd service ────────────────────────────────────────────────
-info "installing systemd service …"
-cat > /etc/systemd/system/celln-dispatcher.service << 'UNIT'
+# ── 6. API key file ────────────────────────────────────────────────────
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    mkdir -p "${HOST}/etc/celln"
+    echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" > "${HOST}/etc/celln/deepseek-key"
+    chmod 600 "${HOST}/etc/celln/deepseek-key"
+    echo "✓ DeepSeek API key configured"
+else
+    echo "⚠ DEEPSEEK_API_KEY not set — create /etc/celln/deepseek-key manually"
+fi
+
+# ── 7. Dispatcher token ────────────────────────────────────────────────
+mkdir -p "${HOST}/etc/celln/dispatcher-token"
+if [ ! -f "${HOST}/etc/celln/dispatcher-token/token" ]; then
+    openssl rand -base64 32 > "${HOST}/etc/celln/dispatcher-token/token"
+    chmod 600 "${HOST}/etc/celln/dispatcher-token/token"
+fi
+echo "✓ dispatcher token created"
+
+# ── 8. Systemd service ─────────────────────────────────────────────────
+cat > "${HOST}/etc/systemd/system/celln-dispatcher.service" << 'UNIT'
 [Unit]
 Description=Celln Dispatcher — hermetic agent actions
 After=network-online.target
@@ -115,26 +130,42 @@ LimitNOFILE=65536
 WantedBy=multi-user.target
 UNIT
 
-systemctl daemon-reload
-systemctl enable --now celln-dispatcher
+# SELinux
+chcon -t bin_t "${HOST}/usr/local/bin/celln" 2>/dev/null || true
 
-# ── 8. Open firewall ──────────────────────────────────────────────────
-info "opening firewall …"
-firewall-cmd --add-port=8787/tcp --permanent 2>/dev/null || true
-firewall-cmd --reload 2>/dev/null || true
+# Reload and start
+if $CONTAINER_MODE; then
+    nsenter --target 1 --mount -- systemctl daemon-reload
+    nsenter --target 1 --mount -- systemctl enable celln-dispatcher
+    nsenter --target 1 --mount -- systemctl start celln-dispatcher
+    echo "✓ systemd service installed and started (via nsenter)"
+else
+    systemctl daemon-reload
+    systemctl enable --now celln-dispatcher
+    echo "✓ systemd service installed and started"
+fi
 
-# ── 9. Environment for users ─────────────────────────────────────────
-info "setting CELLN_ROOT for all users …"
-grep -q "CELLN_ROOT" /etc/environment 2>/dev/null || \
-    echo "CELLN_ROOT=/var/lib/celln" >> /etc/environment
+# ── 9. Firewall ────────────────────────────────────────────────────────
+if $CONTAINER_MODE; then
+    nsenter --target 1 --mount -- firewall-cmd --add-port=8787/tcp --permanent 2>/dev/null || true
+    nsenter --target 1 --mount -- firewall-cmd --reload 2>/dev/null || true
+else
+    firewall-cmd --add-port=8787/tcp --permanent 2>/dev/null || true
+    firewall-cmd --reload 2>/dev/null || true
+fi
+echo "✓ firewall configured"
+
+# ── 10. Environment for users ─────────────────────────────────────────
+grep -q "CELLN_ROOT" "${HOST}/etc/environment" 2>/dev/null || \
+    echo "CELLN_ROOT=/var/lib/celln" >> "${HOST}/etc/environment"
 
 echo ""
 echo "========================================="
 echo "  CELLN DISPATCHER INSTALLED"
 echo "========================================="
-echo ""
-echo "  Status:  sudo systemctl status celln-dispatcher"
-echo "  Logs:    sudo journalctl -u celln-dispatcher -f"
-echo ""
-echo "  Verify:  celln doctor"
-echo "           curl http://localhost:8787/v1/health"
+
+# In container mode, sleep so the DaemonSet stays healthy
+if $CONTAINER_MODE; then
+    echo "  Installer complete — sleeping (DaemonSet health check)"
+    exec sleep infinity
+fi

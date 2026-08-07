@@ -1,0 +1,45 @@
+# Celln installer image.
+#
+# This image contains everything needed to install the Celln host
+# dispatcher on a KVM-capable node. When deployed as a DaemonSet,
+# it runs setup-host.sh on each node, installing:
+#   - /usr/local/bin/celln         — static musl binary
+#   - /opt/celln/runtime/          — scripts, guest init, pilot
+#   - /etc/systemd/system/celln-dispatcher.service
+#   - Rust toolchain for the forge compile step
+#
+# After setup, the container sleeps so the DaemonSet stays as a
+# health indicator. The actual dispatcher runs as a systemd service
+# on the host — NOT inside the container (KVM PMEM requires bare metal).
+#
+FROM debian:bookworm-slim
+
+# Runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates python3 \
+    build-essential gcc cpio e2fsprogs xz-utils zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# Rust toolchain (for forge compile step on the host)
+RUN curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin
+RUN rustup target add x86_64-unknown-linux-musl
+
+# Celln binary (built from source or copied in)
+COPY target/x86_64-unknown-linux-musl/release/celln /usr/local/bin/celln
+
+# Runtime assets
+COPY scripts/ /opt/celln/runtime/scripts/
+COPY guest/  /opt/celln/runtime/guest/
+
+# Build pilot binaries if not already in target/
+COPY target/x86_64-unknown-linux-musl/release/celln-pilot  /opt/celln/runtime/pilot/celln-pilot
+COPY target/x86_64-unknown-linux-musl/release/pilot-fetch /opt/celln/runtime/pilot/pilot-fetch
+
+# Installer script
+COPY scripts/setup-host.sh /usr/local/bin/setup-host.sh
+RUN chmod +x /usr/local/bin/setup-host.sh
+
+# Default entrypoint: install on the host, then sleep
+ENTRYPOINT ["/usr/local/bin/setup-host.sh"]
