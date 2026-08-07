@@ -46,6 +46,18 @@ spec:
               name: celln-deepseek-key
               key: DEEPSEEK_API_KEY
               optional: true
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: celln-anthropic-key
+              key: ANTHROPIC_API_KEY
+              optional: true
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: celln-openai-key
+              key: OPENAI_API_KEY
+              optional: true
         volumeMounts:
         - name: host-root
           mountPath: /host
