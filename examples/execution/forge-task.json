@@ -1,0 +1,22 @@
+{
+  "apiVersion": "celln.dev/v1alpha1",
+  "id": "sympozium-agent-run-60",
+  "workload": {
+    "id": "one-shot-compute",
+    "caller": "sympozium:default/agent-run-60"
+  },
+  "forge": {
+    "task": "print the first 100 primes, space separated"
+  },
+  "capabilities": {
+    "workspace": "none",
+    "egress": [],
+    "timeoutMs": 90000,
+    "memoryBytes": 268435456,
+    "outputBytes": 65536
+  },
+  "execution": {
+    "lane": "agent",
+    "requireHardwareIsolation": true
+  }
+}

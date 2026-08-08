@@ -105,7 +105,6 @@ pub fn serve(
         backends: urls.clone(),
         mode,
         cursor: AtomicUsize::new(0),
-        actions: Mutex::new(HashMap::new()),
         executions: Mutex::new(HashMap::new()),
         token,
     });
@@ -133,11 +132,8 @@ struct RouterState {
     backends: Vec<String>,
     mode: RoutingMode,
     cursor: AtomicUsize,
-    /// Which backend owns each in-flight `/v1/actions` id, so a later GET
-    /// can find it.
-    actions: Mutex<HashMap<String, String>>,
-    /// Same idea for `/v1/executions` — a separate map because the two id
-    /// spaces are caller-chosen and not guaranteed disjoint.
+    /// Which backend owns each in-flight `/v1/executions` id, so a later
+    /// GET can find it.
     executions: Mutex<HashMap<String, String>>,
     token: Option<String>,
 }
@@ -177,17 +173,6 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     }
 
     match (method.as_str(), path.as_str()) {
-        ("POST", "/v1/actions") => forward_submission(
-            state,
-            &mut stream,
-            &mut reader,
-            length,
-            "/v1/actions",
-            &state.actions,
-        )?,
-        ("GET", path) if path.starts_with("/v1/actions/") => {
-            forward_poll(state, &mut stream, path, &state.actions, "unknown action")?
-        }
         ("POST", "/v1/executions") => forward_submission(
             state,
             &mut stream,
@@ -213,8 +198,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
 /// `POST <endpoint>`: pick a healthy backend deterministically by the
 /// request's own `id` field, forward the body verbatim, and — on
 /// acceptance — remember which backend owns that id so a later poll can
-/// find it. Shared between `/v1/actions` and `/v1/executions`, which are
-/// otherwise unrelated wire contracts but identical transport shapes.
+/// find it.
 fn forward_submission(
     state: &RouterState,
     stream: &mut TcpStream,
@@ -423,7 +407,7 @@ fn extract_body(response: &str) -> &str {
     }
 }
 
-/// Both `SubmitAction` and `ExecutionRequest` carry a top-level `id` field.
+/// `ExecutionRequest` carries a top-level `id` field.
 fn extract_id(body: &[u8]) -> Result<String> {
     let v: serde_json::Value = serde_json::from_slice(body).context("parsing request body")?;
     v.get("id")

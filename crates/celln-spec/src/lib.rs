@@ -122,7 +122,11 @@ pub struct ExecutionRequest {
     pub api_version: String,
     pub id: String,
     pub workload: WorkloadIdentity,
-    pub mote: ImmutableRef,
+    /// The declared mote/tool source. Exactly one of `mote` or `forge` must
+    /// be set — a request either names a pre-declared, hash-pinned program,
+    /// or asks for one to be written. See [`ExecutionRequest::problems`].
+    #[serde(default)]
+    pub mote: Option<ImmutableRef>,
     /// Immutable data supplied by an orchestration edge. It can become
     /// workspace data but never executable authority.
     #[serde(default)]
@@ -131,11 +135,34 @@ pub struct ExecutionRequest {
     pub tools: Vec<ToolRef>,
     /// The one declared executable selected from `tools`. Admission may be
     /// performed before an executable is chosen, so dispatchers require this
-    /// field while the base request remains backward compatible.
+    /// field while the base request remains backward compatible. Must not be
+    /// set together with `forge` — there is nothing pre-declared to invoke.
     #[serde(default)]
     pub invocation: Option<Invocation>,
+    /// The forge-from-task alternative to a declared `mote`/`tools`/
+    /// `invocation`. The dispatcher asks a model to write the program,
+    /// admits the real bytes it gets back — real hash, `author=agent` — and
+    /// only then resolves/seals/runs it. The task string itself is never
+    /// executable authority; the hash computed after compilation is. Mutually
+    /// exclusive with `mote`, and requires `execution.lane: agent`, since
+    /// forged code is never tool-lane authority.
+    #[serde(default)]
+    pub forge: Option<ForgeRequest>,
     pub capabilities: CapabilityRequest,
     pub execution: ExecutionPolicy,
+}
+
+/// See [`ExecutionRequest::forge`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForgeRequest {
+    pub task: String,
+    /// Which backend writes it: `"anthropic" | "openai" | "deepseek" |
+    /// "local"`. Unset means the dispatcher's own discovery order.
+    #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,7 +280,11 @@ pub enum ExecutionPhase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedExecution {
-    pub mote: String,
+    /// The mote bundle this ran from, if the request declared one. `None`
+    /// for a forge-from-task request — there is no pre-existing bundle,
+    /// only the program `tools[]` names after the fact.
+    #[serde(default)]
+    pub mote: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
     #[serde(default)]
@@ -292,6 +323,7 @@ pub enum ExecutionProblemCode {
     InvalidInvocationArgument,
     InvalidEgress,
     InvalidLimit,
+    InvalidForge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -326,8 +358,58 @@ impl ExecutionRequest {
                 });
             }
         }
-        if !is_immutable_hash(&self.mote.hash) {
-            problems.push(mutable_reference("mote.hash"));
+        match (&self.mote, &self.forge) {
+            (Some(mote), None) => {
+                if !is_immutable_hash(&mote.hash) {
+                    problems.push(mutable_reference("mote.hash"));
+                }
+            }
+            (None, Some(forge)) => {
+                if forge.task.trim().is_empty() {
+                    problems.push(ExecutionProblem {
+                        code: ExecutionProblemCode::InvalidForge,
+                        field: "forge.task".into(),
+                        message: "must not be empty".into(),
+                    });
+                }
+                if self.execution.lane != RequestedLane::Agent {
+                    problems.push(ExecutionProblem {
+                        code: ExecutionProblemCode::InvalidForge,
+                        field: "execution.lane".into(),
+                        message: "must be \"agent\" when forge is set — forged code is never tool-lane authority".into(),
+                    });
+                }
+                if self.invocation.is_some() {
+                    problems.push(ExecutionProblem {
+                        code: ExecutionProblemCode::InvalidForge,
+                        field: "invocation".into(),
+                        message: "must not be set together with forge — there is no pre-declared tool to invoke".into(),
+                    });
+                }
+                if !self.tools.is_empty() {
+                    problems.push(ExecutionProblem {
+                        code: ExecutionProblemCode::InvalidForge,
+                        field: "tools".into(),
+                        message: "must be empty when forge is set — nothing is pre-declared".into(),
+                    });
+                }
+            }
+            (Some(_), Some(_)) => {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidForge,
+                    field: "mote".into(),
+                    message:
+                        "must not be set together with forge — pick exactly one execution source"
+                            .into(),
+                });
+            }
+            (None, None) => {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidForge,
+                    field: "mote".into(),
+                    message: "must be set, or forge must be set — a request needs exactly one execution source".into(),
+                });
+            }
         }
 
         for (index, input) in self.inputs.iter().enumerate() {
@@ -486,14 +568,17 @@ impl ExecutionReceipt {
                 });
             }
         }
-        for (field, hash) in std::iter::once(("resolved.mote".to_owned(), &self.resolved.mote))
-            .chain(
-                self.resolved
-                    .tools
-                    .iter()
-                    .enumerate()
-                    .map(|(index, hash)| (format!("resolved.tools[{index}]"), hash)),
-            )
+        if let Some(mote) = &self.resolved.mote {
+            if !is_immutable_hash(mote) {
+                problems.push(mutable_reference("resolved.mote"));
+            }
+        }
+        for (field, hash) in self
+            .resolved
+            .tools
+            .iter()
+            .enumerate()
+            .map(|(index, hash)| (format!("resolved.tools[{index}]"), hash))
             .chain(
                 self.resolved
                     .inputs
@@ -1029,6 +1114,150 @@ mod tests {
     }
 
     #[test]
+    fn a_valid_forge_request_has_no_problems() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-50",
+                "workload": { "id": "review", "caller": "sympozium:default/run-50" },
+                "forge": { "task": "print the first 100 primes" },
+                "capabilities": { "workspace": "none", "timeoutMs": 30000, "memoryBytes": 268435456, "outputBytes": 4096 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request.problems().is_empty(), "{:?}", request.problems());
+    }
+
+    #[test]
+    fn forge_and_mote_together_is_a_problem() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-51",
+                "workload": { "id": "review", "caller": "sympozium:default/run-51" },
+                "mote": { "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+                "forge": { "task": "print the first 100 primes" },
+                "capabilities": { "workspace": "none", "timeoutMs": 30000, "memoryBytes": 268435456, "outputBytes": 4096 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request
+            .problems()
+            .iter()
+            .any(|problem| problem.code == ExecutionProblemCode::InvalidForge
+                && problem.field == "mote"));
+    }
+
+    #[test]
+    fn neither_mote_nor_forge_is_a_problem() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-52",
+                "workload": { "id": "review", "caller": "sympozium:default/run-52" },
+                "capabilities": { "workspace": "none", "timeoutMs": 30000, "memoryBytes": 268435456, "outputBytes": 4096 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request
+            .problems()
+            .iter()
+            .any(|problem| problem.code == ExecutionProblemCode::InvalidForge
+                && problem.field == "mote"));
+    }
+
+    #[test]
+    fn forge_requires_the_agent_lane() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-53",
+                "workload": { "id": "review", "caller": "sympozium:default/run-53" },
+                "forge": { "task": "print the first 100 primes" },
+                "capabilities": { "workspace": "none", "timeoutMs": 30000, "memoryBytes": 268435456, "outputBytes": 4096 },
+                "execution": { "lane": "tool", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request.problems().iter().any(|problem| {
+            problem.code == ExecutionProblemCode::InvalidForge && problem.field == "execution.lane"
+        }));
+    }
+
+    #[test]
+    fn forge_rejects_an_empty_task() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-54",
+                "workload": { "id": "review", "caller": "sympozium:default/run-54" },
+                "forge": { "task": "   " },
+                "capabilities": { "workspace": "none", "timeoutMs": 30000, "memoryBytes": 268435456, "outputBytes": 4096 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request.problems().iter().any(|problem| {
+            problem.code == ExecutionProblemCode::InvalidForge && problem.field == "forge.task"
+        }));
+    }
+
+    #[test]
+    fn forge_rejects_a_declared_invocation() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-55",
+                "workload": { "id": "review", "caller": "sympozium:default/run-55" },
+                "forge": { "task": "print the first 100 primes" },
+                "invocation": { "alias": "/tools/x", "args": [] },
+                "capabilities": { "workspace": "none", "timeoutMs": 30000, "memoryBytes": 268435456, "outputBytes": 4096 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request.problems().iter().any(|problem| {
+            problem.code == ExecutionProblemCode::InvalidForge && problem.field == "invocation"
+        }));
+    }
+
+    #[test]
+    fn a_forge_mode_receipt_with_no_mote_bundle_is_valid() {
+        let receipt: ExecutionReceipt = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "requestId": "sympozium-run-50",
+                "phase": "succeeded",
+                "node": "node-a",
+                "cellId": "cell-a",
+                "resolved": {
+                    "tools": ["blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+                },
+                "output": {
+                    "hash": "blake3:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                    "mediaType": "text/plain",
+                    "bytes": 42
+                },
+                "startedAt": "2026-08-08T10:00:00Z",
+                "completedAt": "2026-08-08T10:00:01Z"
+            }"#,
+        )
+        .expect("receipt parses");
+
+        assert!(receipt.problems().is_empty(), "{:?}", receipt.problems());
+        assert!(receipt.resolved.mote.is_none());
+    }
+
+    #[test]
     fn execution_receipt_carries_only_immutable_output_and_resolved_authority() {
         let receipt: ExecutionReceipt = serde_json::from_str(include_str!(
             "../../../examples/execution/succeeded-receipt.json"
@@ -1044,6 +1273,7 @@ mod tests {
             include_str!("../../../examples/execution/one-shot-agent.json"),
             include_str!("../../../examples/execution/declared-tool.json"),
             include_str!("../../../examples/execution/ensemble-handoff.json"),
+            include_str!("../../../examples/execution/forge-task.json"),
         ] {
             let request: ExecutionRequest = serde_json::from_str(example).expect("example parses");
             assert!(request.problems().is_empty(), "{request:#?}");
