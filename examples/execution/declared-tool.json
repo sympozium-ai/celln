@@ -1,0 +1,35 @@
+{
+  "apiVersion": "celln.dev/v1alpha1",
+  "id": "sympozium-tool-run-43",
+  "workload": {
+    "id": "format-check",
+    "caller": "sympozium:default/agent-run-43"
+  },
+  "mote": {
+    "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "tools": [
+    {
+      "alias": "/tools/formatter",
+      "hash": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "closure": {
+        "hash": "blake3:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    }
+  ],
+  "invocation": {
+    "alias": "/tools/formatter",
+    "args": ["--check"]
+  },
+  "capabilities": {
+    "workspace": "read-only",
+    "egress": ["https://registry.example.com"],
+    "timeoutMs": 30000,
+    "memoryBytes": 268435456,
+    "outputBytes": 65536
+  },
+  "execution": {
+    "lane": "tool",
+    "requireHardwareIsolation": true
+  }
+}

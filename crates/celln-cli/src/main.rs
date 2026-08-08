@@ -3,8 +3,12 @@
 mod agent;
 mod cells;
 mod config;
+mod dispatch;
+mod dispatcher;
 mod host;
+mod node;
 mod out;
+mod router;
 mod run;
 
 use anyhow::Result;
@@ -56,6 +60,51 @@ struct Cli {
 enum Cmd {
     /// Report what this machine can run.
     Doctor,
+
+    /// Report node eligibility or admit a transport-neutral execution request.
+    #[command(subcommand)]
+    Node(NodeCmd),
+
+    /// Serve authenticated hermetic-agent actions on this KVM-capable node.
+    Dispatcher {
+        /// Socket address to bind, for example 127.0.0.1:8787.
+        #[arg(long, default_value = "127.0.0.1:8787")]
+        listen: String,
+        /// File containing the bearer token accepted from the control plane.
+        #[arg(long)]
+        token_file: PathBuf,
+        /// This node's identity and capacity, used to admit
+        /// `celln.dev/v1alpha1` ExecutionRequests posted to `/v1/executions`.
+        #[command(flatten)]
+        probe: NodeProbeArgs,
+    },
+
+    /// Route actions across dispatcher backends. Picks a healthy node per
+    /// request and forwards; tracks action → node for status polling.
+    Route {
+        /// Socket address to bind, for example 0.0.0.0:8787.
+        #[arg(long, default_value = "0.0.0.0:8787")]
+        listen: String,
+
+        /// Dispatcher backend URLs, comma-separated.
+        /// Example: http://node1:8787,http://node2:8787
+        #[arg(long, value_delimiter = ',')]
+        backends: Vec<String>,
+
+        /// DNS name of a headless Service whose A records are dispatcher
+        /// backends. Combined with --backends. Example:
+        /// celln-dispatcher.celln-system.svc.cluster.local.
+        #[arg(long)]
+        backends_srv: Option<String>,
+
+        /// Routing strategy: round-robin (deterministic, default) or random.
+        #[arg(long, default_value = "round-robin")]
+        mode: router::RoutingMode,
+
+        /// File containing the bearer token forwarded to dispatcher backends.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+    },
 
     /// Work with cell specs.
     #[command(subcommand)]
@@ -168,6 +217,45 @@ enum SpecCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum NodeCmd {
+    /// Report hardware, mote/tool-store readiness, and bounded capacity.
+    Probe {
+        #[command(flatten)]
+        probe: NodeProbeArgs,
+    },
+    /// Validate and admit one execution request against this node's reported capacity.
+    Admit {
+        request: PathBuf,
+        #[command(flatten)]
+        probe: NodeProbeArgs,
+    },
+    /// Resolve the exact immutable bundle required for a one-shot dispatch.
+    Resolve {
+        request: PathBuf,
+        #[arg(long, env = "CELLN_MOTE_STORE", default_value = "/var/lib/celln/motes")]
+        mote_store: PathBuf,
+        #[arg(long, env = "CELLN_TOOL_STORE", default_value = "/var/lib/celln/tools")]
+        tool_store: PathBuf,
+    },
+}
+
+#[derive(clap::Args, Clone)]
+struct NodeProbeArgs {
+    #[arg(long, env = "CELLN_NODE_NAME", default_value = "local")]
+    node_name: String,
+    #[arg(long, env = "CELLN_MOTE_STORE", default_value = "/var/lib/celln/motes")]
+    mote_store: PathBuf,
+    #[arg(long, env = "CELLN_TOOL_STORE", default_value = "/var/lib/celln/tools")]
+    tool_store: PathBuf,
+    #[arg(long, env = "CELLN_MAX_CELLS", default_value = "1")]
+    max_cells: u32,
+    #[arg(long, env = "CELLN_MEMORY_BYTES", default_value = "268435456")]
+    memory_bytes: u64,
+    #[arg(long, env = "CELLN_EGRESS_SLOTS", default_value = "0")]
+    egress_slots: u32,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let json = if cli.json {
@@ -202,6 +290,31 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::Doctor => Ok(doctor(o)),
+        Cmd::Dispatcher {
+            listen,
+            token_file,
+            probe,
+        } => dispatcher::serve(listen, token_file, root, probe),
+        Cmd::Route {
+            listen,
+            backends,
+            backends_srv,
+            mode,
+            token_file,
+        } => router::serve(
+            listen,
+            backends.to_vec(),
+            backends_srv.as_deref(),
+            *mode,
+            token_file.as_deref(),
+        ),
+        Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe),
+        Cmd::Node(NodeCmd::Admit { request, probe }) => node::admit_file(request, probe),
+        Cmd::Node(NodeCmd::Resolve {
+            request,
+            mote_store,
+            tool_store,
+        }) => node::resolve_file(request, mote_store, tool_store),
         Cmd::Spec(SpecCmd::Init) => {
             // Straight to stdout, unstyled, so `celln spec init > agent.toml`
             // produces a file and not a screenshot of one.

@@ -12,5 +12,6 @@ name = "celln_spec"
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true

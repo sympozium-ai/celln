@@ -39,7 +39,8 @@ Do not use TCP sockets, DNS libraries, curl, or external crates.";
 const ALIAS: &str = "/agent/program";
 
 /// Supported authenticated CLI backends.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Backend {
     /// Claude, via the `claude` CLI.
     Anthropic,
@@ -101,6 +102,22 @@ struct GeneratedProgram {
     source: String,
 }
 
+/// A user may authenticate an agent CLI interactively rather than exporting a
+/// long-lived API key. Both are credentials, and the CLI remains the authority
+/// for checking its own saved session.
+fn authenticated(has_api_key: bool, cli_status_ok: bool) -> bool {
+    has_api_key || cli_status_ok
+}
+
+fn cli_login_ok(program: &str, args: &[&str]) -> bool {
+    Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 impl Backend {
     fn saved_name(self) -> &'static str {
         match self {
@@ -141,8 +158,6 @@ impl Backend {
             Backend::Anthropic => Some("claude-opus-5"),
             Backend::Openai => None,
             Backend::Deepseek => Some("deepseek-chat"),
-            // `ollama run` takes the model as a positional, so this one is
-            // required rather than optional. It has to be pulled first.
             Backend::Local => Some("qwen2.5-coder"),
         }
     }
@@ -166,19 +181,24 @@ impl Backend {
     fn validate(self) -> Result<(), String> {
         match self {
             Backend::Anthropic => {
-                if std::env::var("ANTHROPIC_API_KEY").is_err()
-                    && std::env::var("CLAUDE_API_KEY").is_err()
-                {
+                if !authenticated(
+                    std::env::var("ANTHROPIC_API_KEY").is_ok()
+                        || std::env::var("CLAUDE_API_KEY").is_ok(),
+                    cli_login_ok("claude", &["auth", "status"]),
+                ) {
                     return Err(
-                        "ANTHROPIC_API_KEY is not set — `claude` needs it to authenticate".into(),
+                        "`claude` has no saved login and ANTHROPIC_API_KEY is not set — authenticate it or set a key".into(),
                     );
                 }
                 Ok(())
             }
             Backend::Openai => {
-                if std::env::var("OPENAI_API_KEY").is_err() {
+                if !authenticated(
+                    std::env::var("OPENAI_API_KEY").is_ok(),
+                    cli_login_ok("codex", &["login", "status"]),
+                ) {
                     return Err(
-                        "OPENAI_API_KEY is not set — `codex` needs it to authenticate".into(),
+                        "`codex` has no saved login and OPENAI_API_KEY is not set — authenticate it or set a key".into(),
                     );
                 }
                 Ok(())
@@ -983,6 +1003,16 @@ fn run_in_cell(
         vec![ALIAS.to_string()],
     )
     .ok();
+    // A dispatcher must obtain the actual registry identity before it reports
+    // a running action upstream. Emitting it at creation keeps a future
+    // transport from deriving or fabricating a cell ID after the VM exits.
+    if let Some(record) = record.as_ref() {
+        o.event(
+            "cell_started",
+            serde_json::json!({ "cellId": record.id, "description": record.description }),
+            format!("  {} cell {} started", dim("·"), record.id),
+        );
+    }
     let mut cell = match LinuxCell::boot(cfg) {
         Ok(cell) => cell,
         Err(e) => {
@@ -1124,7 +1154,7 @@ fn run_in_cell(
 }
 
 /// Everything pilot printed between its markers is the program's own output.
-fn slice_output(console: &str) -> Option<String> {
+pub(crate) fn slice_output(console: &str) -> Option<String> {
     let start = console.find("CELLN:out-begin")?;
     let after = console[start..].find('\n')? + start + 1;
     let end = console[after..].find("CELLN:out-end")? + after;
@@ -1333,11 +1363,16 @@ fn extract_program(reply: &str) -> Result<GeneratedProgram> {
     Ok(GeneratedProgram { runtime, source })
 }
 
-fn sh(root: &Path, script: &str, args: &[String]) -> Result<()> {
+pub(crate) fn sh(root: &Path, script: &str, args: &[String]) -> Result<()> {
     sh_env(root, script, args, &[])
 }
 
-fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) -> Result<()> {
+pub(crate) fn sh_env(
+    root: &Path,
+    script: &str,
+    args: &[String],
+    env: &[(&str, String)],
+) -> Result<()> {
     let mut c = Command::new(root.join(script));
     c.current_dir(root).args(args);
     for (k, v) in env {
@@ -1354,7 +1389,7 @@ fn sh_env(root: &Path, script: &str, args: &[String], env: &[(&str, String)]) ->
 /// while a packaged install places the same tree in `share/celln` beside the
 /// executable's prefix. `CELLN_RUNTIME_DIR` is an explicit override for unusual
 /// layouts and downstream packagers.
-fn runtime_root() -> Result<PathBuf> {
+pub(crate) fn runtime_root() -> Result<PathBuf> {
     if let Some(p) =
         std::env::var_os("CELLN_RUNTIME_DIR").or_else(|| std::env::var_os("CELL_RUNTIME_DIR"))
     {
@@ -1417,7 +1452,7 @@ fn runtime_root() -> Result<PathBuf> {
     )
 }
 
-fn tempdir() -> Result<PathBuf> {
+pub(crate) fn tempdir() -> Result<PathBuf> {
     let base = std::env::temp_dir().join(format!("celln-agent-{}", std::process::id()));
     std::fs::create_dir_all(&base)?;
     Ok(base)
@@ -1426,6 +1461,13 @@ fn tempdir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_cli_login_is_accepted_without_an_api_key() {
+        assert!(authenticated(false, true));
+        assert!(authenticated(true, false));
+        assert!(!authenticated(false, false));
+    }
 
     #[test]
     fn execution_plan_uses_the_runtime_the_agent_selected() {

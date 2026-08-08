@@ -110,6 +110,457 @@ pub enum Input {
     Data,
 }
 
+/// Versioned, transport-neutral intent submitted by a control plane.
+///
+/// This is deliberately not a Kubernetes object. A Kubernetes controller may
+/// carry it in a CR or send it to a node agent, but the execution boundary only
+/// receives this request and returns an execution verdict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionRequest {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub id: String,
+    pub workload: WorkloadIdentity,
+    pub mote: ImmutableRef,
+    /// Immutable data supplied by an orchestration edge. It can become
+    /// workspace data but never executable authority.
+    #[serde(default)]
+    pub inputs: Vec<ExecutionInput>,
+    #[serde(default)]
+    pub tools: Vec<ToolRef>,
+    /// The one declared executable selected from `tools`. Admission may be
+    /// performed before an executable is chosen, so dispatchers require this
+    /// field while the base request remains backward compatible.
+    #[serde(default)]
+    pub invocation: Option<Invocation>,
+    pub capabilities: CapabilityRequest,
+    pub execution: ExecutionPolicy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkloadIdentity {
+    pub id: String,
+    pub caller: String,
+}
+
+/// A content-addressed object. Names, tags, and paths are not executable
+/// authority at the execution boundary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImmutableRef {
+    pub hash: String,
+}
+
+/// Content-addressed data handed from one workload to another.
+///
+/// `assay` resolves this reference from an immutable store before `warden`
+/// makes the bytes visible in a cell workspace. It is never a tool reference.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionInput {
+    pub name: String,
+    pub hash: String,
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRef {
+    pub alias: String,
+    pub hash: String,
+    #[serde(default)]
+    pub closure: Option<ImmutableRef>,
+}
+
+/// A concrete exec-by-hash request. `alias` is only a lookup into the declared
+/// tool set; the selected tool's immutable hash remains the authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Invocation {
+    pub alias: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CapabilityRequest {
+    pub workspace: WorkspaceAccess,
+    #[serde(default)]
+    pub egress: Vec<String>,
+    #[serde(rename = "timeoutMs")]
+    pub timeout_ms: u64,
+    #[serde(rename = "memoryBytes")]
+    pub memory_bytes: u64,
+    #[serde(rename = "outputBytes")]
+    pub output_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WorkspaceAccess {
+    None,
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionPolicy {
+    pub lane: RequestedLane,
+    #[serde(rename = "requireHardwareIsolation")]
+    pub require_hardware_isolation: bool,
+}
+
+/// A terminal execution record returned by a Celln dispatcher.
+///
+/// The control plane uses this rather than container logs as the authoritative
+/// result. Every reference in the receipt is content-addressed, so a successor
+/// workload can consume output without converting a mutable status field into
+/// authority.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionReceipt {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    pub phase: ExecutionPhase,
+    pub node: String,
+    #[serde(rename = "cellId")]
+    pub cell_id: String,
+    pub resolved: ResolvedExecution,
+    #[serde(default)]
+    pub output: Option<ExecutionOutput>,
+    #[serde(rename = "startedAt")]
+    pub started_at: String,
+    #[serde(rename = "completedAt")]
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPhase {
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResolvedExecution {
+    pub mote: String,
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionOutput {
+    pub hash: String,
+    #[serde(rename = "mediaType")]
+    pub media_type: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RequestedLane {
+    Tool,
+    Agent,
+}
+
+/// A stable validation failure suitable for a transport response or a control
+/// plane condition. It never names a host path or another capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionProblemCode {
+    UnsupportedVersion,
+    MissingIdentity,
+    MutableReference,
+    InvalidToolAlias,
+    DuplicateToolAlias,
+    InvalidInputName,
+    DuplicateInputName,
+    UndeclaredInvocation,
+    InvalidInvocationArgument,
+    InvalidEgress,
+    InvalidLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionProblem {
+    pub code: ExecutionProblemCode,
+    pub field: String,
+    pub message: String,
+}
+
+impl ExecutionRequest {
+    /// Validate intent before any node is selected. Host eligibility and tool
+    /// availability are deliberately separate decisions made by the node agent.
+    pub fn problems(&self) -> Vec<ExecutionProblem> {
+        let mut problems = Vec::new();
+        if self.api_version != "celln.dev/v1alpha1" {
+            problems.push(ExecutionProblem {
+                code: ExecutionProblemCode::UnsupportedVersion,
+                field: "apiVersion".into(),
+                message: "must be celln.dev/v1alpha1".into(),
+            });
+        }
+        for (field, value) in [
+            ("id", self.id.as_str()),
+            ("workload.id", self.workload.id.as_str()),
+            ("workload.caller", self.workload.caller.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::MissingIdentity,
+                    field: field.into(),
+                    message: "must not be empty".into(),
+                });
+            }
+        }
+        if !is_immutable_hash(&self.mote.hash) {
+            problems.push(mutable_reference("mote.hash"));
+        }
+
+        for (index, input) in self.inputs.iter().enumerate() {
+            let prefix = format!("inputs[{index}]");
+            if !is_input_name(&input.name) {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidInputName,
+                    field: format!("{prefix}.name"),
+                    message: "must be a non-empty lowercase name containing only letters, numbers, dots, underscores, or hyphens".into(),
+                });
+            }
+            if !is_immutable_hash(&input.hash) {
+                problems.push(mutable_reference(&format!("{prefix}.hash")));
+            }
+            if input.media_type.trim().is_empty() {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidLimit,
+                    field: format!("{prefix}.mediaType"),
+                    message: "must not be empty".into(),
+                });
+            }
+            if input.bytes == 0 {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidLimit,
+                    field: format!("{prefix}.bytes"),
+                    message: "must be greater than zero".into(),
+                });
+            }
+            if self
+                .inputs
+                .iter()
+                .filter(|other| other.name == input.name)
+                .count()
+                > 1
+                && self
+                    .inputs
+                    .iter()
+                    .position(|other| other.name == input.name)
+                    == Some(index)
+            {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::DuplicateInputName,
+                    field: format!("{prefix}.name"),
+                    message: "is listed more than once".into(),
+                });
+            }
+        }
+
+        for (index, tool) in self.tools.iter().enumerate() {
+            let prefix = format!("tools[{index}]");
+            if !tool.alias.starts_with('/') {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidToolAlias,
+                    field: format!("{prefix}.alias"),
+                    message: "must be an absolute in-cell alias".into(),
+                });
+            }
+            if !is_immutable_hash(&tool.hash) {
+                problems.push(mutable_reference(&format!("{prefix}.hash")));
+            }
+            if tool
+                .closure
+                .as_ref()
+                .is_some_and(|closure| !is_immutable_hash(&closure.hash))
+            {
+                problems.push(mutable_reference(&format!("{prefix}.closure.hash")));
+            }
+            if self
+                .tools
+                .iter()
+                .filter(|other| other.alias == tool.alias)
+                .count()
+                > 1
+                && self
+                    .tools
+                    .iter()
+                    .position(|other| other.alias == tool.alias)
+                    == Some(index)
+            {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::DuplicateToolAlias,
+                    field: format!("{prefix}.alias"),
+                    message: "is listed more than once".into(),
+                });
+            }
+        }
+
+        if let Some(invocation) = &self.invocation {
+            if !self.tools.iter().any(|tool| tool.alias == invocation.alias) {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::UndeclaredInvocation,
+                    field: "invocation.alias".into(),
+                    message: "must name exactly one declared tool alias".into(),
+                });
+            }
+            for (index, arg) in invocation.args.iter().enumerate() {
+                if arg.contains('\0') {
+                    problems.push(ExecutionProblem {
+                        code: ExecutionProblemCode::InvalidInvocationArgument,
+                        field: format!("invocation.args[{index}]"),
+                        message: "must not contain NUL".into(),
+                    });
+                }
+            }
+        }
+
+        for (index, destination) in self.capabilities.egress.iter().enumerate() {
+            if !is_named_https_destination(destination) {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidEgress,
+                    field: format!("capabilities.egress[{index}]"),
+                    message: "must name one HTTPS host without a path, query, or fragment".into(),
+                });
+            }
+        }
+        for (field, value) in [
+            ("capabilities.timeoutMs", self.capabilities.timeout_ms),
+            ("capabilities.memoryBytes", self.capabilities.memory_bytes),
+            ("capabilities.outputBytes", self.capabilities.output_bytes),
+        ] {
+            if value == 0 {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidLimit,
+                    field: field.into(),
+                    message: "must be greater than zero".into(),
+                });
+            }
+        }
+        problems
+    }
+}
+
+impl ExecutionReceipt {
+    /// Validate a result before a control plane records or forwards it.
+    pub fn problems(&self) -> Vec<ExecutionProblem> {
+        let mut problems = Vec::new();
+        if self.api_version != "celln.dev/v1alpha1" {
+            problems.push(ExecutionProblem {
+                code: ExecutionProblemCode::UnsupportedVersion,
+                field: "apiVersion".into(),
+                message: "must be celln.dev/v1alpha1".into(),
+            });
+        }
+        for (field, value) in [
+            ("requestId", self.request_id.as_str()),
+            ("node", self.node.as_str()),
+            ("cellId", self.cell_id.as_str()),
+            ("startedAt", self.started_at.as_str()),
+            ("completedAt", self.completed_at.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::MissingIdentity,
+                    field: field.into(),
+                    message: "must not be empty".into(),
+                });
+            }
+        }
+        for (field, hash) in std::iter::once(("resolved.mote".to_owned(), &self.resolved.mote))
+            .chain(
+                self.resolved
+                    .tools
+                    .iter()
+                    .enumerate()
+                    .map(|(index, hash)| (format!("resolved.tools[{index}]"), hash)),
+            )
+            .chain(
+                self.resolved
+                    .inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(index, hash)| (format!("resolved.inputs[{index}]"), hash)),
+            )
+        {
+            if !is_immutable_hash(hash) {
+                problems.push(mutable_reference(&field));
+            }
+        }
+        if let Some(output) = &self.output {
+            if !is_immutable_hash(&output.hash) {
+                problems.push(mutable_reference("output.hash"));
+            }
+            if output.media_type.trim().is_empty() {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidLimit,
+                    field: "output.mediaType".into(),
+                    message: "must not be empty".into(),
+                });
+            }
+            if output.bytes == 0 {
+                problems.push(ExecutionProblem {
+                    code: ExecutionProblemCode::InvalidLimit,
+                    field: "output.bytes".into(),
+                    message: "must be greater than zero".into(),
+                });
+            }
+        }
+        problems
+    }
+}
+
+fn mutable_reference(field: &str) -> ExecutionProblem {
+    ExecutionProblem {
+        code: ExecutionProblemCode::MutableReference,
+        field: field.into(),
+        message: "must be a blake3 content hash, not a name, tag, or path".into(),
+    }
+}
+
+fn is_immutable_hash(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("blake3:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_input_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+fn is_named_https_destination(value: &str) -> bool {
+    let Some(host) = value.strip_prefix("https://") else {
+        return false;
+    };
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+}
+
 /// A spec problem worth stopping for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
@@ -466,5 +917,136 @@ mod tests {
             .filter(|p| p.message.contains("more than once"))
             .collect();
         assert_eq!(dupes.len(), 1, "reported once, not once per copy");
+    }
+
+    #[test]
+    fn execution_request_rejects_ambient_egress() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-42",
+                "workload": { "id": "review", "caller": "sympozium:default/run-42" },
+                "mote": { "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+                "tools": [],
+                "capabilities": {
+                    "workspace": "none",
+                    "egress": ["https://"],
+                    "timeoutMs": 30000,
+                    "memoryBytes": 268435456,
+                    "outputBytes": 4096
+                },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request
+            .problems()
+            .iter()
+            .any(|problem| problem.code == ExecutionProblemCode::InvalidEgress));
+    }
+
+    #[test]
+    fn execution_request_accepts_only_immutable_references() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-42",
+                "workload": { "id": "review", "caller": "sympozium:default/run-42" },
+                "mote": { "hash": "latest" },
+                "tools": [{ "alias": "/tools/review", "hash": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+                "capabilities": {
+                    "workspace": "read-write",
+                    "egress": ["https://api.example.com"],
+                    "timeoutMs": 30000,
+                    "memoryBytes": 268435456,
+                    "outputBytes": 4096
+                },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert_eq!(
+            request.problems()[0].code,
+            ExecutionProblemCode::MutableReference
+        );
+    }
+
+    #[test]
+    fn execution_request_rejects_a_mutable_ensemble_handoff() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-43",
+                "workload": { "id": "review", "caller": "sympozium:default/run-43" },
+                "mote": { "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+                "inputs": [{
+                    "name": "research-report",
+                    "hash": "latest",
+                    "mediaType": "text/markdown",
+                    "bytes": 42
+                }],
+                "tools": [],
+                "capabilities": {
+                    "workspace": "read-only",
+                    "egress": [],
+                    "timeoutMs": 30000,
+                    "memoryBytes": 268435456,
+                    "outputBytes": 4096
+                },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request.problems().iter().any(|problem| {
+            problem.code == ExecutionProblemCode::MutableReference
+                && problem.field == "inputs[0].hash"
+        }));
+    }
+
+    #[test]
+    fn invocation_must_name_one_declared_immutable_tool() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "sympozium-run-44",
+                "workload": { "id": "review", "caller": "sympozium:default/run-44" },
+                "mote": { "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+                "tools": [{ "alias": "/tools/review", "hash": "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+                "invocation": { "alias": "/tools/other", "args": ["--brief"] },
+                "capabilities": { "workspace": "none", "timeoutMs": 1000, "memoryBytes": 1, "outputBytes": 1 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+
+        assert!(request.problems().iter().any(|problem| {
+            problem.code == ExecutionProblemCode::UndeclaredInvocation
+                && problem.field == "invocation.alias"
+        }));
+    }
+
+    #[test]
+    fn execution_receipt_carries_only_immutable_output_and_resolved_authority() {
+        let receipt: ExecutionReceipt = serde_json::from_str(include_str!(
+            "../../../examples/execution/succeeded-receipt.json"
+        ))
+        .expect("receipt parses");
+
+        assert!(receipt.problems().is_empty(), "{receipt:#?}");
+    }
+
+    #[test]
+    fn execution_golden_examples_are_valid_contracts() {
+        for example in [
+            include_str!("../../../examples/execution/one-shot-agent.json"),
+            include_str!("../../../examples/execution/declared-tool.json"),
+            include_str!("../../../examples/execution/ensemble-handoff.json"),
+        ] {
+            let request: ExecutionRequest = serde_json::from_str(example).expect("example parses");
+            assert!(request.problems().is_empty(), "{request:#?}");
+        }
     }
 }

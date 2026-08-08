@@ -136,6 +136,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
 ]
 
@@ -178,6 +179,7 @@ name = "celln-spec"
 version = "0.4.13"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror",
  "toml",
 ]
