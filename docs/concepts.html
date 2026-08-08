@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Celln concepts — mote, cell, tool lane, agent lane, and the security boundary."><title>Concepts — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell"><section class="hero"><div class="eyebrow">Concepts</div><h1>Four ideas, in the order you'll need them.</h1><p class="lede">Celln has a small vocabulary and it means something specific every time. Start with the model, then the two lanes an executable can run in, then the boundary those lanes are enforced by.</p></section>
+<section class="grid">
+<a class="card" href="model.html"><h2>1. The model &rarr;</h2><p>Mote, cell, assay, warden, pilot — the five terms and the one lifecycle they describe.</p></a>
+<a class="card" href="tool-lane.html"><h2>2. Tool lane &rarr;</h2><p>A host-verified binary, lent read-only into a cell. Where the trust comes from, and how <code>celln run</code> uses it.</p></a>
+<a class="card" href="agent-lane.html"><h2>3. Agent lane &rarr;</h2><p>Code a model just wrote, sealed and run with narrower authority. Where forging and the laundering ban fit in.</p></a>
+<a class="card" href="security.html"><h2>4. The security boundary &rarr;</h2><p>What's hardware-enforced, what's brokered, and what Celln explicitly does not claim.</p></a>
+</section>
+<section class="callout"><strong>The one-sentence version:</strong> a tool the host already vouches for runs in the tool lane; anything a model just wrote runs in the agent lane — and an interpreter fed agent-written input is demoted to the agent lane too, so compiling or interpreting model output is never a way to launder it into tool-lane trust.</section>
+</main>
+<footer><div class="shell">Celln documentation · <a href="https://github.com/sympozium-ai/celln">GitHub</a></div></footer></body></html>

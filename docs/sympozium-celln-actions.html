@@ -9,12 +9,12 @@
 </style>
 </head>
 <body>
-<nav class="nav"><a href="index.html" class="brand">celln</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html" aria-current="page">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="https://github.com/sympozium-ai/celln">GitHub ↗</a></nav>
+<nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a aria-current="page" href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
 <main class="shell page"><article>
-<div class="eyebrow">REDESIGNED INTEGRATION · HERMITIC ACTIONS FIRST</div>
-<h1>Celln is a first-class execution choice for hermetic actions—not an Ensemble runtime.</h1>
-<p class="lede">Sympozium continues to own normal agents, AgentRuns, pipelines, delegation, shared memory, retries, and NATS/IPC. Celln is selected when a user or a parent agent needs one bounded, risky, or sensitive computation to execute in a sealed cell and return an immutable receipt.</p>
-<div class="notice"><strong>Truthful availability:</strong> this is the approved product architecture, not a currently selectable backend. The Celln dispatcher can now admit, resolve, launch, and return a real <code>ExecutionReceipt</code> for a <code>celln.dev/v1alpha1</code> request (<a href="dispatcher.html">dispatcher progress</a>) — what's still missing is the Sympozium-side <code>CellnAction</code> controller/backend and UX described below. Until that exists, the Sympozium control plane must show Celln as unavailable and must never fall back to a Job, gVisor, or Agent Sandbox while calling the action “Celln.”</div>
+<div class="eyebrow">SHIPPING · HERMETIC ACTIONS FIRST</div>
+<h1>Celln is Sympozium's execution choice for hermetic actions — not an Ensemble runtime.</h1>
+<p class="lede">Sympozium owns normal agents, AgentRuns, pipelines, delegation, shared memory, retries, and NATS/IPC — none of that moves. Celln is selected, per run, when a task is one bounded, risky, or sensitive computation that should execute in a sealed cell and return an immutable receipt, instead of a Kubernetes Job.</p>
+<div class="notice"><strong>What's real today:</strong> set <code>spec.backend: celln</code> on an <code>AgentRun</code> and Sympozium's controller dispatches it to a Celln router instead of creating a Job (<a href="https://github.com/sympozium-ai/sympozium/blob/main/internal/controller/agentrun_celln.go">agentrun_celln.go</a>) — no separate CRD, no proposed API, an existing field on the resource you already use. The Celln dispatcher itself can admit, resolve, launch, and return a real <code>ExecutionReceipt</code> for a <code>celln.dev/v1alpha1</code> request (<a href="dispatcher.html">dispatcher progress</a>). The one honest gap: today's controller still submits through Celln's older <code>/v1/actions</code>, not that hash-pinned contract — migrating it is the concrete next step, tracked below, not a blocker to using Celln for hermetic work now.</div>
 
 <h2>Execution choice in the Sympozium UX</h2>
 <div class="grid3">
@@ -31,33 +31,35 @@
 <style>text{font-family:ui-monospace,monospace;fill:#e2e8f0}.h{font-size:15px;font-weight:700}.s{font-size:11px;fill:#cbd5e1}.line{stroke:#94a3b8;stroke-width:2;marker-end:url(#a)}.dash{stroke:#fb7185;stroke-width:2;stroke-dasharray:7 5}.box{stroke-width:1.5}.sym{fill:#083344;stroke:#22d3ee}.normal{fill:#064e3b;stroke:#34d399}.celln{fill:#4c1d95;stroke:#a78bfa}.sec{fill:#4c0519;stroke:#fb7185}.out{fill:#1e293b;stroke:#94a3b8}</style>
 <path d="M250 145H375" class="line"/><path d="M250 340H375" class="line"/><path d="M575 340H700" class="line"/><path d="M895 340H1010" class="line"/>
 <rect x="40" y="80" width="210" height="130" rx="8" class="box sym"/><text x="62" y="112" class="h">Sympozium UX/API</text><text x="62" y="138" class="s">user selects execution</text><text x="62" y="156" class="s">target for a task</text><text x="62" y="183" class="s">• Standard AgentRun</text><text x="62" y="201" class="s">• Celln action</text>
-<rect x="40" y="275" width="210" height="130" rx="8" class="box sym"/><text x="62" y="307" class="h">Parent AgentRun</text><text x="62" y="333" class="s">optional subordinate</text><text x="62" y="351" class="s">CellnAction relationship</text><text x="62" y="378" class="s">waits only for receipt</text>
+<rect x="40" y="275" width="210" height="130" rx="8" class="box sym"/><text x="62" y="307" class="h">Parent AgentRun</text><text x="62" y="333" class="s">proposed: optional</text><text x="62" y="351" class="s">subordinate Celln call</text><text x="62" y="378" class="s">waits only for receipt</text>
 <rect x="375" y="80" width="205" height="130" rx="8" class="box normal"/><text x="399" y="112" class="h">Normal AgentRun</text><text x="399" y="138" class="s">Job / Agent Sandbox</text><text x="399" y="156" class="s">agent-runner + ipc-bridge</text><text x="399" y="183" class="s">Ensembles stay here</text>
-<rect x="375" y="275" width="205" height="130" rx="8" class="box celln"/><text x="399" y="307" class="h">CellnAction</text><text x="399" y="333" class="s">immutable program + inputs</text><text x="399" y="351" class="s">timeout + egress + limits</text><text x="399" y="378" class="s">no workflow authority</text>
+<rect x="375" y="275" width="205" height="130" rx="8" class="box celln"/><text x="399" y="307" class="h">AgentRun (backend: celln)</text><text x="399" y="333" class="s">same CRD, one field</text><text x="399" y="351" class="s">timeout + task</text><text x="399" y="378" class="s">no workflow authority</text>
 <rect x="700" y="275" width="195" height="130" rx="8" class="box celln"/><text x="724" y="307" class="h">Celln dispatcher</text><text x="724" y="333" class="s">verified stores</text><text x="724" y="351" class="s">1 Warden : 1 cell</text><text x="724" y="378" class="s">host-enforced ratchet</text>
 <rect x="1010" y="275" width="115" height="130" rx="8" class="box out"/><text x="1025" y="307" class="h">Receipt</text><text x="1025" y="333" class="s">phase</text><text x="1025" y="351" class="s">output</text><text x="1025" y="369" class="s">hash</text><text x="1025" y="387" class="s">provenance</text>
 <text x="490" y="452" class="s">Receipt/data only; never replaces NATS, /ipc, or AgentRun workflow state.</text>
 </svg>
 </div>
 
-<h2>Proposed API and relationship boundary</h2>
-<pre><code>CellnAction
-  spec:
-    request: ExecutionRequest       # immutable mote/tool/input references
-    parentAgentRunRef: optional     # ownership/correlation only; never authority
-  status:
-    phase: Pending | Running | Succeeded | Failed | Refused
-    receipt: ExecutionReceipt       # terminal provenance
+<h2>The actual API — an existing field, not a new CRD</h2>
+<pre><code>apiVersion: sympozium.ai/v1alpha1
+kind: AgentRun
+spec:
+  agentRef: my-agent
+  task: "Parse this untrusted file and summarize its structure"
+  backend: celln          # instead of a Kubernetes Job
+  timeout: "5m"
+status:
+  phase: Pending | Running | Succeeded | Failed
+  cellnActionId: string    # the id this run was dispatched to Celln with</code></pre>
+<div class="rule"><strong>Enforced today, in the controller, not just documented:</strong> <code>backend: celln</code> together with <code>agentSandbox.enabled: true</code> is rejected explicitly at admission — one execution backend, chosen unambiguously, never a silent fallback. A wedged Celln backend that never returns a terminal phase fails the run on a controller-side deadline rather than leaving it <code>Running</code> forever. Policy validation and token-budget checks run before Celln dispatch, same as the Job path.</div>
 
-Ensemble relationship: celln-action
-  source: persona / AgentRun
-  target: CellnAction template
-  handoff: immutable input artifacts only
-  completion: validated receipt → bounded result card + immutable output reference</code></pre>
-<div class="rule"><strong>Forbidden:</strong> deriving a Celln executable from prompt text, image tags, ConfigMaps, paths, <code>AgentRun.status.result</code>, workflow memory, NATS records, or shared volumes. A Celln action that cannot be admitted or dispatched fails/refuses visibly; it is never executed by the normal AgentRun backend.</div>
-
-<h2>What must exist before the UX enables selection</h2>
-<ol><li>A real dispatcher resolves the requested content hashes, creates a Warden/microVM/sealed cell, executes the declared program, dissolves it, and returns a validated receipt.</li><li>Sympozium has a dedicated <code>CellnAction</code> controller/backend with idempotency, cancellation, and receipt status—not an overloaded Job name.</li><li>The action UI exposes actual node availability and refusal reasons. It defaults to Celln for eligible hermetic work only after live capability proof.</li><li>The optional subordinate relationship consumes only an immutable output artifact and receipt; it does not pretend that Celln participates in delegation or shared memory.</li></ol>
+<h2>What's implemented, and what's next</h2>
+<ol>
+<li><strong>Done.</strong> The Celln dispatcher resolves content hashes, creates a Warden/microVM/sealed cell, executes the declared program, dissolves it, and returns a validated receipt — proven end to end on real KVM hardware, through the actual deployed Kubernetes router.</li>
+<li><strong>Done.</strong> Sympozium's controller dispatches <code>backend: celln</code> runs directly — no separate controller, no overloaded Job name, real status/phase mapping and a real deadline backstop.</li>
+<li><strong>Next.</strong> The controller today submits a free-text task to Celln's older <code>/v1/actions</code> (an LLM writes fresh code per call). Migrating it onto the hash-pinned <code>celln.dev/v1alpha1</code> contract this page's dispatcher work proves out is the concrete next step — see <a href="dispatcher.html">dispatcher progress</a>.</li>
+<li><strong>By design, not a gap.</strong> Celln does not participate in delegation or shared memory. A parent AgentRun that needs those stays on the Job/Agent Sandbox backend; nothing here proposes changing that.</li>
+</ol>
 <p>Related: <a href="dispatcher.html">dispatcher progress</a> · <a href="kubernetes.html">Kubernetes boundary</a> · <a href="SYMPOZIUM_ENSEMBLE_INTEGRATION.md">integration notes</a>.</p>
 </article></main>
 </body></html>

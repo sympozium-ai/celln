@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tool lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell page"><aside><a href="#what">What it is</a><a href="#write">Write a spec</a><a href="#check">Check it</a><a href="#run">Run it</a><a href="#interpreter">The interpreter flag</a><a href="#enforced">What's enforced</a></aside>
+<article>
+<div class="eyebrow">Concepts &middot; 2 of 4</div>
+<h1>Lend a host binary, don't rebuild one.</h1>
+<p>A tool-lane cell runs an executable the host already vouches for — a real binary that already exists on the host filesystem, declared explicitly and sealed in read-only. This is the tutorial for <code>celln spec</code> and <code>celln run</code>: writing the declaration, seeing what the trust model decides, and running it for real.</p>
+
+<h2 id="what">What "tool lane" means</h2>
+<p>Celln doesn't ship a curated library of tools. You point it at a binary already on your host — <code>/usr/bin/python3</code>, a linter, a build step, whatever your agent needs to invoke — and declare that in a spec file. <code>assay</code>, the host-side attestation service, hashes those bytes and admits them into its manifest at one of three tiers:</p>
+<table>
+<thead><tr><th>Tier</th><th>Means</th><th>Cost</th></tr></thead>
+<tbody>
+<tr><td><code>forged</code></td><td>Rebuilt from source on this host, twice, in different directories, and the bytes matched. Reproducibility is established, not just claimed.</td><td>Minutes, done in the background</td></tr>
+<tr><td><code>verified</code></td><td>An upstream binary, pinned and scanned but not rebuilt here.</td><td>Seconds — the default cold path</td></tr>
+<tr><td><code>unsealed</code></td><td>No attestation at all. Still hardware-isolated, but carries no tool-lane authority.</td><td>Instant</td></tr>
+</tbody>
+</table>
+<p>Whichever tier a tool lands at, the cell only ever sees it as read-only pages it cannot modify — not by writing to the file, not by writing to its own page tables.</p>
+
+<h2 id="write">Write a spec</h2>
+<p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell — that's the point of the file.</p>
+<pre>celln spec init &gt; agent.toml</pre>
+<pre>name = "code-reviewer"
+
+[cell]
+memory = "256MiB"
+require_tier = "verified"
+
+[[tool]]
+alias = "/usr/bin/python"     # the name your agent uses
+path = "/usr/bin/python3"     # where the bytes come from on this host
+interpreter = true            # see below
+
+[run]
+exec = "/usr/bin/python"
+args = ["review.py"]
+input = "data"                # the agent wrote it</pre>
+<p><code>alias</code> is only a naming convenience — the content hash is the actual authority, never the path. <code>path</code> is where the bytes come from on <em>this</em> host; nothing about the alias survives a host that doesn't have that file.</p>
+
+<h2 id="check">Check it</h2>
+<p><code>celln spec check</code> validates the file and tells you exactly what the trust model will decide before anything runs:</p>
+<pre>$ celln spec check agent.toml
+&#10004; code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
+
+tools
+  /usr/bin/python          interpreter  /usr/bin/python3
+
+run
+  /usr/bin/python review.py
+  runs in the agent lane &mdash; demoted: an interpreter fed agent-authored input</pre>
+<p>Notice the verdict: even though <code>python</code> is fully attested, this particular invocation is demoted to the <em>agent</em> lane, because the input it's being fed (<code>review.py</code>) is marked <code>data</code> — something the agent wrote, not something that came in through the attestation gate. See <a href="agent-lane.html">the agent lane</a> for why that matters.</p>
+
+<h2 id="run">Run it</h2>
+<pre>$ celln run agent.toml
+&#9679; sealing cell code-reviewer
+  + /usr/bin/python        tier=verified cold &mdash; verified now, forged queued
+  &middot; microVM sealed, phase=Materialise
+  &middot; /usr/bin/python sealed read-only into the cell
+  &middot; authority ratcheted to Work &mdash; no further tools can be lent
+  &#10004; /usr/bin/python permitted in the agent lane
+&#9679; cell dissolved</pre>
+<p>"Authority ratcheted" is not a log message you can ignore: once a cell's first tainted exec happens, materialisation closes for that cell's lineage permanently. Rights only shrink from there — there is no path back to "lend one more tool."</p>
+
+<h2 id="interpreter">The interpreter flag</h2>
+<p><code>interpreter = true</code> is the single most consequential line in a spec. An interpreter fed something the agent wrote is moved to the agent lane for that invocation — this is the <strong>laundering ban</strong>, and it's why <code>python evil.py</code> and <code>python -c "&hellip;"</code> don't get to launder agent-authored code into full tool-lane authority just by passing through an attested binary. Leave an interpreter marked <code>interpreter = false</code> and you've quietly created a hole: anything fed to it keeps full tool-lane authority, including code the agent wrote. <code>celln spec check</code> guesses at this from the binary's name and warns if your answer disagrees.</p>
+
+<h2 id="enforced">What's actually enforced</h2>
+<ul>
+<li>The declared tool's bytes are read-only from inside the guest after stage-2 sealing — including against a guest with its own page tables.</li>
+<li>Execution is gated by content hash against the signed manifest, not by path or name.</li>
+<li>An interpreter fed agent-authored input runs in the agent lane, at the point of that invocation, not by a static file-level check.</li>
+<li>Removing a mapped tool revokes it from every cell currently holding it.</li>
+</ul>
+<p>Full detail, including what this does <em>not</em> claim: <a href="security.html">the security boundary</a>.</p>
+</article></main>
+<footer><div class="shell">Celln documentation &middot; <a href="https://github.com/sympozium-ai/celln">GitHub</a></div></footer></body></html>

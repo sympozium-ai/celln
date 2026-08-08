@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell page"><aside><a href="#what">What it is</a><a href="#build">Have it write something</a><a href="#forge">Forging and attestation</a><a href="#backend">Choosing who writes it</a><a href="#egress">Network is brokered</a><a href="#enforced">What's enforced</a></aside>
+<article>
+<div class="eyebrow">Concepts &middot; 3 of 4</div>
+<h1>Code a model just wrote, contained from the first instruction.</h1>
+<p>This is for <strong>computations, not questions</strong>. A cell exists to contain code you'd rather not run unsealed — if nothing executes, there's nothing to protect you from, and asking the model directly is the right tool for that. This is the tutorial for <code>celln agent</code>: what runs, how it's attested after the fact, and exactly what authority it gets.</p>
+
+<h2 id="what">What "agent lane" means</h2>
+<p>Agent-authored code is never tool-lane authority, at any tier, no matter how it was produced. It gets only what's explicitly loaned to it: its own executable and a writable workspace, nothing else by default. This is a permanent property of <em>who wrote it</em>, not a temporary trust level that compiling or attesting can raise.</p>
+
+<h2 id="build">Have it write something</h2>
+<pre>$ celln agent "print the first 100 primes, space separated"
+&#9679; asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
+  &middot; waiting for claude (up to 90s; --timeout changes it)
+  &middot; replied in 5s
+  &middot; selected sealed runtime: Rust 2021 (static musl); 23 source lines  /tmp/celln-agent-1844068/program.rs
+  + rebuilt, reproduced  blake3:c0d7ceb8247d62bee808d6dc84b1ea57abeb7c16c95e46b5dc126f9abacd40b7  436 KiB  tier=forged author=agent
+  &middot; cell sealed, tools lent read-only
+  &#10004; pilot: /agent/program permitted:agent
+
+2 3 5 7 11 13 17 19 23 29 31 &hellip;</pre>
+<p><code>--show-source</code> prints what the model actually wrote, before it runs. The program ran in the agent lane — note the log line says <code>tier=forged author=agent</code> together. It earned a real tier through a real rebuild-and-compare; it is still, permanently, <code>author=agent</code>, and that's what decides its authority, not the tier.</p>
+
+<h2 id="forge">Forging and attestation are not the same claim</h2>
+<p>The model writes the program on the host. <code>forge</code> compiles it <strong>twice, in different directories</strong>, and compares the resulting bytes. If they match, <code>assay</code> grades it <code>forged</code> and records the recipe; if not, it's <code>verified</code> instead — the rebuild established reproducibility on this machine and toolchain, nothing more, nothing about correctness or safety. Compiling is not a way around the laundering ban: <code>rustc</code> fed model-written source is <code>python</code> fed model-written source with the interpretation step moved earlier. If the laundering ban stops one, it has to stop both — and it does. See <a href="tool-lane.html">the interpreter flag</a> for the tool-lane side of that same rule.</p>
+
+<h2 id="backend">Choosing who writes it</h2>
+<p>Backends are subprocess adapters over CLIs you've already authenticated — <code>claude</code>, <code>codex</code>, <code>ollama</code> — or a plain API call for DeepSeek. Celln never reads, stores, or forwards a credential; it stays on the host, and cells have no ambient network, so it never enters the guest either.</p>
+<pre>$ celln setup                         # discovers codex, claude, or ollama
+&#10004; default agent: openai (~/.config/celln/config.toml)
+
+$ celln agents
+  &#10004; anthropic  claude-opus-5          claude
+  &#10004; openai     (cli default)          codex  default
+  &#10004; local      qwen2.5-coder          ollama
+
+$ celln agents --set-default anthropic # change the saved default
+$ celln agent --agent openai "&hellip;"       # override it for one invocation
+$ CELLN_AGENT=local celln agent "&hellip;"    # override it for one shell command</pre>
+<p>Use <code>celln ask "&hellip;"</code> for a question — it talks to the selected backend directly, on the host, because no program runs and there's nothing to contain. <code>celln agent "&hellip;"</code> is for work that generates code to run; that's the path Celln seals and governs.</p>
+
+<h2 id="egress">Network is brokered, never ambient</h2>
+<p>A cell has no in-kernel network stack. Network-shaped work has to declare exactly where it may reach <em>before</em> the model is even called:</p>
+<pre>celln agent --allow-host example.com "crawl https://example.com/&hellip;"</pre>
+<p>Without <code>--allow-host</code>, Celln returns <code>Unsupported</code> rather than generating a crawler that can never connect. When it is granted, Pilot brokers that one bounded fetch over vsock; private addresses and redirects that leave the declared destination are refused. Getting the model provider itself into a cell is the same egress problem as any other network access, and gets the same answer.</p>
+
+<h2 id="enforced">What's actually enforced</h2>
+<ul>
+<li>Landlock rejects filesystem access outside the program's own executable and its writable workspace.</li>
+<li>Seccomp rejects network and privilege-escalation syscalls outright — the brokered fetch above happens through Pilot, not through a guest-visible socket.</li>
+<li>The generated program is always <code>author=agent</code>; a real, reproducible build can raise its tier, never its authority.</li>
+<li>Nothing crosses the boundary except brokered bytes — a credential never enters the guest because the guest never has a way to send one anywhere.</li>
+</ul>
+<p>Full detail, including what this does <em>not</em> claim: <a href="security.html">the security boundary</a>.</p>
+</article></main>
+<footer><div class="shell">Celln documentation &middot; <a href="https://github.com/sympozium-ai/celln">GitHub</a></div></footer></body></html>

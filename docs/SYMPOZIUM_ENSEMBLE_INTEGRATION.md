@@ -45,14 +45,14 @@ an agent-to-agent, delegation, or shared-memory participant.
 - A source cell's output is harvested only after it has dissolved. The output reference has no path, tag, or arbitrary URL that the guest can reinterpret as code.
 - Egress remains the Celln pilot ABI: named HTTPS destinations only, brokered by the host. Ensemble shared memory does not add ambient network access.
 
-## What this branch proves today
+## What's proven today
 
-- The Celln contract rejects a mutable ensemble handoff (`inputs[0].hash: latest`).
-- It accepts the immutable ensemble-handoff example during contract validation.
-- The deployed Kind node agent evaluates the same contract and truthfully refuses it while the node lacks a guest kernel and immutable mote/tool stores.
+- The Celln contract rejects a mutable ensemble handoff (`inputs[0].hash: latest`) and accepts the immutable `ensemble-handoff` example, in contract validation.
+- A running Celln dispatcher admits a `celln.dev/v1alpha1` `ExecutionRequest` against a node's real, live-probed capacity, resolves the declared mote/tool by content hash from an integrity-checked store, seals the exact resolved bytes into a real KVM cell, and returns a genuine `ExecutionReceipt` — verified end to end on real hardware, including through a deployed Kubernetes Service, not just `kind`.
+- Sympozium's controller dispatches `AgentRun.spec.backend: celln` directly (`internal/controller/agentrun_celln.go`), with the mutual-exclusivity and deadline-safety rules this document's "information-flow rules" require already enforced in code, not just described here.
 
-## What is deliberately not claimed yet
+## The honest gap
 
-No Celln executor/controller has been installed in Kind. The existing node agent is an admission seam, not a replacement for Kubernetes CRI and not a warden dispatcher. Its current store non-emptiness test is a readiness placeholder, not evidence that a requested mote/tool hash can be resolved or run. The current Kind node has `/dev/kvm`, but no bootable guest kernel or provisioned stores, so an actual Celln-backed `AgentRun` cannot be accepted there. Building a fake fallback would violate the authority model.
+Sympozium's controller today submits through Celln's older `/v1/actions` — a free-form `{id, task, timeout}` that an LLM turns into fresh code on every call — not the hash-pinned `celln.dev/v1alpha1` contract described above. Migrating the controller onto that contract is real, scoped follow-up work: it needs the `AgentRun` side to express *which declared, hash-pinned program* to run rather than a free-text task, which is a genuine design question, not a wiring exercise. Until that lands, "hermetic" for a Sympozium-dispatched Celln action means "isolated compute," not yet "attested program."
 
-The next implementation must add a third Sympozium `AgentRun` backend (alongside its Job and Agent Sandbox backends), plus a Celln Kubernetes shim/runner. It must render the same agent/IPC topology, create a warden only after admission, persist receipts/artifacts, and extend the Sympozium `AgentRun` API with a typed Celln policy plus receipt status. That controller can then be deployed and proven against a node prepared with a kernel, resolved signed motes, and resolved signed tool store.
+The run-creation UX also doesn't yet gate the `celln` backend option on live dispatcher/provider availability — it's always offered, and a misconfigured or disabled Celln surfaces as a failed run rather than an unavailable option. Both gaps are tracked, not hidden, and neither blocks using Celln for what it's for today: one bounded, sensitive, or high-risk computation, selected explicitly, per run.
