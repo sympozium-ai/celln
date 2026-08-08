@@ -106,6 +106,7 @@ pub fn serve(
         mode,
         cursor: AtomicUsize::new(0),
         actions: Mutex::new(HashMap::new()),
+        executions: Mutex::new(HashMap::new()),
         token,
     });
     eprintln!(
@@ -132,7 +133,12 @@ struct RouterState {
     backends: Vec<String>,
     mode: RoutingMode,
     cursor: AtomicUsize,
+    /// Which backend owns each in-flight `/v1/actions` id, so a later GET
+    /// can find it.
     actions: Mutex<HashMap<String, String>>,
+    /// Same idea for `/v1/executions` — a separate map because the two id
+    /// spaces are caller-chosen and not guaranteed disjoint.
+    executions: Mutex<HashMap<String, String>>,
     token: Option<String>,
 }
 
@@ -171,61 +177,103 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     }
 
     match (method.as_str(), path.as_str()) {
-        ("POST", "/v1/actions") => {
-            if length == 0 || length > 64 * 1024 {
-                return reply(
-                    &mut stream,
-                    413,
-                    &serde_json::json!({"error":"request body exceeds 64 KiB or is empty"}),
-                );
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body)?;
-
-            let action_id = extract_action_id(&body)?;
-
-            let backend = pick_backend(state, &action_id)?;
-            let resp = forward_post(&backend, "/v1/actions", &body, &state.token)?;
-            let status = parse_status(&resp);
-
-            // Track which backend owns this action so GET can find it.
-            if status == 202 || status == 200 {
-                state
-                    .actions
-                    .lock()
-                    .expect("router action map not poisoned")
-                    .insert(action_id, backend);
-            }
-
-            raw_reply(&mut stream, &resp)?;
-        }
+        ("POST", "/v1/actions") => forward_submission(
+            state,
+            &mut stream,
+            &mut reader,
+            length,
+            "/v1/actions",
+            &state.actions,
+        )?,
         ("GET", path) if path.starts_with("/v1/actions/") => {
-            let id = path.trim_start_matches("/v1/actions/");
-            let backend = state
-                .actions
-                .lock()
-                .expect("router action map not poisoned")
-                .get(id)
-                .cloned();
-            match backend {
-                Some(backend_url) => {
-                    let resp = forward_get(&backend_url, path, &state.token)?;
-                    raw_reply(&mut stream, &resp)?;
-                }
-                None => {
-                    reply(
-                        &mut stream,
-                        404,
-                        &serde_json::json!({"error":"unknown action"}),
-                    )?;
-                }
-            }
+            forward_poll(state, &mut stream, path, &state.actions, "unknown action")?
         }
+        ("POST", "/v1/executions") => forward_submission(
+            state,
+            &mut stream,
+            &mut reader,
+            length,
+            "/v1/executions",
+            &state.executions,
+        )?,
+        ("GET", path) if path.starts_with("/v1/executions/") => forward_poll(
+            state,
+            &mut stream,
+            path,
+            &state.executions,
+            "unknown execution",
+        )?,
         _ => {
             reply(&mut stream, 404, &serde_json::json!({"error":"not found"}))?;
         }
     }
     Ok(())
+}
+
+/// `POST <endpoint>`: pick a healthy backend deterministically by the
+/// request's own `id` field, forward the body verbatim, and — on
+/// acceptance — remember which backend owns that id so a later poll can
+/// find it. Shared between `/v1/actions` and `/v1/executions`, which are
+/// otherwise unrelated wire contracts but identical transport shapes.
+fn forward_submission(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    length: usize,
+    endpoint: &str,
+    tracker: &Mutex<HashMap<String, String>>,
+) -> Result<()> {
+    if length == 0 || length > 64 * 1024 {
+        return reply(
+            stream,
+            413,
+            &serde_json::json!({"error":"request body exceeds 64 KiB or is empty"}),
+        );
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+
+    let id = extract_id(&body)?;
+
+    let backend = pick_backend(state, &id)?;
+    let resp = forward_post(&backend, endpoint, &body, &state.token)?;
+    let status = parse_status(&resp);
+
+    if status == 202 || status == 200 {
+        tracker
+            .lock()
+            .expect("router tracking map not poisoned")
+            .insert(id, backend);
+    }
+
+    raw_reply(stream, &resp)
+}
+
+/// `GET <endpoint>/:id`: forward to whichever backend `forward_submission`
+/// recorded as owning that id.
+fn forward_poll(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    path: &str,
+    tracker: &Mutex<HashMap<String, String>>,
+    not_found_message: &str,
+) -> Result<()> {
+    let backend = tracker
+        .lock()
+        .expect("router tracking map not poisoned")
+        .get(path.rsplit('/').next().unwrap_or_default())
+        .cloned();
+    match backend {
+        Some(backend_url) => {
+            let resp = forward_get(&backend_url, path, &state.token)?;
+            raw_reply(stream, &resp)
+        }
+        None => reply(
+            stream,
+            404,
+            &serde_json::json!({"error": not_found_message}),
+        ),
+    }
 }
 
 fn pick_backend(state: &RouterState, action_id: &str) -> Result<String> {
@@ -375,12 +423,13 @@ fn extract_body(response: &str) -> &str {
     }
 }
 
-fn extract_action_id(body: &[u8]) -> Result<String> {
-    let v: serde_json::Value = serde_json::from_slice(body).context("parsing action body")?;
+/// Both `SubmitAction` and `ExecutionRequest` carry a top-level `id` field.
+fn extract_id(body: &[u8]) -> Result<String> {
+    let v: serde_json::Value = serde_json::from_slice(body).context("parsing request body")?;
     v.get("id")
         .and_then(|id| id.as_str())
         .map(str::to_string)
-        .context("action body missing required 'id' field")
+        .context("request body missing required 'id' field")
 }
 
 fn reply(stream: &mut TcpStream, status: u16, body: &serde_json::Value) -> Result<()> {
@@ -421,15 +470,15 @@ mod tests {
     }
 
     #[test]
-    fn extract_action_id_reads_the_id_field() {
+    fn extract_id_reads_the_id_field() {
         let body = br#"{"id":"run-42","task":"do a thing"}"#;
-        assert_eq!(extract_action_id(body).unwrap(), "run-42");
+        assert_eq!(extract_id(body).unwrap(), "run-42");
     }
 
     #[test]
-    fn extract_action_id_fails_without_an_id() {
+    fn extract_id_fails_without_an_id() {
         let body = br#"{"task":"do a thing"}"#;
-        assert!(extract_action_id(body).is_err());
+        assert!(extract_id(body).is_err());
     }
 
     #[test]
