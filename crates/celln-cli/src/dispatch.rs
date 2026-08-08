@@ -5,7 +5,7 @@
 //! the declared immutable bundle, creates the cell, and returns a receipt.
 
 use celln_manifest::Hash;
-use celln_spec::{ExecutionRequest, RequestedLane};
+use celln_spec::{ExecutionRequest, ForgeRequest, RequestedLane};
 use celln_store::Store;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -49,11 +49,15 @@ pub fn resolve_bundle(
     mote_root: &Path,
     tool_root: &Path,
 ) -> Result<ResolvedBundle, String> {
+    let mote = request
+        .mote
+        .as_ref()
+        .ok_or_else(|| "dispatch requires a declared mote".to_owned())?;
     let invocation = request
         .invocation
         .as_ref()
         .ok_or_else(|| "dispatch requires invocation".to_owned())?;
-    let mote_hash = Hash(request.mote.hash.clone());
+    let mote_hash = Hash(mote.hash.clone());
     let mote_store = Store::open(mote_root).map_err(|error| error.to_string())?;
     let bytes = mote_store
         .get(&mote_hash)
@@ -85,7 +89,7 @@ pub fn resolve_bundle(
     }
 
     Ok(ResolvedBundle {
-        bundle_hash: request.mote.hash.clone(),
+        bundle_hash: mote.hash.clone(),
         program_hash: requested_tool.hash.clone(),
         kernel_hash: bundle.kernel,
         initrd_hash: bundle.initrd,
@@ -109,22 +113,114 @@ pub struct LaunchOutcome {
     pub denial: Option<String>,
 }
 
-/// Resolve, seal, and run the exact program `resolve_bundle` verified exists.
+/// What `forge` produced: the exact bytes now admitted into this node's
+/// attested manifest, and their content hash.
+pub struct ForgedProgram {
+    pub hash: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Ask a model to write the requested task, build it twice in different
+/// directories and compare the bytes (the same reproducibility check `celln
+/// agent` runs), and admit whatever came back — real bytes, real hash,
+/// `author=agent` — into this node's attested manifest.
+///
+/// The task string itself is never executable authority. It only becomes
+/// one after this function has already run: the hash `launch` seals is a
+/// hash of bytes that exist, not a description of intent. This is the same
+/// authority model `celln agent` already uses on the CLI; this function is
+/// that same sequence, callable from a request instead of a terminal.
+#[cfg(target_os = "linux")]
+pub fn forge(
+    forge_request: &ForgeRequest,
+    assay_root: &Path,
+    timeout_secs: u64,
+) -> Result<ForgedProgram, String> {
+    use crate::agent::{ask_model, discover_backend, Backend, ALIAS, AVAILABLE_RUNTIMES, BRIEF};
+
+    let backend = match forge_request.backend.as_deref() {
+        Some(name) => Backend::from_saved_name(name).ok_or_else(|| {
+            format!("forge.backend {name:?} is not one of: anthropic, openai, deepseek, local")
+        })?,
+        None => discover_backend().ok_or_else(|| {
+            "no agent CLI found on this host — install and authenticate codex, claude, \
+             or ollama, then run `celln setup`"
+                .to_owned()
+        })?,
+    };
+    if !backend.available() {
+        return Err(format!(
+            "{} needs `{}` on PATH",
+            backend.label(),
+            backend.program()
+        ));
+    }
+    let model = forge_request
+        .model
+        .as_deref()
+        .or_else(|| backend.default_model());
+
+    let runtimes = AVAILABLE_RUNTIMES
+        .iter()
+        .map(|runtime| format!("- {}", runtime.capability()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let brief = BRIEF
+        .replace("%RUNTIMES%", &runtimes)
+        .replace("%TASK%", &forge_request.task);
+
+    let program =
+        ask_model(backend, model, &brief, timeout_secs).map_err(|error| error.to_string())?;
+
+    let work = crate::agent::tempdir().map_err(|error| error.to_string())?;
+    let (code, proof) =
+        match forge::build_and_verify(program.source.as_bytes(), &work.join("forge")) {
+            Ok(built) => built,
+            Err(forge::ForgeError::Build(stderr)) => {
+                return Err(format!("the generated program does not compile:\n{stderr}"));
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+
+    let mut assayer = assay::Assayer::open(assay_root).map_err(|error| error.to_string())?;
+    let hash = assayer
+        .admit_forged_authored(ALIAS, &code, false, celln_manifest::Author::Agent, &proof)
+        .map_err(|error| error.to_string())?;
+
+    Ok(ForgedProgram {
+        hash: hash.0,
+        bytes: code,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn forge(
+    _forge_request: &ForgeRequest,
+    _assay_root: &Path,
+    _timeout_secs: u64,
+) -> Result<ForgedProgram, String> {
+    Err("forging a program needs Linux with /dev/kvm".to_owned())
+}
+
+/// Seal and run `program_bytes` — the exact resolved bytes for a declared
+/// request (`resolve_bundle` verified their hash matches what was declared),
+/// or the exact bytes `forge` just wrote and admitted, for a forge-from-task
+/// request. Either way, by the time this is called, the authority is a real
+/// hash of real bytes, not a name or a task string.
 ///
 /// This reuses the same toolfs/initrd build and `LinuxCell` boot sequence as
-/// `celln agent`, with one substitution that is the entire point: the sealed
-/// program comes from `tool_root` by the hash the request declared, not from
-/// a model asked to write it. The guest still boots this host's own kernel
-/// (`BootConfig::host_kernel()`) — `resolve_bundle` verifies the mote
-/// bundle's declared `kernel`/`initrd` hashes exist and match, but actually
+/// `celln agent`. The guest still boots this host's own kernel
+/// (`BootConfig::host_kernel()`) — a declared request's mote bundle
+/// `kernel`/`initrd` hashes are verified to exist and match, but actually
 /// booting an arbitrary stored kernel image would need its `/lib/modules`
 /// alongside it, which the mote bundle contract does not carry yet. That
 /// remains a known gap, not a hidden one.
 #[cfg(target_os = "linux")]
 pub fn launch(
     request: &ExecutionRequest,
-    resolved: &ResolvedBundle,
-    tool_root: &Path,
+    alias: &str,
+    args: &[String],
+    program_bytes: &[u8],
     runtime_root: &Path,
     assay_root: &Path,
     state_root: &Path,
@@ -134,24 +230,16 @@ pub fn launch(
     if !Path::new("/dev/kvm").exists() {
         return Err("no /dev/kvm — cannot seal a cell on this host".to_owned());
     }
-    let invocation = request
-        .invocation
-        .as_ref()
-        .ok_or_else(|| "dispatch requires invocation".to_owned())?;
 
-    let tool_store = Store::open(tool_root).map_err(|error| error.to_string())?;
-    let program_bytes = tool_store
-        .get(&Hash(resolved.program_hash.clone()))
-        .map_err(|error| error.to_string())?;
-
-    // Admit the resolved bytes into this node's own attested manifest so
-    // pilot's exec gate has an entry to check against. The hash it computes
-    // is a hash of these exact bytes, so it lines up with `resolved.program_hash`
-    // by construction — `resolve_bundle` already proved that hash is what the
-    // request declared.
+    // Admit the bytes into this node's own attested manifest so pilot's exec
+    // gate has an entry to check against. For a declared request the hash
+    // this computes lines up with the request's own declared hash by
+    // construction — `resolve_bundle` already proved that. For a forged
+    // request, `forge` already admitted it upstream of this call; admitting
+    // again here is a harmless no-op (assay dedups by hash).
     let mut assayer = assay::Assayer::open(assay_root).map_err(|error| error.to_string())?;
     assayer
-        .admit_verified(&invocation.alias, &program_bytes, false)
+        .admit_verified(alias, program_bytes, false)
         .map_err(|error| error.to_string())?;
 
     let work = crate::agent::tempdir().map_err(|error| error.to_string())?;
@@ -161,15 +249,15 @@ pub fn launch(
     // alias is a separate, arbitrary manifest lookup key (celln-spec.Tool
     // conventions), not the mount path.
     let bin = work.join("program");
-    std::fs::write(&bin, &program_bytes).map_err(|error| error.to_string())?;
+    std::fs::write(&bin, program_bytes).map_err(|error| error.to_string())?;
 
     let run_json = work.join("run.json");
     std::fs::write(
         &run_json,
         serde_json::to_vec_pretty(&serde_json::json!({
             "path": "/tools/program",
-            "alias": invocation.alias,
-            "args": invocation.args,
+            "alias": alias,
+            "args": args,
             "agent_authored_input": matches!(request.execution.lane, RequestedLane::Agent),
         }))
         .map_err(|error| error.to_string())?,
@@ -223,7 +311,7 @@ pub fn launch(
         state_root,
         &name,
         Path::new("<execution-request>"),
-        vec![invocation.alias.clone()],
+        vec![alias.to_owned()],
     )
     .ok();
     let cell_id = record
@@ -312,8 +400,9 @@ pub fn launch(
 #[cfg(not(target_os = "linux"))]
 pub fn launch(
     _request: &ExecutionRequest,
-    _resolved: &ResolvedBundle,
-    _tool_root: &Path,
+    _alias: &str,
+    _args: &[String],
+    _program_bytes: &[u8],
     _runtime_root: &Path,
     _assay_root: &Path,
     _state_root: &Path,
@@ -424,6 +513,52 @@ mod tests {
         assert_eq!(rfc3339_utc(-1), "1969-12-31T23:59:59Z");
     }
 
+    /// A runtime root the launch pipeline can build an initrd/toolfs from,
+    /// borrowing this checkout's scripts and this workspace's own
+    /// already-built guest pilot binaries. `None` (with an explanatory
+    /// `eprintln!`) if the guest pilot binaries haven't been built.
+    #[cfg(target_os = "linux")]
+    fn test_runtime_root(work: &Path) -> Option<std::path::PathBuf> {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."); // crates/celln-cli -> repo root
+        let repo_root = repo_root.canonicalize().expect("repo root resolves");
+        let pilot_dir = repo_root.join("target/x86_64-unknown-linux-musl/release");
+        if !pilot_dir.join("celln-pilot").exists() || !pilot_dir.join("pilot-fetch").exists() {
+            eprintln!(
+                "skipping: guest pilot binaries not built — run \
+                 `cargo build --release --target x86_64-unknown-linux-musl -p celln-pilot \
+                 --bin celln-pilot --bin pilot-fetch` first"
+            );
+            return None;
+        }
+        let runtime_root = work.join("runtime");
+        std::fs::create_dir_all(runtime_root.join("scripts")).unwrap();
+        std::fs::create_dir_all(runtime_root.join("pilot")).unwrap();
+        std::fs::create_dir_all(runtime_root.join("guest/init")).unwrap();
+        for script in ["mktoolfs.sh", "mkinitramfs.sh"] {
+            std::fs::copy(
+                repo_root.join("scripts").join(script),
+                runtime_root.join("scripts").join(script),
+            )
+            .unwrap_or_else(|e| panic!("copying {script}: {e}"));
+        }
+        std::fs::copy(
+            repo_root.join("guest/init/init.c"),
+            runtime_root.join("guest/init/init.c"),
+        )
+        .expect("copy guest init.c");
+        std::fs::copy(
+            pilot_dir.join("celln-pilot"),
+            runtime_root.join("pilot/celln-pilot"),
+        )
+        .expect("copy celln-pilot");
+        std::fs::copy(
+            pilot_dir.join("pilot-fetch"),
+            runtime_root.join("pilot/pilot-fetch"),
+        )
+        .expect("copy pilot-fetch");
+        Some(runtime_root)
+    }
+
     /// Full pipeline, on real hardware: resolve a declared program from a
     /// content-addressed store, seal it into a cell, boot it, and check the
     /// output pilot reports. Not run by default — needs /dev/kvm, the
@@ -472,46 +607,9 @@ mod tests {
         }
         let program_bytes = std::fs::read(&program_out).expect("read compiled program");
 
-        // ── a runtime root the launch pipeline can build an initrd/toolfs
-        // from, borrowing this checkout's scripts and this workspace's own
-        // already-built guest pilot binaries ──
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."); // crates/celln-cli -> repo root
-        let repo_root = repo_root.canonicalize().expect("repo root resolves");
-        let pilot_dir = repo_root.join("target/x86_64-unknown-linux-musl/release");
-        if !pilot_dir.join("celln-pilot").exists() || !pilot_dir.join("pilot-fetch").exists() {
-            eprintln!(
-                "skipping: guest pilot binaries not built — run \
-                 `cargo build --release --target x86_64-unknown-linux-musl -p celln-pilot \
-                 --bin celln-pilot --bin pilot-fetch` first"
-            );
+        let Some(runtime_root) = test_runtime_root(work.path()) else {
             return;
-        }
-        let runtime_root = work.path().join("runtime");
-        std::fs::create_dir_all(runtime_root.join("scripts")).unwrap();
-        std::fs::create_dir_all(runtime_root.join("pilot")).unwrap();
-        std::fs::create_dir_all(runtime_root.join("guest/init")).unwrap();
-        for script in ["mktoolfs.sh", "mkinitramfs.sh"] {
-            std::fs::copy(
-                repo_root.join("scripts").join(script),
-                runtime_root.join("scripts").join(script),
-            )
-            .unwrap_or_else(|e| panic!("copying {script}: {e}"));
-        }
-        std::fs::copy(
-            repo_root.join("guest/init/init.c"),
-            runtime_root.join("guest/init/init.c"),
-        )
-        .expect("copy guest init.c");
-        std::fs::copy(
-            pilot_dir.join("celln-pilot"),
-            runtime_root.join("pilot/celln-pilot"),
-        )
-        .expect("copy celln-pilot");
-        std::fs::copy(
-            pilot_dir.join("pilot-fetch"),
-            runtime_root.join("pilot/pilot-fetch"),
-        )
-        .expect("copy pilot-fetch");
+        };
 
         // ── a mote bundle and matching tool, resolvable exactly like a real
         // control plane would declare them ──
@@ -548,6 +646,7 @@ mod tests {
 
         let resolved =
             resolve_bundle(&request, motes.path(), tools.path()).expect("bundle resolves");
+        assert_eq!(resolved.program_hash, tool_hash.0);
 
         let assay_root = work.path().join("assay");
         let state_root = work.path().join("state");
@@ -555,8 +654,9 @@ mod tests {
 
         let outcome = launch(
             &request,
-            &resolved,
-            tools.path(),
+            "/agent/program",
+            &[],
+            &program_bytes,
             &runtime_root,
             &assay_root,
             &state_root,
@@ -572,6 +672,84 @@ mod tests {
         let output = String::from_utf8(output).expect("output is utf8");
         assert!(
             output.contains("hello from an execution request"),
+            "unexpected output: {output:?}"
+        );
+    }
+
+    /// Full forge-from-task pipeline, on real hardware: a real,
+    /// already-authenticated backend writes a program from a task string,
+    /// `forge` builds/admits it, and `launch` seals and runs the exact bytes
+    /// that came back — no pre-declared mote or tool at all. Pinned to
+    /// `anthropic` for a repeatable choice of backend; this makes a real,
+    /// possibly billed, call. Not run by default — needs /dev/kvm, the
+    /// guest pilot binaries, and `claude` authenticated on this host. Run
+    /// explicitly with:
+    ///   cargo test -p celln-cli -- --ignored forge_actually_writes_builds_and_runs_a_program
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "linux")]
+    fn forge_actually_writes_builds_and_runs_a_program() {
+        if !Path::new("/dev/kvm").exists() {
+            eprintln!("skipping: no /dev/kvm on this runner");
+            return;
+        }
+        if !crate::agent::Backend::Anthropic.available() {
+            eprintln!(
+                "skipping: `claude` not available/authenticated on this host — see `celln agents`"
+            );
+            return;
+        }
+
+        let work = tempdir().expect("work dir");
+        let Some(runtime_root) = test_runtime_root(work.path()) else {
+            return;
+        };
+
+        let request: ExecutionRequest = serde_json::from_value(json!({
+            "apiVersion": "celln.dev/v1alpha1",
+            "id": "forge-smoke-test",
+            "workload": { "id": "smoke-test", "caller": "test:forge" },
+            "forge": { "task": "print exactly the line: hello from a forged execution request", "backend": "anthropic" },
+            "capabilities": { "workspace": "none", "timeoutMs": 90000, "memoryBytes": 268435456, "outputBytes": 65536 },
+            "execution": { "lane": "agent", "requireHardwareIsolation": true }
+        }))
+        .expect("request parses");
+        assert!(request.problems().is_empty(), "{:?}", request.problems());
+
+        let assay_root = work.path().join("assay");
+        let state_root = work.path().join("state");
+        std::fs::create_dir_all(&state_root).unwrap();
+
+        let forge_request = request.forge.as_ref().unwrap();
+        let forged = forge(
+            forge_request,
+            &assay_root,
+            request.capabilities.timeout_ms / 1000,
+        )
+        .expect("forge writes, builds, and admits a program");
+        assert!(!forged.bytes.is_empty());
+        assert_eq!(forged.hash, celln_manifest::Hash::of(&forged.bytes).0);
+
+        let outcome = launch(
+            &request,
+            crate::agent::ALIAS,
+            &[],
+            &forged.bytes,
+            &runtime_root,
+            &assay_root,
+            &state_root,
+        )
+        .expect("cell launches and runs");
+
+        assert!(
+            outcome.denial.is_none(),
+            "pilot denied it: {:?}",
+            outcome.denial
+        );
+        let output = outcome.output.expect("program produced output");
+        let output = String::from_utf8(output).expect("output is utf8");
+        assert!(
+            output.to_lowercase().contains("hello"),
             "unexpected output: {output:?}"
         );
     }

@@ -1,24 +1,21 @@
-//! Authenticated local dispatcher for real Celln agent actions.
+//! Authenticated local dispatcher for real Celln execution requests.
 //!
 //! This service is intentionally a Celln process, not a Kubernetes Job
-//! wrapper. Every submitted action is executed by the existing KVM/Pilot path.
-//! It is the first transport seam; immutable bundle/receipt publication remains
-//! a separate required stage before upstream controllers may claim completion.
+//! wrapper. `POST /v1/executions` admits a `celln.dev/v1alpha1`
+//! `ExecutionRequest`, resolves or forges the declared program, runs it in a
+//! real sealed cell, and returns a validated `ExecutionReceipt`.
 
-use crate::agent::Backend;
 use crate::NodeProbeArgs;
 use anyhow::{bail, Context, Result};
 use celln_spec::{
     ExecutionOutput, ExecutionPhase, ExecutionReceipt, ExecutionRequest, ResolvedExecution,
 };
 use celln_store::Store;
-use clap::ValueEnum;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,9 +29,9 @@ pub(crate) const MAX_REQUEST_LINE: usize = 8 * 1024;
 pub(crate) const MAX_HEADER_LINE: usize = 8 * 1024;
 pub(crate) const MAX_HEADER_COUNT: usize = 64;
 
-/// How long a finished action/execution record is kept before it is evicted
-/// on the next insert. Registries are otherwise unbounded — every unique id
-/// a caller submits stays in memory for the life of the process.
+/// How long a finished execution record is kept before it is evicted on the
+/// next insert. The registry is otherwise unbounded — every unique id a
+/// caller submits stays in memory for the life of the process.
 const RECORD_TTL: Duration = Duration::from_secs(3600);
 
 /// Read one line with a hard byte cap, so a peer that never sends `\n`
@@ -88,46 +85,8 @@ fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>)> {
     Ok((length, authorization))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubmitAction {
-    pub id: String,
-    pub task: String,
-    #[serde(default)]
-    pub backend: Option<Backend>,
-    #[serde(default)]
-    pub model: Option<String>,
-    #[serde(default = "default_timeout")]
-    pub timeout: u64,
-    #[serde(default)]
-    pub allow_hosts: Vec<String>,
-}
-
-fn default_timeout() -> u64 {
-    90
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActionStatus {
-    pub id: String,
-    pub phase: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cell_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub program_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
 /// A registry entry tagged with its insertion time, so a background sweep
-/// can evict entries older than [`RECORD_TTL`]. Registries are otherwise
+/// can evict entries older than [`RECORD_TTL`]. The registry is otherwise
 /// unbounded for the life of the process.
 struct Entry<T> {
     at: Instant,
@@ -148,8 +107,6 @@ fn evict_expired<T>(registry: &mut HashMap<String, Entry<T>>) {
     registry.retain(|_, entry| now.duration_since(entry.at) < RECORD_TTL);
 }
 
-type Actions = Arc<Mutex<HashMap<String, Entry<ActionStatus>>>>;
-
 /// One `celln.dev/v1alpha1` execution in flight or finished on this node.
 /// This is the dispatcher's own bookkeeping, not the wire receipt — it has
 /// room for a human-readable reason a receipt does not.
@@ -160,6 +117,13 @@ pub struct ExecutionRecord {
     pub phase: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The bounded text output, as a convenience for a caller that just
+    /// wants the result — the receipt itself only ever carries a content
+    /// hash, deliberately: it is an immutable wire contract, not a place to
+    /// smuggle in a human-readable field. This is that field, kept in the
+    /// dispatcher's own wrapper instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub receipt: Option<ExecutionReceipt>,
 }
@@ -170,7 +134,6 @@ struct State {
     token: String,
     root: PathBuf,
     probe: NodeProbeArgs,
-    actions: Actions,
     executions: Executions,
 }
 
@@ -188,7 +151,6 @@ pub fn serve(listen: &str, token_file: &Path, root: PathBuf, probe: &NodeProbeAr
         token,
         root,
         probe: probe.clone(),
-        actions: Arc::new(Mutex::new(HashMap::new())),
         executions: Arc::new(Mutex::new(HashMap::new())),
     });
     eprintln!("celln dispatcher listening on {listen}");
@@ -251,65 +213,6 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 }),
             )
         }
-        ("POST", "/v1/actions") => {
-            if length > 64 * 1024 {
-                return reply(
-                    &mut stream,
-                    413,
-                    &serde_json::json!({"error":"request body exceeds 64 KiB"}),
-                );
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body)?;
-            let action: SubmitAction =
-                serde_json::from_slice(&body).context("parsing action request")?;
-            if action.id.trim().is_empty() || action.task.trim().is_empty() {
-                return reply(
-                    &mut stream,
-                    400,
-                    &serde_json::json!({"error":"id and task are required"}),
-                );
-            }
-            let status = ActionStatus {
-                id: action.id.clone(),
-                phase: "Pending".into(),
-                cell_id: None,
-                program_hash: None,
-                output: None,
-                output_hash: None,
-                output_bytes: None,
-                error: None,
-            };
-            let mut registry = state
-                .actions
-                .lock()
-                .expect("dispatcher registry not poisoned");
-            if let Some(existing) = registry.get(&action.id) {
-                return reply(&mut stream, 202, &existing.value);
-            }
-            evict_expired(&mut registry);
-            registry.insert(action.id.clone(), Entry::new(status.clone()));
-            drop(registry);
-            let worker_actions = Arc::clone(&state.actions);
-            let root = state.root.clone();
-            thread::spawn(move || run_action(action, worker_actions, root));
-            reply(&mut stream, 202, &status)
-        }
-        ("GET", path) if path.starts_with("/v1/actions/") => {
-            let id = path.trim_start_matches("/v1/actions/");
-            let registry = state
-                .actions
-                .lock()
-                .expect("dispatcher registry not poisoned");
-            match registry.get(id) {
-                Some(entry) => reply(&mut stream, 200, &entry.value),
-                None => reply(
-                    &mut stream,
-                    404,
-                    &serde_json::json!({"error":"unknown action"}),
-                ),
-            }
-        }
         ("POST", "/v1/executions") => {
             if length > 64 * 1024 {
                 return reply(
@@ -343,6 +246,7 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 request_id: request.id.clone(),
                 phase: "Admitting".into(),
                 reason: None,
+                output: None,
                 receipt: None,
             };
             let mut registry = state
@@ -380,127 +284,6 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
     }
 }
 
-fn run_action(action: SubmitAction, actions: Actions, root: PathBuf) {
-    update(&actions, &action.id, |status| {
-        status.phase = "Admitting".into()
-    });
-    let current = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(error) => return fail(&actions, &action.id, error.to_string()),
-    };
-    let mut command = Command::new(current);
-    command.arg("--root").arg(&root).arg("--json").arg("agent");
-    if let Some(backend) = action.backend {
-        command.arg("--agent").arg(
-            backend
-                .to_possible_value()
-                .expect("backend value")
-                .get_name(),
-        );
-    }
-    if let Some(model) = action.model {
-        command.arg("--model").arg(model);
-    }
-    command.arg("--timeout").arg(action.timeout.to_string());
-    for host in action.allow_hosts {
-        command.arg("--allow-host").arg(host);
-    }
-    command
-        .arg(action.task)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let output = match command.output() {
-        Ok(output) => output,
-        Err(error) => return fail(&actions, &action.id, error.to_string()),
-    };
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        match event.get("event").and_then(|value| value.as_str()) {
-            Some("cell_started") => update(&actions, &action.id, |status| {
-                status.phase = "Running".into();
-                status.cell_id = event
-                    .get("cellId")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned);
-            }),
-            Some("agent_forged") => update(&actions, &action.id, |status| {
-                status.program_hash = event
-                    .get("hash")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned);
-            }),
-            Some("agent_output") => update(&actions, &action.id, |status| {
-                status.output = event
-                    .get("stdout")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_owned);
-            }),
-            _ => {}
-        }
-    }
-    if output.status.success() {
-        if let Err(error) = persist_output(&actions, &action.id, &root) {
-            return fail(&actions, &action.id, error.to_string());
-        }
-        update(&actions, &action.id, |status| {
-            status.phase = "Succeeded".into()
-        });
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        fail(
-            &actions,
-            &action.id,
-            if stderr.is_empty() {
-                format!("agent exited {}", output.status)
-            } else {
-                stderr
-            },
-        );
-    }
-}
-
-/// Persist bounded output if the process produced any. A process that exits
-/// 0 but never emits an `agent_output` event (a genuinely empty result, or a
-/// line the parser above didn't recognise) is still a success — it is not
-/// grounds to overwrite the phase a caller may already be polling as
-/// terminal.
-fn persist_output(actions: &Actions, id: &str, root: &Path) -> Result<()> {
-    let output = actions
-        .lock()
-        .expect("dispatcher registry not poisoned")
-        .get(id)
-        .and_then(|entry| entry.value.output.clone());
-    let Some(output) = output else {
-        return Ok(());
-    };
-    let store = Store::open(root.join("outputs"))?;
-    let hash = store.put(output.as_bytes())?;
-    update(actions, id, |status| {
-        status.output_hash = Some(hash.0);
-        status.output_bytes = Some(output.len() as u64);
-    });
-    Ok(())
-}
-
-fn update(actions: &Actions, id: &str, f: impl FnOnce(&mut ActionStatus)) {
-    if let Some(entry) = actions
-        .lock()
-        .expect("dispatcher registry not poisoned")
-        .get_mut(id)
-    {
-        f(&mut entry.value);
-    }
-}
-
-fn fail(actions: &Actions, id: &str, error: String) {
-    update(actions, id, |status| {
-        status.phase = "Failed".into();
-        status.error = Some(error);
-    });
-}
-
 fn update_execution(executions: &Executions, id: &str, f: impl FnOnce(&mut ExecutionRecord)) {
     if let Some(entry) = executions
         .lock()
@@ -518,10 +301,13 @@ fn fail_execution(executions: &Executions, id: &str, reason: String) {
     });
 }
 
-/// Admit, resolve, and launch a `celln.dev/v1alpha1` execution request, then
-/// record the terminal [`ExecutionReceipt`]. This is the hermetic path: the
-/// program that runs is the exact bytes `resolve_bundle` proved match the
-/// request's declared hash, not code a model was asked to write.
+/// Admit, then resolve-or-forge and launch, a `celln.dev/v1alpha1` execution
+/// request, then record the terminal [`ExecutionReceipt`]. Either way the
+/// program that runs is exact bytes with a real hash by the time it's
+/// sealed — for a declared request, `resolve_bundle` proved those bytes
+/// match what was declared; for a forge request, `dispatch::forge` just
+/// wrote and admitted them. Neither path treats a task string or a name as
+/// authority.
 fn run_execution(
     request: ExecutionRequest,
     executions: Executions,
@@ -541,27 +327,77 @@ fn run_execution(
         crate::node::Admission::Accepted { .. } => {}
     }
 
-    update_execution(&executions, &request.id, |record| {
-        record.phase = "Resolving".into()
-    });
-    let resolved =
-        match crate::dispatch::resolve_bundle(&request, &probe.mote_store, &probe.tool_store) {
-            Ok(resolved) => resolved,
-            Err(error) => return fail_execution(&executions, &request.id, error),
-        };
-
-    update_execution(&executions, &request.id, |record| {
-        record.phase = "Running".into()
-    });
     let runtime_root = match crate::agent::runtime_root() {
         Ok(path) => path,
         Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
     };
     let assay_root = root.join("assay");
+
+    // Resolved authority for the receipt: (mote, program hash, alias, args,
+    // bytes to seal). The declared and forge paths converge here — from this
+    // point on, `launch` doesn't know or care which one produced the bytes.
+    let (mote, program_hash, alias, args, program_bytes) = if let Some(forge_request) =
+        &request.forge
+    {
+        update_execution(&executions, &request.id, |record| {
+            record.phase = "Forging".into()
+        });
+        let forged = match crate::dispatch::forge(
+            forge_request,
+            &assay_root,
+            request.capabilities.timeout_ms / 1000,
+        ) {
+            Ok(forged) => forged,
+            Err(error) => return fail_execution(&executions, &request.id, error),
+        };
+        (
+            None,
+            forged.hash,
+            crate::agent::ALIAS.to_owned(),
+            Vec::new(),
+            forged.bytes,
+        )
+    } else {
+        update_execution(&executions, &request.id, |record| {
+            record.phase = "Resolving".into()
+        });
+        let resolved =
+            match crate::dispatch::resolve_bundle(&request, &probe.mote_store, &probe.tool_store) {
+                Ok(resolved) => resolved,
+                Err(error) => return fail_execution(&executions, &request.id, error),
+            };
+        let tool_store = match Store::open(&probe.tool_store) {
+            Ok(store) => store,
+            Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
+        };
+        let program_bytes =
+            match tool_store.get(&celln_manifest::Hash(resolved.program_hash.clone())) {
+                Ok(bytes) => bytes,
+                Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
+            };
+        // Presence already validated by celln_spec's own problems() — a
+        // declared request always has an invocation.
+        let invocation = request
+            .invocation
+            .as_ref()
+            .expect("declared request has an invocation");
+        (
+            Some(resolved.bundle_hash),
+            resolved.program_hash,
+            invocation.alias.clone(),
+            invocation.args.clone(),
+            program_bytes,
+        )
+    };
+
+    update_execution(&executions, &request.id, |record| {
+        record.phase = "Running".into()
+    });
     let outcome = match crate::dispatch::launch(
         &request,
-        &resolved,
-        &probe.tool_store,
+        &alias,
+        &args,
+        &program_bytes,
         &runtime_root,
         &assay_root,
         &root,
@@ -593,8 +429,8 @@ fn run_execution(
         node: probe.node_name.clone(),
         cell_id: outcome.cell_id,
         resolved: ResolvedExecution {
-            mote: resolved.bundle_hash,
-            tools: vec![resolved.program_hash],
+            mote,
+            tools: vec![program_hash],
             inputs: request
                 .inputs
                 .iter()
@@ -605,9 +441,11 @@ fn run_execution(
         started_at,
         completed_at: crate::dispatch::now_rfc3339(),
     };
+    let output_text = output.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     update_execution(&executions, &request.id, |record| {
         record.phase = format!("{:?}", receipt.phase);
         record.reason = outcome.denial.clone();
+        record.output = output_text;
         record.receipt = Some(receipt.clone());
     });
 }
@@ -677,77 +515,27 @@ mod tests {
         assert_eq!(authorization.as_deref(), Some("secret-token"));
     }
 
-    fn empty_status(id: &str) -> ActionStatus {
-        ActionStatus {
-            id: id.to_owned(),
+    fn empty_record(id: &str) -> ExecutionRecord {
+        ExecutionRecord {
+            request_id: id.to_owned(),
             phase: "Running".into(),
-            cell_id: None,
-            program_hash: None,
+            reason: None,
             output: None,
-            output_hash: None,
-            output_bytes: None,
-            error: None,
+            receipt: None,
         }
     }
 
     #[test]
-    fn persist_output_leaves_a_successful_action_alone_when_there_was_no_bounded_output() {
-        // A process that exits 0 without an `agent_output` event (e.g. a
-        // genuinely empty result) must not be turned into a Failed action —
-        // that was the bug: only a Store error should ever fail here.
-        let root = tempfile::tempdir().expect("tempdir");
-        let actions: Actions = Arc::new(Mutex::new(HashMap::new()));
-        actions
-            .lock()
-            .unwrap()
-            .insert("run-1".into(), Entry::new(empty_status("run-1")));
-
-        let result = persist_output(&actions, "run-1", root.path());
-        assert!(result.is_ok(), "{result:?}");
-
-        let registry = actions.lock().unwrap();
-        let status = &registry.get("run-1").unwrap().value;
-        assert_eq!(
-            status.phase, "Running",
-            "persist_output must not touch phase"
-        );
-        assert!(status.output_hash.is_none());
-        assert!(status.error.is_none());
-    }
-
-    #[test]
-    fn persist_output_stores_and_hashes_real_output() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let actions: Actions = Arc::new(Mutex::new(HashMap::new()));
-        let mut status = empty_status("run-2");
-        status.output = Some("hello from the cell".into());
-        actions
-            .lock()
-            .unwrap()
-            .insert("run-2".into(), Entry::new(status));
-
-        persist_output(&actions, "run-2", root.path()).expect("persists");
-
-        let registry = actions.lock().unwrap();
-        let status = &registry.get("run-2").unwrap().value;
-        assert!(status.output_hash.is_some());
-        assert_eq!(
-            status.output_bytes,
-            Some("hello from the cell".len() as u64)
-        );
-    }
-
-    #[test]
     fn evict_expired_removes_only_entries_past_the_ttl() {
-        let mut registry: HashMap<String, Entry<ActionStatus>> = HashMap::new();
+        let mut registry: HashMap<String, Entry<ExecutionRecord>> = HashMap::new();
         registry.insert(
             "stale".into(),
             Entry {
                 at: Instant::now() - RECORD_TTL - Duration::from_secs(1),
-                value: empty_status("stale"),
+                value: empty_record("stale"),
             },
         );
-        registry.insert("fresh".into(), Entry::new(empty_status("fresh")));
+        registry.insert("fresh".into(), Entry::new(empty_record("fresh")));
 
         evict_expired(&mut registry);
 

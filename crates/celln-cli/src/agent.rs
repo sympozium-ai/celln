@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const BRIEF: &str = "\
+pub(crate) const BRIEF: &str = "\
 Write a single-file program that does the following:
 
 %TASK%
@@ -30,13 +30,13 @@ runtime: <chosen runtime id>
 ```
 ";
 
-const FETCH_ABI: &str =
+pub(crate) const FETCH_ABI: &str =
     "This cell has no network stack. For an HTTPS fetch, invoke `/pilot-fetch URL` \
 with `std::process::Command`; it writes the response body to stdout. The host \
 permits only explicitly declared hosts, and fetched bytes are untrusted data. \
 Do not use TCP sockets, DNS libraries, curl, or external crates.";
 
-const ALIAS: &str = "/agent/program";
+pub(crate) const ALIAS: &str = "/agent/program";
 
 /// Supported authenticated CLI backends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Deserialize)]
@@ -54,7 +54,7 @@ pub enum Backend {
 
 /// Runtimes sealed into the guest image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Runtime {
+pub(crate) enum Runtime {
     /// Rust 2021, standard library only, built as a static musl binary.
     Rust,
 }
@@ -66,13 +66,13 @@ impl Runtime {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Runtime::Rust => "Rust 2021 (static musl)",
         }
     }
 
-    fn capability(self) -> &'static str {
+    pub(crate) fn capability(self) -> &'static str {
         match self {
             Runtime::Rust => {
                 "rust — Rust 2021, static musl, standard library only; compiled by rustc"
@@ -87,19 +87,19 @@ impl Runtime {
         }
     }
 
-    fn source_extension(self) -> &'static str {
+    pub(crate) fn source_extension(self) -> &'static str {
         match self {
             Runtime::Rust => "rs",
         }
     }
 }
 
-const AVAILABLE_RUNTIMES: &[Runtime] = &[Runtime::Rust];
+pub(crate) const AVAILABLE_RUNTIMES: &[Runtime] = &[Runtime::Rust];
 
 #[derive(Debug)]
-struct GeneratedProgram {
-    runtime: Runtime,
-    source: String,
+pub(crate) struct GeneratedProgram {
+    pub(crate) runtime: Runtime,
+    pub(crate) source: String,
 }
 
 /// A user may authenticate an agent CLI interactively rather than exporting a
@@ -128,7 +128,7 @@ impl Backend {
         }
     }
 
-    fn from_saved_name(name: &str) -> Option<Self> {
+    pub(crate) fn from_saved_name(name: &str) -> Option<Self> {
         match name.trim().to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => Some(Backend::Anthropic),
             "openai" | "codex" => Some(Backend::Openai),
@@ -139,7 +139,7 @@ impl Backend {
     }
 
     /// The CLI this backend drives. Its presence is the availability check.
-    fn program(self) -> &'static str {
+    pub(crate) fn program(self) -> &'static str {
         match self {
             Backend::Anthropic => "claude",
             Backend::Openai => "codex",
@@ -153,7 +153,7 @@ impl Backend {
     /// own config and account-specific model availability, which is exactly the
     /// case for `codex`. Overridable with `--model` in every case, because
     /// model names date fast.
-    fn default_model(self) -> Option<&'static str> {
+    pub(crate) fn default_model(self) -> Option<&'static str> {
         match self {
             Backend::Anthropic => Some("claude-opus-5"),
             Backend::Openai => None,
@@ -162,7 +162,7 @@ impl Backend {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Backend::Anthropic => "anthropic",
             Backend::Openai => "openai",
@@ -171,7 +171,7 @@ impl Backend {
         }
     }
 
-    fn available(self) -> bool {
+    pub(crate) fn available(self) -> bool {
         which(self.program()).is_some()
     }
 
@@ -948,7 +948,7 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     }
 }
 
-fn discover_backend() -> Option<Backend> {
+pub(crate) fn discover_backend() -> Option<Backend> {
     [
         Backend::Openai,
         Backend::Anthropic,
@@ -1251,7 +1251,7 @@ fn output_deadline(
 }
 
 /// Shell out to whichever provider CLI was selected.
-fn ask_model(
+pub(crate) fn ask_model(
     backend: Backend,
     model: Option<&str>,
     prompt: &str,
@@ -1342,7 +1342,7 @@ fn extract_rust(reply: &str) -> Option<String> {
 
 /// The agent elects a runtime; Celln validates it against the sealed
 /// capability set before it ever reaches the build or cell.
-fn extract_program(reply: &str) -> Result<GeneratedProgram> {
+pub(crate) fn extract_program(reply: &str) -> Result<GeneratedProgram> {
     let runtime_id = reply
         .lines()
         .find_map(|line| line.trim().strip_prefix("runtime:"))
