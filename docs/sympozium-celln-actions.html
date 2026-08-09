@@ -53,6 +53,17 @@ status:
   cellnActionId: string    # the id this run was dispatched to Celln with</code></pre>
 <div class="rule"><strong>Enforced today, in the controller, not just documented:</strong> <code>backend: celln</code> together with <code>agentSandbox.enabled: true</code> is rejected explicitly at admission — one execution backend, chosen unambiguously, never a silent fallback. A wedged Celln backend that never returns a terminal phase fails the run on a controller-side deadline rather than leaving it <code>Running</code> forever. Policy validation and token-budget checks run before Celln dispatch, same as the Job path.</div>
 
+<h2>Which lane does an AgentRun run in?</h2>
+<p>Always the <a href="agent-lane.html">agent lane</a>, never the <a href="tool-lane.html">tool lane</a> — and it's worth knowing why, not just that. The controller builds every dispatch as a <code>forge</code> request (<code>Forge: &amp;executionForge{Task: task}</code> in <a href="https://github.com/sympozium-ai/sympozium/blob/main/internal/controller/agentrun_celln.go">agentrun_celln.go</a>): the AgentRun's task string goes to a model, which writes a program, which gets rebuilt twice and hash-compared. That program is <code>author=agent</code> by construction, permanently, regardless of how cleanly it reproduces — and agent-authored code is agent-lane authority, full stop, the same rule <a href="agent-lane.html">the agent lane page</a> covers for <code>celln agent</code> at the CLI. There is no path in today's <code>AgentRun</code> API to hand Celln a pre-declared, hash-pinned tool spec instead — that's the <code>celln spec</code>/<code>celln run</code> workflow on <a href="tool-lane.html">the tool lane page</a>, and it isn't exposed through Sympozium yet.</p>
+<p>What that means practically for a <code>backend: celln</code> run, taken straight from the request Sympozium actually sends:</p>
+<ul>
+<li>Only the generated program executes — no ambient host tools, no filesystem outside its own workspace, no network unless a future revision adds egress declarations to the request (none does today).</li>
+<li><code>workspace: "none"</code> — nothing persists between runs; there's no volume to mount a prior run's output into.</li>
+<li>Memory and output are fixed, not per-run configurable yet: 256MiB and a 64KiB output cap (<code>cellnMemoryBytes</code>/<code>cellnOutputBytes</code> in the controller). A task whose generated program needs more of either doesn't have a way to ask.</li>
+<li><code>requireHardwareIsolation: true</code> always — no fallback to a softer boundary if no KVM node is available; the run fails at dispatch instead.</li>
+</ul>
+<p>If a task genuinely needs tool-lane authority — running an already-attested binary rather than agent-generated code — that's a reason to use the <code>celln</code> CLI directly against a spec file, not <code>backend: celln</code> on an AgentRun. Whether that gap gets closed (an AgentRun field naming a pre-declared tool spec instead of a task string) is open; nothing here proposes it yet.</p>
+
 <h2>What's implemented, and what's next</h2>
 <ol>
 <li><strong>Done.</strong> The Celln dispatcher resolves content hashes, creates a Warden/microVM/sealed cell, executes the declared program, dissolves it, and returns a validated receipt — proven end to end on real KVM hardware, through the actual deployed Kubernetes router.</li>
