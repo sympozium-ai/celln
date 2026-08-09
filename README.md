@@ -270,7 +270,8 @@ The full set is published at [sympozium-ai.github.io/celln](https://sympozium-ai
 
 | Topic | Where | Covers |
 |---|---|---|
-| Five-minute tour | [docs/TRY_IT.md](docs/TRY_IT.md) | Install, connect an agent, run the two examples above, in order. |
+| Start here | [Start here](https://sympozium-ai.github.io/celln/start.html) | Five commands, about five minutes: install, connect an agent, then `doctor` / `spec` / `run` / `verify` / `agent` in order. |
+| Command reference | [CLI](https://sympozium-ai.github.io/celln/cli.html) | The commands most people need, grouped: daily use, asking an agent, running declared tools, inspecting a run. |
 | Concepts hub | [Concepts](https://sympozium-ai.github.io/celln/concepts.html) | The four-page series below, as one entry point. |
 | The model | [Model](https://sympozium-ai.github.io/celln/model.html) | Mote, cell, assay, warden, pilot — the vocabulary and one cell's lifecycle. |
 | Tool lane | [Tool lane](https://sympozium-ai.github.io/celln/tool-lane.html) | `celln spec` / `celln run` walkthrough: declaring a host binary, tiers, the interpreter flag. |

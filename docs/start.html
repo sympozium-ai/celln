@@ -1,9 +1,144 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Start here — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a aria-current="page" href="start.html">Start here</a><a href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav><main class="shell page"><aside><a href="#install">Install</a><a href="#setup">Connect an agent</a><a href="#ask">Ask a question</a><a href="#build">Build something</a><a href="#hardware">Hardware isolation</a></aside><article><div class="eyebrow">Getting started</div><h1>From install to isolated work.</h1><p>Celln drives an agent CLI you already trust—Codex, Claude, or Ollama. A KVM Linux host adds hardware-isolated cells for declared tools; generated programs use Celln's separate agent boundary.</p><h2 id="install">Install</h2><pre>brew install sympozium-ai/celln/celln
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Install Celln, connect an agent, and run the five-minute tour: doctor, spec, run, verify, and agent."><title>Start here — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a aria-current="page" href="start.html">Start here</a><a href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell page"><aside><a href="#install">Install</a><a href="#doctor">What can this host do?</a><a href="#setup">Connect an agent</a><a href="#ask">Ask a question</a><a href="#spec">Write &amp; check a spec</a><a href="#run">Seal a cell</a><a href="#verify">Verify</a><a href="#build">Have a model write code</a><a href="#piping">Piping</a><a href="#troubleshooting">Troubleshooting</a><a href="#next">Where to go next</a></aside>
+<article>
+<div class="eyebrow">Getting started</div>
+<h1>Five commands, about five minutes.</h1>
+<p>Celln drives an agent CLI you already trust — Codex, Claude, or Ollama. A KVM Linux host adds hardware-isolated cells for declared tools; generated programs use Celln's separate agent boundary. Each command below checks a specific property and explains the expected result.</p>
+
+<h2 id="install">Install</h2>
+<pre>brew install sympozium-ai/celln/celln
 
 # Linux only: required to build static generated programs
-rustup target add x86_64-unknown-linux-musl</pre><p>Check what this host can support:</p><pre>celln doctor</pre><h2 id="setup">Connect an agent</h2><pre>celln setup     # discovers logged-in codex, claude, or ollama
-celln agents    # shows available backends</pre><p><code>celln setup</code> saves your preferred backend. Change it later with <code>celln agents --set-default anthropic</code>, or override a single request with <code>--agent</code>.</p><h2 id="ask">Ask a question</h2><pre>celln ask "What does a binary tree look like? Explain it briefly."</pre><p><code>celln ask</code> uses your configured agent CLI directly. It is intentionally not a cell: no program runs and there is nothing to contain.</p><h2 id="build">Build something</h2><pre>celln agent "Write a program that prints the first 100 primes, space separated."</pre><p><code>celln agent</code> shows the source with <code>--show-source</code> and runs generated code behind the agent boundary: no network and only a workspace filesystem. Use <code>--allow-host example.com</code> only when the task genuinely needs a named HTTPS host; Celln brokers that fetch rather than giving the guest a network stack.</p><h2 id="hardware">Use a hardware-isolated cell</h2><p>For a declared, verified tool workflow, generate a spec and run it on Linux with readable <code>/dev/kvm</code>:</p><pre>celln spec init &gt; agent.toml
-celln spec check agent.toml
-celln run agent.toml
-celln verify</pre><p>Read <a href="security.html">the boundary</a> before treating a host as capable of hardware isolation. If KVM is unavailable, Celln says so; it does not pretend the fallback has the same property.</p></article></main><footer><div class="shell">Celln documentation · <a href="https://github.com/sympozium-ai/celln">GitHub</a></div></footer></body></html>
+rustup target add x86_64-unknown-linux-musl</pre>
+<p>Homebrew names the <code>sympozium-ai/homebrew-celln</code> repository as the <code>sympozium-ai/celln</code> tap. On Linux the formula downloads the static release archive; it does not build Celln with Rust locally. Release archives target Linux x86_64 — there is no ARM64 archive while the KVM backend is x86-specific.</p>
+
+<h2 id="doctor">What can this machine do?</h2>
+<pre>celln doctor</pre>
+<pre>host
+  &#10004; kvm            /dev/kvm available
+  &#10004; cpu-virt       vmx/svm present
+  &#10004; guest-kernel   /boot/vmlinuz-7.1.4-200.fc44.x86_64
+  &#10004; cargo          /home/you/.cargo/bin/cargo
+
+&#10004; this machine can seal real, hardware-isolated cells.</pre>
+<p>Every failed check prints what to do about it. Sealing cells needs Linux with <code>/dev/kvm</code>; generated-program cells additionally need <code>gcc</code>, <code>cpio</code>, and <code>e2fsprogs</code>. Everywhere else <code>celln</code> still validates specs and runs <code>celln demo</code>. Exit code <code>3</code> means "cannot seal cells," so a script can branch without parsing text:</p>
+<pre>celln doctor -q || echo "no hardware isolation here"</pre>
+
+<h2 id="setup">Connect an agent</h2>
+<pre>celln setup     # discovers logged-in codex, claude, or ollama
+celln agents    # shows available backends</pre>
+<p><code>celln setup</code> saves your preferred backend to a credential-free config file. Change it later with <code>celln agents --set-default anthropic</code>, or override a single request with <code>--agent</code> or <code>CELLN_AGENT</code>.</p>
+
+<h2 id="ask">Ask a question</h2>
+<pre>celln ask "What does a binary tree look like? Explain it briefly."</pre>
+<p><code>celln ask</code> uses your configured agent CLI directly, on the host. It is intentionally not a cell: no program runs and there is nothing to contain.</p>
+
+<h2 id="spec">Write and check a spec</h2>
+<p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell.</p>
+<pre>celln spec init &gt; agent.toml</pre>
+<pre>[[tool]]
+alias = "/usr/bin/python"
+path = "/usr/bin/python3"
+interpreter = true</pre>
+<p><code>interpreter = true</code> is the most consequential line in the file. An interpreter fed something the agent wrote is moved to the agent lane <em>for that invocation</em>, so an agent cannot launder its own code into full authority by handing it to <code>python</code>. <code>celln spec check</code> warns if you forget on a name it recognises.</p>
+<pre>$ celln spec check agent.toml
+&#10004; code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
+
+tools
+  /usr/bin/python          interpreter  /usr/bin/python3
+
+run
+  /usr/bin/python review.py
+  runs in the agent lane &mdash; demoted: an interpreter fed agent-authored input</pre>
+<p><strong>Expected result.</strong> It tells you the lane your run will land in before anything is sealed. Mistakes read like a compiler, and every one carries a fix:</p>
+<pre>invalid spec in agent.toml
+  &#10008; tool[0].path
+    /nope/missing does not exist
+    fix: point at a real file on this host; a tool is bytes, and they have to come from somewhere
+  &#10008; run.exec
+    "/usr/bin/ghost" is not one of the tools
+    fix: add a [[tool]] with alias = "/usr/bin/ghost", or point run.exec at one of: /usr/bin/python</pre>
+<p>A typo is an error, not a shrug — <code>teir = "forged"</code> is rejected rather than ignored, because a silently-dropped tier means a cell quietly running at the wrong trust level.</p>
+
+<h2 id="run">Seal a cell</h2>
+<pre>$ celln run agent.toml
+&#9679; sealing cell code-reviewer
+  + /usr/bin/python        tier=verified cold &mdash; verified now, forged queued
+  &middot; microVM sealed, phase=Materialise
+  &middot; /usr/bin/python sealed read-only into the cell
+  &middot; authority ratcheted to Work &mdash; no further tools can be lent
+  &#10004; /usr/bin/python permitted in the agent lane
+&#9679; cell dissolved</pre>
+<p><strong>Expected result.</strong></p>
+<ul>
+<li><code>cold — verified now, forged queued</code>: an unseen tool is admitted at Verified in seconds and a hermetic rebuild is queued behind the traffic. Launch is never slow; trust upgrades asynchronously. Run it again and it is <code>warm — page map, no build</code>.</li>
+<li><code>authority ratcheted to Work</code>: once any agent-authored code has run, the cell can never be lent another tool. Authority only shrinks, and the host enforces it, so a compromised cell cannot roll it back.</li>
+<li>Your Python binary is sealed into the microVM's physical address space as read-only memory.</li>
+</ul>
+<p><code>--dry-run</code> stops after resolving tools, if you only want to see what a spec would pull in.</p>
+
+<h2 id="verify">Prove the isolation, on your machine</h2>
+<pre>$ celln verify
+proving isolation on this machine
+  &#10004; a ring-0 guest with its own page tables cannot write lent tool code
+  &#10004; revoking a tool stops it in an already-running cell
+
+&#10004; isolation holds on this machine.</pre>
+<p><strong>Expected result.</strong> The first proof builds a guest that enters 32-bit protected mode, installs page tables <em>it wrote itself</em>, maps the sealed tool page writable in them, and writes. Guest-side that write is entirely legal — ring 0, PTE says writable, no fault. It still does not land, because stage-2 sits below the guest's own translation. Nothing in the guest is enforcing this. The guest is root.</p>
+
+<h2 id="build">Have a model write the code, and run it sealed</h2>
+<p><code>celln agent</code> is the path that executes agent-authored code. This is for <strong>computations, not questions</strong>: a cell exists to contain code you would rather not run unsealed — if nothing executes, it has nothing to protect you from, and <code>celln ask</code> is the right tool.</p>
+<pre>$ celln agent "print the first 100 primes, space separated"
+&#9679; asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
+  &middot; waiting for claude (up to 90s; --timeout changes it)
+  &middot; replied in 5s
+  &middot; selected sealed runtime: Rust 2021 (static musl); 23 source lines
+  + rebuilt, reproduced  blake3:c0d7ceb8&hellip;  436 KiB  tier=forged author=agent
+  &middot; cell sealed, tools lent read-only
+  &#10004; pilot: /agent/program permitted:agent
+
+2 3 5 7 11 13 17 19 23 29 31 &hellip;</pre>
+<p>The program ran in the <strong>agent lane</strong>. It was graded <code>forged</code> — <code>forge</code> rebuilt it twice and the bytes matched, so the tier was earned rather than asserted. It is still <code>author=agent</code>, and agent-authored code never carries tool-lane authority at any tier. Compiling is not a way around that: <code>rustc</code> fed model-written source is <code>python</code> fed model-written source with the interpretation moved earlier.</p>
+<p>A cell has <strong>no network at all</strong>, so a task that genuinely needs one will build and then do nothing — <code>celln agent</code> warns up front when a task looks like that. Declare exactly where it may reach before the model is called:</p>
+<pre>celln agent --allow-host example.com "crawl https://example.com/&hellip;"</pre>
+<p>Pick who writes it, and see what this host can use:</p>
+<pre>celln agents
+celln agent --agent openai "&hellip;"        # or --agent local
+celln agent --show-source "&hellip;"         # print the program it wrote</pre>
+<p>Backends are subprocess adapters over CLIs you have already authenticated — <code>celln</code> never reads, stores, or forwards a key.</p>
+
+<h2 id="piping">Piping</h2>
+<p>Human on a terminal, NDJSON when not. No flag required:</p>
+<pre># which tools went cold?
+celln run agent.toml | jq -r 'select(.event=="tool_resolved" and .warm==false) | .alias'
+
+# fail a build if a spec would run something in the tool lane
+celln spec check agent.toml | jq -e 'select(.event=="run_plan") | .lane=="data"'
+
+# just the proofs
+celln verify | jq -c 'select(.event=="proof")'</pre>
+<p>Diagnostics and warnings go to <strong>stderr</strong>, so <code>| jq</code> never chokes on prose. <code>--json</code> and <code>--no-json</code> force the mode when you want it explicit.</p>
+<p>Three more worth knowing: <code>celln demo</code> is the five-beat proof loop and runs anywhere — laptop, container, CI runner with no virtualization at all. <code>celln tools</code> lists what this host has attested so far. <code>celln agents</code> lists which model backends this host can use.</p>
+
+<h2 id="troubleshooting">When something says it cannot</h2>
+<table>
+<thead><tr><th>Message</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>/dev/kvm not present</code></td><td>Virtualization off in firmware, or a VM without nested virt</td></tr>
+<tr><td><code>/dev/kvm present but not readable</code></td><td><code>sudo usermod -aG kvm $USER</code>, then log out and in</td></tr>
+<tr><td><code>no readable /boot/vmlinuz-*</code></td><td>Only affects the boot-path demos, not <code>celln run</code></td></tr>
+<tr><td><code>anthropic needs `claude` on PATH</code></td><td><code>celln agent</code> drives a CLI you have already logged into — see <code>celln agents</code></td></tr>
+<tr><td><code>reported error_during_execution</code></td><td>The model CLI failed, not Celln. Some prompts trigger it every time; rewording helps more than retrying</td></tr>
+</tbody>
+</table>
+
+<h2 id="next">Where to go next</h2>
+<table>
+<tbody>
+<tr><td>Understand the model behind all of this</td><td><a href="concepts.html">Concepts</a> — mote, cell, the two lanes, and the security boundary</td></tr>
+<tr><td>Run hardware checks and measurements</td><td><code>celln verify</code> and <code>make bench-kvm</code></td></tr>
+<tr><td>Working on Celln itself</td><td><a href="https://github.com/sympozium-ai/celln/blob/main/AGENTS.md">AGENTS.md</a>, then <code>make help</code></td></tr>
+</tbody>
+</table>
+</article></main><footer><div class="shell">Celln documentation &middot; <a href="https://github.com/sympozium-ai/celln">GitHub</a></div></footer></body></html>
