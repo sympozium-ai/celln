@@ -116,7 +116,7 @@ task = "write a python program that prints a 5x5 multiplication table"</pre>
  3  6  9 12 15
  4  8 12 16 20
  5 10 15 20 25</pre>
-<p><code>--task "&hellip;"</code> overrides the task in the file, so one reviewed spec can serve many jobs. Nobody asked for the agent lane there: model-written code is agent-authored input handed to an attested interpreter, so it is demoted for that invocation. python keeps its hash and loses its authority.</p>
+<p><code>--task "&hellip;"</code> overrides the task in the file, so one reviewed spec can serve many jobs. You never had to ask for the agent lane there: model-written code is agent-authored input handed to a tool marked <code>interpreter = true</code>, so it is demoted for that invocation. python keeps its hash and loses its authority.</p>
 <p><code>agent.exec</code> has to name a declared tool marked <code>interpreter = true</code>, and a cell either declares runs or asks for one &mdash; never both.</p>
 
 <h3>Without a file</h3>

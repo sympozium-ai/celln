@@ -18,10 +18,10 @@ A model wrote that code. An attested python ran it, on input you have no reason
 to trust, in a cell with no network and nothing writable but `/tmp` — then the
 cell dissolved.
 
-Read the second line again. It says **agent** lane, and nobody asked for it.
-python is fully attested and keeps its hash, but code a model wrote is
-agent-authored input, so handing it to an attested interpreter demotes that
-invocation. Authority is decided per call, not per binary.
+Read the second line again. It says **agent** lane, and you never had to ask
+for it. python is fully attested and keeps its hash, but code a model wrote is
+agent-authored input, and handing that to a tool marked `interpreter = true`
+demotes the invocation. Authority is decided per call, not per binary.
 
 <p align="center">
   <img src="docs/assets/stack.gif" width="940"
@@ -250,9 +250,9 @@ $ celln agent --tool python "decode this base64 and name the file type: R0lGODlh
 GIF image
 ```
 
-Nobody asked for the **agent** lane there. The model's code is agent-authored
-input handed to an attested interpreter, so it is demoted for that invocation —
-python keeps its hash and loses its authority.
+You never had to ask for the **agent** lane there. The model's code is
+agent-authored input handed to a tool marked `interpreter = true`, so it is
+demoted for that invocation — python keeps its hash and loses its authority.
 
 **Or forged from source.** Without `--tool`, the model writes Rust and Celln
 compiles it, which is where the more interesting claim lives:
