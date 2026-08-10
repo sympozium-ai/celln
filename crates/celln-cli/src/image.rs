@@ -419,32 +419,67 @@ pub fn pull(reference: &str, root: &Path, o: &Out) -> Result<u8> {
     Ok(crate::exit::OK)
 }
 
+/// What is materialised on this host, by the name you would use for it.
 pub fn list(root: &Path, o: &Out) -> Result<u8> {
-    let dir = images_dir(root);
-    let mut rows: Vec<(String, u64)> = std::fs::read_dir(&dir)
+    // A digest is the identity, but nobody remembers one. The catalogue knows
+    // the name it was pulled under, so show that and keep the digest short.
+    let known: std::collections::HashMap<String, CatalogueImage> = catalogue_in(root)
+        .images
+        .into_iter()
+        .filter_map(|i| {
+            let digest = i.ref_.split_once('@')?.1.to_owned();
+            Some((digest, i))
+        })
+        .collect();
+
+    let mut rows: Vec<(String, String, String, u64)> = std::fs::read_dir(images_dir(root))
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "ext2"))
         .filter_map(|e| {
             let len = e.metadata().ok()?.len();
-            let name = e.path().file_stem()?.to_string_lossy().replace('_', ":");
-            Some((name, len))
+            let digest = e.path().file_stem()?.to_string_lossy().replace('_', ":");
+            let (name, tag) = match known.get(&digest) {
+                Some(i) => (i.name.clone(), i.tag.clone()),
+                // Pulled by digest, or its catalogue entry has since gone.
+                None => ("(untracked)".to_string(), String::new()),
+            };
+            Some((name, tag, digest, len))
         })
         .collect();
     rows.sort();
+
     if rows.is_empty() {
-        o.note(dim("no images — `celln image pull <name@sha256:...>`"));
+        o.note(dim(
+            "no images — `celln image add <image:tag>`, or `celln image catalogue` to see what ships",
+        ));
         return Ok(crate::exit::OK);
     }
-    for (digest, len) in rows {
+    for (name, tag, digest, len) in rows {
         o.event(
             "image",
-            serde_json::json!({ "digest": digest, "bytes": len }),
-            format!("  {:<78} {:>5} MiB", digest, len / (1 << 20)),
+            serde_json::json!({
+                "name": name, "tag": tag, "digest": digest, "bytes": len,
+            }),
+            format!(
+                "  {:<12} {:>5} MiB  {}  {}",
+                name,
+                len / (1 << 20),
+                dim(&short_digest(&digest)),
+                dim(&tag)
+            ),
         );
     }
     Ok(crate::exit::OK)
+}
+
+/// `sha256:229a2c5bfa27…` — enough to recognise, short enough to read.
+fn short_digest(digest: &str) -> String {
+    match digest.split_once(':') {
+        Some((algo, hex)) if hex.len() > 12 => format!("{algo}:{}…", &hex[..12]),
+        _ => digest.to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -534,6 +569,15 @@ mod catalogue {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn a_digest_is_shortened_to_something_readable() {
+        let full = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(short_digest(&full), format!("sha256:{}…", "a".repeat(12)));
+        // Anything unexpected is passed through rather than mangled.
+        assert_eq!(short_digest("sha256:abc"), "sha256:abc");
+        assert_eq!(short_digest("nonsense"), "nonsense");
     }
 
     #[test]
