@@ -135,8 +135,16 @@ impl Manifest {
     }
 
     /// Resolve a path-style alias to its attested entry, if any.
+    ///
+    /// Skips revoked entries. More than one entry can carry the same alias —
+    /// revoke-then-readmit (superseding a stale binary) leaves the old hash
+    /// in place, just revoked — and entries are keyed by hash in a `BTreeMap`,
+    /// so without this filter the one returned would depend on hash ordering
+    /// rather than which one is actually live.
     pub fn resolve_alias(&self, alias: &str) -> Option<&Entry> {
-        self.entries.values().find(|e| e.alias == alias)
+        self.entries
+            .values()
+            .find(|e| e.alias == alias && !self.revoked.contains(&e.hash))
     }
 
     /// The exec-by-hash gate. An exec is permitted iff the hash is attested and
@@ -180,6 +188,12 @@ impl Manifest {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// All admitted entries, for listing. Order is by hash, not insertion —
+    /// callers that want a stable human order should sort by alias.
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.values()
     }
 }
 

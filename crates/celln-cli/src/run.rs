@@ -470,7 +470,8 @@ pub fn tools(root: &Path, o: &Out) -> Result<u8> {
     let m = assayer.manifest();
     if m.is_empty() {
         o.note(dim(
-            "no tools attested yet — `celln run` admits them as it resolves",
+            "no tools attested yet — `celln run` admits them as it resolves, \
+             or `celln prewarm` admits the usual suspects up front",
         ));
         return Ok(exit::OK);
     }
@@ -489,6 +490,38 @@ pub fn tools(root: &Path, o: &Out) -> Result<u8> {
             })
         ),
     );
+
+    let mut entries: Vec<_> = m.entries().collect();
+    entries.sort_by(|a, b| a.alias.cmp(&b.alias));
+    for e in entries {
+        let revoked = m.is_revoked(&e.hash);
+        o.event(
+            "tool_entry",
+            serde_json::json!({
+                "alias": e.alias,
+                "hash": e.hash.to_string(),
+                "tier": e.tier.to_string(),
+                "interpreter": e.interpreter,
+                "author": e.author.to_string(),
+                "revoked": revoked,
+            }),
+            format!(
+                "  {} {:<32} tier={:<8} {}{}",
+                if revoked { red("✘") } else { green("✔") },
+                e.alias,
+                e.tier.to_string(),
+                dim(&format!(
+                    "author={} interpreter={}",
+                    e.author, e.interpreter
+                )),
+                if revoked {
+                    format!("  {}", red("REVOKED"))
+                } else {
+                    String::new()
+                }
+            ),
+        );
+    }
     Ok(exit::OK)
 }
 
