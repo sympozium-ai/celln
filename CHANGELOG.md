@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.2
+
+### Security
+
+- **A declared interpreter could be ignored, running agent-authored code in the
+  tool lane.** The laundering ban turns on `Entry::interpreter`, and
+  `Assayer::resolve` used the caller's declaration only when admitting bytes it
+  had not seen. On a warm hit it returned the stored entry and discarded the
+  declaration — so if any spec had admitted a tool as a plain binary, every
+  later spec that correctly marked it an interpreter was ignored, and
+  agent-authored input ran with full tool-lane authority. Nothing warned.
+
+  Interpreter-ness now only ever tightens: declaring it re-admits before
+  anything runs, and declaring `false` cannot loosen an entry already marked.
+  It is a property of the bytes, not of whoever admitted them first.
+
+  Affects 0.5.0 and 0.5.1, and only a host whose store already held the tool
+  as a non-interpreter — a fresh store admits the declared value correctly.
+
 ## 0.5.1
 
 ### Fixed
