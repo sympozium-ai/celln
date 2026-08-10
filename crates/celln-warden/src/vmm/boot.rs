@@ -93,8 +93,15 @@ pub const MIN_TOOL_WINDOW: u64 = 32 << 20;
 /// nd_pmem refuses a namespace whose base or length is not 2 MiB aligned.
 const PMEM_ALIGN: u64 = 2 << 20;
 
-pub fn tool_window_size(pmem_bytes: Option<usize>) -> u64 {
-    let want = pmem_bytes.unwrap_or(0) as u64;
+/// Each namespace is padded to the alignment nd_pmem requires, so they can sit
+/// back to back and still each be mappable.
+pub fn pmem_extent(len: usize) -> u64 {
+    (len as u64).div_ceil(PMEM_ALIGN) * PMEM_ALIGN
+}
+
+/// Total hole needed for every namespace, never under the minimum.
+pub fn tool_window_size(pmems: &[usize]) -> u64 {
+    let want: u64 = pmems.iter().map(|&l| pmem_extent(l)).sum();
     want.max(MIN_TOOL_WINDOW).div_ceil(PMEM_ALIGN) * PMEM_ALIGN
 }
 
@@ -354,7 +361,7 @@ pub struct BootConfig {
     /// Declare the sealed tool window to the kernel as persistent memory, so
     /// the nvdimm drivers turn it into `/dev/pmem0` and a filesystem inside it
     /// can be mounted with DAX. Size in bytes; see [`BootConfig::with_pmem`].
-    pub pmem_bytes: Option<usize>,
+    pub pmem_bytes: Vec<usize>,
 }
 
 impl BootConfig {
@@ -379,7 +386,7 @@ impl BootConfig {
                 .into(),
             mem_size: 256 << 20,
             timeout: Duration::from_secs(20),
-            pmem_bytes: None,
+            pmem_bytes: Vec::new(),
         }
     }
 
@@ -391,7 +398,14 @@ impl BootConfig {
     /// tells the kernel it exists at all — and it announces it as pmem, which
     /// is memory the kernel maps but never allocates from.
     pub fn with_pmem(mut self, len: usize) -> Self {
-        self.pmem_bytes = Some(len);
+        self.pmem_bytes = vec![len];
+        self
+    }
+
+    /// Declare several namespaces, one per sealed image. They appear in the
+    /// guest as /dev/pmem0, /dev/pmem1, … in this order.
+    pub fn with_pmems(mut self, lens: &[usize]) -> Self {
+        self.pmem_bytes = lens.to_vec();
         self
     }
 
@@ -857,7 +871,7 @@ impl LinuxCell {
                  {TOOL_WINDOW_GPA:#x}"
             )));
         }
-        let window = tool_window_size(cfg.pmem_bytes);
+        let window = tool_window_size(&cfg.pmem_bytes);
         if (cfg.mem_size as u64) <= TOOL_WINDOW_GPA {
             return Err(VmmError::Backend(format!(
                 "mem_size {} must exceed {TOOL_WINDOW_GPA:#x}; RAM has to \
@@ -923,7 +937,7 @@ impl LinuxCell {
         mem.write(CMDLINE_GPA, &cmdline)?;
         mem.write(
             ZERO_PAGE_GPA,
-            &zero_page(&image, cfg.mem_size, initrd, cfg.pmem_bytes),
+            &zero_page(&image, cfg.mem_size, initrd, &cfg.pmem_bytes),
         )?;
         mem.write(GDT_GPA, &boot_gdt())?;
         write_page_tables(&mem)?;
@@ -993,7 +1007,9 @@ impl LinuxCell {
             .map_err(|e| kvm_err("set_user_memory_region(tool)", e))?;
         self.tools.insert(hash.clone(), (self.next_slot, gpa, len));
         self.next_slot += 1;
-        self.next_tool_gpa += len as u64;
+        // Advance by the aligned extent, not the raw length, so the Nth
+        // sealed image lands exactly on the Nth declared namespace base.
+        self.next_tool_gpa += pmem_extent(len);
         Ok(gpa)
     }
 
@@ -1091,7 +1107,7 @@ impl LinuxCell {
         Ok(Mote {
             ram,
             ram_size: self._mem.len,
-            tool_window: tool_window_size(self.cfg.pmem_bytes),
+            tool_window: tool_window_size(&self.cfg.pmem_bytes),
             cpuid: self.cpuid.clone(),
             regs: vcpu.get_regs().map_err(|e| kvm_err("get_regs", e))?,
             sregs: vcpu.get_sregs().map_err(|e| kvm_err("get_sregs", e))?,
@@ -1490,7 +1506,7 @@ fn zero_page(
     image: &BzImage,
     mem_size: usize,
     initrd: Option<(u32, u32)>,
-    pmem_bytes: Option<usize>,
+    pmem_bytes: &[usize],
 ) -> Vec<u8> {
     let mut zp = vec![0u8; PAGE];
     zp[HDR_START..HDR_END].copy_from_slice(&image.bytes[HDR_START..HDR_END]);
@@ -1528,14 +1544,11 @@ fn zero_page(
         TOOL_WINDOW_GPA - KERNEL_GPA,
         E820_RAM,
     );
-    if let Some(len) = pmem_bytes {
-        push(
-            &mut zp,
-            &mut entries,
-            TOOL_WINDOW_GPA,
-            len as u64,
-            E820_PRAM,
-        );
+    // One e820 entry per namespace, laid out back to back inside the hole.
+    let mut at = TOOL_WINDOW_GPA;
+    for &len in pmem_bytes {
+        push(&mut zp, &mut entries, at, len as u64, E820_PRAM);
+        at += pmem_extent(len);
     }
     push(
         &mut zp,
@@ -1634,14 +1647,14 @@ mod tests {
 
     #[test]
     fn tool_window_is_2mib_aligned_and_never_under_the_minimum() {
-        assert_eq!(tool_window_size(None), MIN_TOOL_WINDOW);
-        assert_eq!(tool_window_size(Some(4096)), MIN_TOOL_WINDOW);
-        assert_eq!(tool_window_size(Some(192 << 20)), 192 << 20);
+        assert_eq!(tool_window_size(&[]), MIN_TOOL_WINDOW);
+        assert_eq!(tool_window_size(&[4096]), MIN_TOOL_WINDOW);
+        assert_eq!(tool_window_size(&[192 << 20]), 192 << 20);
 
         // nd_pmem rejects an unaligned namespace outright, so a real image
         // size has to round up rather than be used verbatim.
         let image = 144_703_488usize;
-        let w = tool_window_size(Some(image));
+        let w = tool_window_size(&[image]);
         assert!(w >= image as u64);
         assert_eq!(w % PMEM_ALIGN, 0);
         assert!(w - (image as u64) < PMEM_ALIGN);
@@ -1652,13 +1665,33 @@ mod tests {
         // The window is a hole in RAM, so widening it must extend the
         // allocation rather than take memory away from the guest.
         let mem = 256usize << 20;
-        for pmem in [None, Some(8 << 20), Some(138 << 20)] {
-            let w = tool_window_size(pmem);
+        for pmem in [vec![], vec![8 << 20], vec![138 << 20]] {
+            let w = tool_window_size(&pmem);
             let low = TOOL_WINDOW_GPA;
             let high = mem as u64 - TOOL_WINDOW_GPA;
             assert_eq!(low + high, mem as u64, "guest RAM must stay {mem}");
             assert!(TOOL_WINDOW_GPA + w + high <= (mem as u64 + w));
         }
+    }
+
+    #[test]
+    fn several_namespaces_are_laid_out_back_to_back_and_aligned() {
+        // Each image gets its own namespace, and the Nth seal has to land on
+        // the Nth declared base or the guest mounts the wrong bytes.
+        let lens = [10 << 20, 3 << 20, 1234567];
+        let total = tool_window_size(&lens);
+        assert!(total >= lens.iter().map(|&l| pmem_extent(l)).sum::<u64>());
+        assert_eq!(total % PMEM_ALIGN, 0);
+
+        let mut at = TOOL_WINDOW_GPA;
+        for &l in &lens {
+            assert_eq!(at % PMEM_ALIGN, 0, "every namespace base must align");
+            at += pmem_extent(l);
+        }
+        assert!(
+            at <= TOOL_WINDOW_GPA + total,
+            "namespaces must fit the hole"
+        );
     }
 
     #[test]

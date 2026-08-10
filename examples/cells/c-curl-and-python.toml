@@ -1,0 +1,39 @@
+# (c) Two tools from two separate images, in one cell.
+#
+# Each image is its own sealed namespace, mounted independently. Tools that
+# share an image share its mount, so 1:1, many:1 and many:many are all just
+# how tools map onto images.
+
+name = "curl-and-python"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[[tool]]
+alias = "/bin/sh"
+image = "python"                   # same image as python: shares the mount
+exec  = "/bin/dash"
+interpreter = true
+
+[[tool]]
+alias = "/usr/bin/curl"
+image = "curl"                     # a second, independent image
+exec  = "/usr/bin/curl"
+
+[[run]]
+exec = "/usr/bin/python"
+args = ["-c", "import ssl; print('python  ', ssl.OPENSSL_VERSION)"]
+
+[[run]]
+exec = "/usr/bin/curl"
+args = ["--version"]
+
+[[run]]
+exec = "/bin/sh"
+args = ["-c", "echo 'sh      from the python image'"]

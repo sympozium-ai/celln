@@ -390,10 +390,26 @@ fn execute(
     let runtime = crate::agent::runtime_root()?;
     let work = crate::agent::tempdir()?;
 
-    let image = resolved.iter().find(|(t, _, _)| t.image.is_some());
-    let image_bytes = match image {
-        Some((t, _, _)) => Some(std::fs::read(image_path(t, root)?)?),
-        None => None,
+    // Every distinct image becomes its own sealed namespace. Tools sharing an
+    // image share the mount, so 1:1, many:1 and many:many all fall out of the
+    // same mapping.
+    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    for (t, _, _) in resolved.iter().filter(|(t, _, _)| t.image.is_some()) {
+        let path = image_path(t, root)?;
+        let key = path.display().to_string();
+        if !images.iter().any(|(k, _)| *k == key) {
+            images.push((key, std::fs::read(&path)?));
+        }
+    }
+    let mount_of = |t: &celln_spec::Tool| -> Option<String> {
+        let path = image_path(t, root).ok()?;
+        let key = path.display().to_string();
+        let idx = images.iter().position(|(k, _)| *k == key)?;
+        Some(if idx == 0 {
+            "/tools".to_string()
+        } else {
+            format!("/tools{idx}")
+        })
     };
     let files: Vec<&(celln_spec::Tool, Hash, Vec<u8>)> = resolved
         .iter()
@@ -409,7 +425,7 @@ fn execute(
         };
         let (path, root_dir) = match (&tool.image, &tool.exec) {
             _ if tool.builtin.as_deref() == Some("fetch") => ("/pilot-fetch".to_string(), None),
-            (Some(_), Some(exec)) => (exec.clone(), Some("/tools".to_string())),
+            (Some(_), Some(exec)) => (exec.clone(), mount_of(tool)),
             _ => (
                 format!(
                     "/tools/{}",
@@ -440,8 +456,8 @@ fn execute(
     // holds every tool resolved above.
     let manifest = root.join("manifest.json");
     let toolfs = work.join("toolfs.img");
-    match &image_bytes {
-        Some(bytes) => std::fs::write(&toolfs, bytes)?,
+    match images.first() {
+        Some((_, bytes)) => std::fs::write(&toolfs, bytes)?,
         None => {
             let mut args = vec![toolfs.display().to_string(), "32".into()];
             for (t, _, bytes) in &files {
@@ -474,16 +490,23 @@ fn execute(
     )?;
 
     let payload = std::fs::read(&toolfs)?;
+    let mut lens: Vec<usize> = vec![payload.len()];
+    lens.extend(images.iter().skip(1).map(|(_, b)| b.len()));
+
     let kernel = BootConfig::host_kernel()
         .context("no readable /boot/vmlinuz-* with matching /lib/modules")?;
     let mut cfg = BootConfig::new(&kernel)
-        .with_pmem(payload.len())
+        .with_pmems(&lens)
         .with_initrd(&initrd);
     cfg.mem_size = spec.memory_bytes() as usize;
 
     let mut cell = LinuxCell::boot(cfg).context("booting the cell")?;
     let h = Hash::of(&payload);
     cell.seal_tool(&h, &payload).context("sealing tools")?;
+    for (_, bytes) in images.iter().skip(1) {
+        cell.seal_tool(&Hash::of(bytes), bytes)
+            .context("sealing an additional image")?;
+    }
     o.event(
         "cell_sealed",
         serde_json::json!({"backend": "kvm", "hash": h.0, "bytes": payload.len()}),
@@ -515,6 +538,17 @@ fn execute(
             "the cell booted but pilot never started, so nothing ran. \
              Guest console tail: {}",
             tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        );
+    }
+    for m in report
+        .console
+        .lines()
+        .filter_map(|l| l.strip_prefix("CELLN:tools_mounted="))
+    {
+        o.event(
+            "image_mounted",
+            serde_json::json!({ "mount": m }),
+            format!("  {} image mounted at {}", dim("·"), m),
         );
     }
     let mut code = 0u8;

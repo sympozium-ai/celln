@@ -277,6 +277,30 @@ static void remount_tools_ro(void) {
 	report("dax_ro_mount", rc == 0 ? "ok" : "failed");
 }
 
+/* Mount every additional sealed namespace read-only at /tools1, /tools2, …
+ *
+ * The host lays namespaces back to back in the tool window and declares one
+ * e820 entry each, so the kernel publishes /dev/pmem0, /dev/pmem1, … in the
+ * same order. pmem0 stays at /tools; the rest get numbered mounts, which is
+ * how one cell is lent several independent images. */
+static void mount_extra_tools(void) {
+	char dev[] = "/dev/pmemN";
+	char dir[] = "/toolsN";
+	for (int i = 1; i < 8; i++) {
+		dev[9] = (char)('0' + i);
+		dir[6] = (char)('0' + i);
+		long fd = sys(SYS_open, (long)dev, O_RDONLY, 0, 0, 0, 0);
+		if (fd < 0) break;
+		sys(SYS_close, fd, 0, 0, 0, 0, 0);
+		long rc = sys(SYS_mount, (long)dev, (long)dir, (long) "ext2",
+		              1 /* MS_RDONLY */, (long) "dax=always", 0);
+		if (rc != 0)
+			rc = sys(SYS_mount, (long)dev, (long)dir, (long) "ext4",
+			         1 /* MS_RDONLY */, (long) "dax=always", 0);
+		report(rc == 0 ? "tools_mounted" : "tools_mount_failed", dir);
+	}
+}
+
 /* Returns 1 if /tools ended up mounted and so needs the read-only remount. */
 static int probe_tool_dax(void) {
 	sys(SYS_mount, (long) "proc", (long) "/proc", (long) "proc", 0, 0, 0);
@@ -381,6 +405,7 @@ static int probe_tool_dax(void) {
 static void probe_tool_by_path(void) {
 	if (probe_tool_dax())
 		remount_tools_ro();
+	mount_extra_tools();
 }
 
 void _start(void) {
