@@ -38,8 +38,14 @@ PANEL="#ffffff"
 INK="#17221e"
 DIM="#5c675f"
 ACCENT="#165a47"
-WARN="#b44a32"
-OK="#7fa650"
+# NAMES_AND_CONVENTIONS assigns teal to the tool lane, amber to the agent lane
+# and red to danger. Those values are tuned for dark backgrounds and are too
+# light to read as text on cream, so these are the same hues darkened until
+# they pass as body text. The point is the hue: amber must not be red, or a
+# reader takes "different authority" to mean "something went wrong".
+TEAL="#1d7a67"
+AMBER="#a8701c"
+RED="#b44a32"
 
 # frame(index, cell_op, dx, tool_op, sealed, agent_op, out_op, revoke_op,
 #       lane, caption, beat)
@@ -58,8 +64,8 @@ frame() {
 
   local lane_fill="$DIM" lane_text=""
   case "$lane" in
-    tool) lane_fill="$OK";   lane_text="tool lane" ;;
-    data) lane_fill="$WARN"; lane_text="agent lane · demoted" ;;
+    tool) lane_fill="$TEAL";  lane_text="tool lane" ;;
+    data) lane_fill="$AMBER"; lane_text="agent lane · demoted" ;;
   esac
 
   cat > "$work/f$(printf '%03d' "$i").svg" <<SVG
@@ -103,9 +109,9 @@ frame() {
 
     <!-- the model's program: the thing to be suspicious of -->
     <g opacity="$agent_op">
-      <rect x="488" y="248" width="196" height="52" rx="4" fill="$PANEL" stroke="$WARN" stroke-width="1" stroke-dasharray="3 3"/>
-      <text x="504" y="270" font-family="DejaVu Sans Mono" font-size="12" fill="$WARN">a model wrote this</text>
-      <text x="504" y="288" font-family="DejaVu Sans Mono" font-size="11" fill="$DIM">python, never attested</text>
+      <rect x="488" y="248" width="196" height="52" rx="4" fill="$PANEL" stroke="$AMBER" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="504" y="270" font-family="DejaVu Sans Mono" font-size="12" fill="$AMBER">a model wrote this</text>
+      <text x="504" y="288" font-family="DejaVu Sans Mono" font-size="11" fill="$DIM">data, not a tool</text>
     </g>
   </g>
 
@@ -127,8 +133,8 @@ frame() {
 
   <!-- interpretation: the model's program handed to an attested tool -->
   <g opacity="$([ -n "$lane_text" ] && echo 1 || echo 0)">
-    <path d="M586 248 L586 236" stroke="$WARN" stroke-width="1" stroke-dasharray="3 2"/>
-    <path d="M582 240 L586 233 L590 240" fill="none" stroke="$WARN" stroke-width="1"/>
+    <path d="M586 248 L586 236" stroke="$AMBER" stroke-width="1" stroke-dasharray="3 2"/>
+    <path d="M582 240 L586 233 L590 240" fill="none" stroke="$AMBER" stroke-width="1"/>
     <rect x="700" y="248" width="182" height="26" rx="3" fill="none" stroke="$lane_fill" stroke-width="1"/>
     <text x="712" y="265" font-family="DejaVu Sans Mono" font-size="11" fill="$lane_fill">$lane_text</text>
   </g>
