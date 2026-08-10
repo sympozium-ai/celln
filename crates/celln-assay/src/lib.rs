@@ -117,8 +117,14 @@ impl Assayer {
         upstream_bytes: &[u8],
         interpreter: bool,
     ) -> Result<Resolved, AssayError> {
+        // A warm hit has to be a hit on the content, not on the name. Two
+        // images can legitimately claim the same alias - /bin/sh is dash in
+        // one and busybox in another - and serving the first by alias would
+        // attest bytes that are not the ones about to run, which pilot then
+        // refuses in-cell as unattested.
+        let want = Hash::of(upstream_bytes);
         if let Some(entry) = self.manifest.resolve_alias(alias) {
-            if !self.manifest.is_revoked(&entry.hash) {
+            if entry.hash == want && !self.manifest.is_revoked(&entry.hash) {
                 return Ok(Resolved {
                     hash: entry.hash.clone(),
                     tier: entry.tier,
@@ -285,6 +291,24 @@ mod tests {
             Tier::Forged,
             "trust ratcheted up behind the traffic"
         );
+    }
+
+    #[test]
+    fn an_alias_reused_by_different_bytes_is_not_served_warm() {
+        // /bin/sh is dash in one image and busybox in another. Serving the
+        // first warm would attest bytes that are not the ones about to run.
+        let dir = tempdir().unwrap();
+        let mut a = Assayer::open(dir.path()).unwrap();
+        a.admit_verified("/bin/sh", b"dash-bytes", true).unwrap();
+
+        let r = a.resolve("/bin/sh", b"busybox-bytes", true).unwrap();
+        assert!(!r.warm, "different bytes must not be a warm hit");
+        assert_eq!(r.hash, Hash::of(b"busybox-bytes"));
+
+        // The same bytes still are.
+        let again = a.resolve("/bin/sh", b"busybox-bytes", true).unwrap();
+        assert!(again.warm);
+        assert_eq!(again.hash, Hash::of(b"busybox-bytes"));
     }
 
     #[test]
