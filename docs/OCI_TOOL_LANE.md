@@ -236,7 +236,7 @@ The stock 256 MiB cell fails to boot outright. **Fix:** relocate the tool window
 `probe_sealed_tool`'s `/dev/mem` path depends on the hardcoded `TOOL_GPA`; the
 real DAX path discovers the device from e820 and does not.
 
-### F2 — sealed images mount read-write, so writes silently vanish
+### F2 — sealed images mount read-write, so writes silently vanish — FIXED
 
 `init.c` performs its read-only remount only *after* successfully opening
 `/tools/probe` — a test fixture no real image contains. With a genuine image
@@ -254,11 +254,24 @@ original file:           3.20.10        ← sealed bytes intact
 ```
 
 The guest's in-memory inode cache fakes success. A tool that writes and reads
-back gets **silent corruption with no error**. For a single static binary that
-never writes this is invisible; for a full image where tools routinely write
-(`pip install` into `/usr/lib`) it is a serious hazard. **Fix:** decouple the
-read-only remount from the probe so it always runs — a proper `MS_RDONLY` mount
-returns a clean `EROFS` instead of lying.
+back gets **silent corruption with no error**. Worse, `init.c`'s own comment
+records that a read-write DAX mount over a read-only memslot eventually makes
+the writeback thread flush dirty pages into memory it cannot write and die with
+an invalid opcode in `arch_wb_cache_pmem` — so a long-running tool does not just
+corrupt, it can kill the guest.
+
+**Fixed.** The unmount-and-remount-read-only step was extracted from the tail of
+the probe into `remount_tools_ro()`, and the probe now returns whether it
+mounted, so the remount runs on *every* path that got far enough to mount rather
+than only the one where the fixture was found. Verified with a real image:
+
+```
+CELLN:dax_ro_mount=ok
+sh: can't create /bin/newfile: Read-only file system        rc=1
+sh: can't create /etc/alpine-release: Read-only file system rc=1
+sealed file: 3.20.10     ← intact
+tmpfs scratch: ok        ← per-cell writes still work
+```
 
 ### F3 — image size must be 2 MiB-aligned
 
@@ -341,10 +354,9 @@ per-tool Landlock scoping stops being optional at this size.
 
 ## Sequencing
 
-1. **Relocate the tool window above RAM** (F1). Nothing larger than 32 MiB
+1. ~~**Decouple the read-only remount from the probe** (F2).~~ **Done.**
+2. **Relocate the tool window above RAM** (F1). Nothing larger than 32 MiB
    ships without it.
-2. **Decouple the read-only remount from the probe** (F2). Silent write
-   corruption is worse than a refusal.
 3. **Image → sealed ext2 builder**: skopeo pull by digest, ordered extraction,
    2 MiB-aligned deterministic `mke2fs`, correct ownership (F3, F4).
 4. **Spec/CLI surface**: `image =` + `exec =`, digest-only validation.

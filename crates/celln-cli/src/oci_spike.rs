@@ -173,18 +173,21 @@ mod tests {
             return;
         };
 
-        // NOTE: this asserts `dax_mount`, not `dax_ro_mount`, and that is a
-        // finding rather than a preference. init.c only performs the
-        // read-only remount *after* successfully opening `/tools/probe` — a
-        // test fixture no real image contains — so with a genuine OCI image
-        // it returns early and the tool mount stays read-write. The hardware
-        // seal still refuses the writes, but the guest holds a read-write
-        // superblock, which is exactly the dirty-page/writeback situation
-        // init.c's own comments say production wants to avoid.
         assert_eq!(
             r.guest_report("dax_mount"),
             Some("ok"),
             "the sealed image must mount over DAX"
+        );
+        // The read-only remount used to be skipped for any real image, because
+        // it sat behind an early return taken when `/tools/probe` (a test
+        // fixture no real image carries) could not be opened. A read-write
+        // mount over a read-only memslot makes writes report success and land
+        // nowhere, and eventually kills the guest in writeback. Assert it here
+        // so that regression cannot come back quietly.
+        assert_eq!(
+            r.guest_report("dax_ro_mount"),
+            Some("ok"),
+            "a sealed image must end up mounted read-only, whatever it contains"
         );
         assert_eq!(
             r.guest_report(&format!("pilot_run_{alias}"))
