@@ -1,6 +1,8 @@
 # Any tool in a cell: OCI images as the tool lane
 
-**Status:** proposal, with a working spike. Measured on real KVM hardware, 2026-08-10.
+**Status:** implemented on `feat/oci-tool-lane`. Every figure below was measured on real KVM hardware, 2026-08-10.
+
+For usage rather than rationale, start with the [tutorial](tutorial.html).
 
 ## The question
 
@@ -310,11 +312,34 @@ recorded ownership is correct.
 
 ```toml
 [[tool]]
-image = "docker://python@sha256:229a2c5bfa27…"   # digest, never a tag
+alias = "/usr/bin/python"
+image = "python"                   # a catalogue name, resolved to a shipped pin
 exec  = "/usr/local/bin/python3.12"
+interpreter = true
 ```
 
-Adding a tool becomes naming an image. That is the whole user-facing change.
+Adding a tool becomes naming an image. A digest-pinned reference works too; a
+tag never does.
+
+The catalogue is compiled into the binary, so pins travel with the version
+rather than being resolved at pull time, and `.github/workflows/tool-digests.yml`
+re-resolves the tags weekly and opens a PR when upstream moves. `celln setup`
+materialises the defaults; `celln image spec <name>` scaffolds a runnable spec.
+
+Several images mount into one cell, each as its own namespace, and tools naming
+the same image share its mount and its single physical copy — so one-to-one,
+many-to-one and many-to-many are the same mechanism.
+
+Egress is declared, not implied:
+
+```toml
+[cell]
+allow_hosts = ["google.com"]
+
+[[tool]]
+alias = "/fetch"
+builtin = "fetch"
+```
 
 ### Security model
 
@@ -371,12 +396,16 @@ per-tool Landlock scoping stops being optional at this size.
 4. ~~**Image → sealed ext2 builder**~~ **Done** as `celln image pull`
    (F3 done; F4 outstanding).
 5. ~~**Spec surface**: `image =` + `exec =`, digest-only validation.~~ **Done.**
-6. **Wire in-cell execution for the spec path** (M5). `celln run` resolves and
-   seals an image tool but does not yet exec it — that path still uses
-   `Cell<KvmVmm>`, which never boots a kernel.
-7. **Correct file ownership** (F4).
-8. **Layer-level sealing and overlayfs composition**, once image count justifies
-   the vermagic dependency.
+6. ~~**Wire in-cell execution for the spec path** (M5).~~ **Done** — `celln run`
+   boots a `LinuxCell` and runs every declared `[[run]]`.
+7. ~~**Mount several images into one cell.**~~ **Done** — the window holds a list
+   of namespaces; the guest mounts `/dev/pmem1..` at `/tools1..`.
+8. ~~**Brokered egress from a spec** (`allow_hosts`).~~ **Done.**
+9. **Correct file ownership** (F4). Files still carry the extracting user's uid.
+10. **Move cell scratch off `/tmp`.** It is a tmpfs on most hosts, so building a
+    toolfs and initramfs there costs the image size in RAM per launch.
+11. **Layer-level sealing and overlayfs composition**, once image count justifies
+    the vermagic dependency.
 
 ## Reproducing the spike
 
@@ -399,3 +428,18 @@ cargo test -p celln-cli --bin celln -- --ignored --nocapture \
 Note the python case needs `TOOL_WINDOW_SIZE` temporarily widened (F1) and
 `CELLN_SPIKE_MEM_MB=512`; the alpine case fits the stock 32 MiB window
 unmodified. The spike test lives in `crates/celln-cli/src/oci_spike.rs`.
+
+## Limits worth knowing
+
+- **Images are capped at 512 MiB.** Past roughly a gigabyte the guest panics in
+  `kernel_init` and produces no output at all; `run` now fails loudly when pilot
+  never starts, and `image pull` refuses an oversized image explaining that the
+  unit is a tool and its closure, not a distribution.
+- **curl cannot use the fetch capability.** It needs a socket, so reaching it
+  through curl would mean brokering raw TCP rather than a validated URL, which
+  discards the DNS pinning, redirect re-authorisation and protocol allowlist.
+- **Cell scratch lives in `/tmp`**, which is usually a tmpfs. A launch therefore
+  costs its image size in RAM on top of the shared sealed copy.
+- **Hermetic is not minimal.** `python` is 136 MiB sealed because CPython plus
+  its closure genuinely is that. If a tool is *static*, it needs no image at
+  all — the single-file `path =` route is smaller and simpler.

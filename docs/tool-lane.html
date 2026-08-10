@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tool lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
-<main class="shell page"><aside class="aside"><a href="#what">What it is</a><a href="#write">Write a spec</a><a href="#check">Check it</a><a href="#run">Run it</a><a href="#interpreter">The interpreter flag</a><a href="#enforced">What's enforced</a></aside>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tool lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a href="tutorial.html">Tutorial</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell page"><aside class="aside"><a href="#what">What it is</a><a href="#images">Closures</a><a href="#write">Write a spec</a><a href="#check">Check it</a><a href="#run">Run it</a><a href="#interpreter">The interpreter flag</a><a href="#enforced">What's enforced</a></aside>
 <article>
 <div class="eyebrow">Concepts &middot; 2 of 4</div>
 <h1>Lend a host binary, don't rebuild one.</h1>
@@ -17,6 +17,17 @@
 </tbody>
 </table>
 <p>Whichever tier a tool lands at, the cell only ever sees it as read-only pages it cannot modify — not by writing to the file, not by writing to its own page tables.</p>
+
+<h2 id="images">Tools that are a closure</h2>
+<p>Most real tools are not one file. <code>python</code>, <code>curl</code> and <code>node</code> are a binary plus a loader plus a tree of shared objects resolved by absolute path, and a cell has no loader and no libc of its own &mdash; on a typical host only a handful of the binaries in <code>/usr/bin</code> are static enough to lend on their own.</p>
+<p>So a closure is lent as a whole sealed filesystem, built from an OCI image and pinned by digest:</p>
+<pre>[[tool]]
+alias = "/usr/bin/python"
+image = "python"                   # a catalogue name; celln resolves the pin
+exec  = "/usr/local/bin/python3.12"
+interpreter = true</pre>
+<p>Materialise it once with <code>celln image pull</code>; a cell then maps bytes that already exist, so starting a cell never waits on a registry. A tag is refused &mdash; it can be moved, and what a cell is lent must not change without the spec changing.</p>
+<p>Several images can be mounted into one cell, and tools naming the same image share its mount and its single physical copy. Lend a tool and its dependencies, not a distribution: <code>celln image pull</code> refuses anything over 512&nbsp;MiB. The <a href="tutorial.html">tutorial</a> works through it.</p>
 
 <h2 id="write">Write a spec</h2>
 <p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell — that's the point of the file.</p>
