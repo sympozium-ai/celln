@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.3
+
+### Fixed
+
+- **`celln image pull python` failed on a fresh store**, so a new install could
+  not materialise the flagship tool. Every file occupies whole blocks, and
+  `python:3.12-slim` is mostly small stdlib files, so summing file sizes built
+  an image too small to hold its own contents: `Could not allocate block in
+  ext2 filesystem`. Sizing now counts blocks and directories.
+
+  A regression from 0.5.1. Deduping hardlinked inodes was correct — `mke2fs -d`
+  preserves hardlinks — but it tightened the estimate enough to cross the line.
+  Hosts that already had the image were unaffected.
+
+- **A failed image build left a partial filesystem behind**, which `image list`
+  reported as materialised and a spec could have sealed. It is removed on
+  failure, and mke2fs's own error is surfaced rather than a generic one.
+
+- **`celln setup` skipped tool images when no agent CLI was present**, returning
+  before it reached them. Which model writes code has nothing to do with which
+  tools a host can lend; the two are now independent, and the exit code still
+  reports the missing backend.
+
+- **A Kubernetes node never got its tool images.** The installer runs setup in
+  the host namespace, where there is no skopeo. Agent config and runtime assets
+  are now installed there with `--no-tools`, and images are materialised from
+  inside the installer container — which carries skopeo — into the host store
+  over the existing `/host` mount.
+
 ## 0.5.2
 
 ### Security
