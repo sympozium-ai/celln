@@ -1,6 +1,6 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tool lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
-<main class="shell page"><aside class="aside"><a href="#what">What it is</a><a href="#write">Write a spec</a><a href="#check">Check it</a><a href="#run">Run it</a><a href="#interpreter">The interpreter flag</a><a href="#enforced">What's enforced</a></aside>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Tool lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a href="tutorial.html">Tutorial</a><a aria-current="page" href="concepts.html">Concepts</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell page"><aside class="aside"><a href="#what">What it is</a><a href="#images">Closures</a><a href="#write">Write a spec</a><a href="#check">Check it</a><a href="#run">Run it</a><a href="#interpreter">The interpreter flag</a><a href="#enforced">What's enforced</a></aside>
 <article>
 <div class="eyebrow">Concepts &middot; 2 of 4</div>
 <h1>Lend a host binary, don't rebuild one.</h1>
@@ -18,6 +18,17 @@
 </table>
 <p>Whichever tier a tool lands at, the cell only ever sees it as read-only pages it cannot modify — not by writing to the file, not by writing to its own page tables.</p>
 
+<h2 id="images">Tools that are a closure</h2>
+<p>Most real tools are not one file. <code>python</code>, <code>curl</code> and <code>node</code> are a binary plus a loader plus a tree of shared objects resolved by absolute path, and a cell has no loader and no libc of its own &mdash; on a typical host only a handful of the binaries in <code>/usr/bin</code> are static enough to lend on their own.</p>
+<p>So a closure is lent as a whole sealed filesystem, built from an OCI image and pinned by digest:</p>
+<pre>[[tool]]
+alias = "/usr/bin/python"
+image = "python"                   # a catalogue name; celln resolves the pin
+exec  = "/usr/local/bin/python3.12"
+interpreter = true</pre>
+<p>Materialise it once with <code>celln image pull</code>; a cell then maps bytes that already exist, so starting a cell never waits on a registry. A tag is refused &mdash; it can be moved, and what a cell is lent must not change without the spec changing.</p>
+<p>Several images can be mounted into one cell, and tools naming the same image share its mount and its single physical copy. Lend a tool and its dependencies, not a distribution: <code>celln image pull</code> refuses anything over 512&nbsp;MiB. The <a href="tutorial.html">tutorial</a> works through it.</p>
+
 <h2 id="write">Write a spec</h2>
 <p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell — that's the point of the file.</p>
 <pre>celln spec init &gt; agent.toml</pre>
@@ -29,14 +40,15 @@ require_tier = "verified"
 
 [[tool]]
 alias = "/usr/bin/python"     # the name your agent uses
-path = "/usr/bin/python3"     # where the bytes come from on this host
+image = "python"              # the closure the bytes come from
+exec  = "/usr/local/bin/python3.12"
 interpreter = true            # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["review.py"]
+args = ["-c", "print('reviewed 42 files')"]
 input = "data"                # the agent wrote it</pre>
-<p><code>alias</code> is only a naming convenience — the content hash is the actual authority, never the path. <code>path</code> is where the bytes come from on <em>this</em> host; nothing about the alias survives a host that doesn't have that file.</p>
+<p><code>alias</code> is only a naming convenience — the content hash is the actual authority, never the name. <code>image</code> plus <code>exec</code> names the closure the bytes come from, pinned by digest so it cannot change under you; <code>path</code> is the alternative for a genuinely static binary already on this host.</p>
 
 <h2 id="check">Check it</h2>
 <p><code>celln spec check</code> validates the file and tells you exactly what the trust model will decide before anything runs:</p>
@@ -44,23 +56,25 @@ input = "data"                # the agent wrote it</pre>
 &#10004; code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
 
 tools
-  /usr/bin/python          interpreter  /usr/bin/python3
+  /usr/bin/python          interpreter  python &rarr; /usr/local/bin/python3.12
 
 run
-  /usr/bin/python review.py
+  /usr/bin/python -c print('reviewed 42 files')
   runs in the agent lane &mdash; demoted: an interpreter fed agent-authored input</pre>
-<p>Notice the verdict: even though <code>python</code> is fully attested, this particular invocation is demoted to the <em>agent</em> lane, because the input it's being fed (<code>review.py</code>) is marked <code>data</code> — something the agent wrote, not something that came in through the attestation gate. See <a href="agent-lane.html">the agent lane</a> for why that matters.</p>
+<p>Notice the verdict: even though <code>python</code> is fully attested, this particular invocation is demoted to the <em>agent</em> lane, because the input it's being fed is marked <code>data</code> — something the agent wrote, not something that came in through the attestation gate. See <a href="agent-lane.html">the agent lane</a> for why that matters.</p>
 
 <h2 id="run">Run it</h2>
 <pre>$ celln run agent.toml
 &#9679; sealing cell code-reviewer
   + /usr/bin/python        tier=verified cold &mdash; verified now, forged queued
-  &middot; microVM sealed, phase=Materialise
-  &middot; /usr/bin/python sealed read-only into the cell
-  &middot; authority ratcheted to Work &mdash; no further tools can be lent
   &#10004; /usr/bin/python permitted in the agent lane
+  &middot; cell sealed, 1 tool(s) lent read-only
+  &#10004; pilot: /usr/bin/python permitted:agent
+  &middot; /usr/bin/python exit=0
+
+reviewed 42 files
 &#9679; cell dissolved</pre>
-<p>"Authority ratcheted" is not a log message you can ignore: once a cell's first tainted exec happens, materialisation closes for that cell's lineage permanently. Rights only shrink from there — there is no path back to "lend one more tool."</p>
+<p>The verdict appears twice on purpose: once on the host before the cell exists, and once from pilot inside it, after re-hashing the bytes it actually found. Behind them is the authority ratchet &mdash; once a cell's first tainted exec happens, materialisation closes for that lineage permanently. Rights only shrink from there; there is no path back to "lend one more tool."</p>
 
 <h2 id="interpreter">The interpreter flag</h2>
 <p><code>interpreter = true</code> is the single most consequential line in a spec. An interpreter fed something the agent wrote is moved to the agent lane for that invocation — this is the <strong>laundering ban</strong>, and it's why <code>python evil.py</code> and <code>python -c "&hellip;"</code> don't get to launder agent-authored code into full tool-lane authority just by passing through an attested binary. Leave an interpreter marked <code>interpreter = false</code> and you've quietly created a hole: anything fed to it keeps full tool-lane authority, including code the agent wrote. <code>celln spec check</code> guesses at this from the binary's name and warns if your answer disagrees.</p>

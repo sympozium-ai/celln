@@ -6,6 +6,7 @@ mod config;
 mod dispatch;
 mod dispatcher;
 mod host;
+mod image;
 mod node;
 mod out;
 mod router;
@@ -117,6 +118,10 @@ enum Cmd {
         /// Seal the cell but stop before running it.
         #[arg(long)]
         dry_run: bool,
+        /// What the model should write, for a spec with an [agent] block.
+        /// Overrides the task in the file.
+        #[arg(long)]
+        task: Option<String>,
     },
 
     /// List cells, like `docker ps`. Recent runs need `-a`.
@@ -128,6 +133,10 @@ enum Cmd {
 
     /// List the tools this host has attested.
     Tools,
+
+    /// Materialise OCI images into sealed tool filesystems.
+    #[command(subcommand)]
+    Image(ImageCmd),
 
     /// Prove the isolation properties on this machine.
     Verify,
@@ -167,25 +176,13 @@ enum Cmd {
         /// Without this, the cell remains hermetic.
         #[arg(long = "allow-host")]
         allow_hosts: Vec<String>,
-    },
 
-    /// Ask the selected agent a question on the host; no cell is needed.
-    Ask {
-        /// The question to ask.
-        #[arg(required = true, num_args = 1..)]
-        question: Vec<String>,
-
-        /// Which agent answers. Overrides CELLN_AGENT and the saved default.
-        #[arg(long, value_enum)]
-        agent: Option<agent::Backend>,
-
-        /// Override the backend's default model.
+        /// Run the model's program with a catalogue tool instead of forging a
+        /// Rust binary, e.g. `--tool python`. The model writes that tool's
+        /// language, and the result is agent-authored input, so it runs in the
+        /// agent lane.
         #[arg(long)]
-        model: Option<String>,
-
-        /// Seconds to wait for an answer before giving up.
-        #[arg(long, default_value = "90")]
-        timeout: u64,
+        tool: Option<String>,
     },
 
     /// Find agent CLIs and manage the saved default.
@@ -195,15 +192,67 @@ enum Cmd {
         set_default: Option<agent::Backend>,
     },
 
-    /// Discover an agent CLI and save it as the default.
+    /// Discover an agent CLI and materialise the default tool images.
     Setup {
         /// Select this backend instead of auto-discovering one.
         #[arg(long, value_enum)]
         agent: Option<agent::Backend>,
+
+        /// Only these catalogue images, comma-separated. Default: those the
+        /// catalogue marks as defaults.
+        #[arg(long)]
+        tools: Option<String>,
+
+        /// Skip materialising tool images.
+        #[arg(long)]
+        no_tools: bool,
     },
 
     /// Walk the five-beat proof loop. Works without KVM.
     Demo,
+}
+
+#[derive(Subcommand)]
+enum ImageCmd {
+    /// Pull a digest-pinned image and build its sealed filesystem.
+    ///
+    /// Done ahead of time on purpose: a cell maps bytes that already exist,
+    /// so nothing about spawning a cell waits on a registry.
+    Pull {
+        /// An immutable reference, for example
+        /// `python@sha256:229a2c…`. Tags are refused.
+        reference: String,
+    },
+    /// List materialised images.
+    List,
+    /// Add an image to this host's catalogue.
+    ///
+    /// Resolves the tag to a digest, materialises it, and works out what it
+    /// provides, so a tool becomes available by name without editing anything.
+    Add {
+        /// An image reference, e.g. `node:22-slim`. A tag is resolved to the
+        /// digest it points at right now and pinned.
+        reference: String,
+        /// Catalogue name. Defaults to the image's own name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Expose a specific executable: `/usr/bin/node=/usr/local/bin/node`.
+        /// Repeatable. Without it, binaries named after the image are used.
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        /// Also materialise it on `celln setup`.
+        #[arg(long)]
+        default: bool,
+    },
+    /// Remove a locally added catalogue entry.
+    Remove { name: String },
+    /// Show the built-in catalogue and what is materialised.
+    Catalogue,
+    /// Print a runnable spec for a catalogue image. Redirect it into a file.
+    Spec {
+        /// Catalogue image name, e.g. `python`.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -322,9 +371,24 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             Ok(exit::OK)
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),
-        Cmd::Run { spec, dry_run } => run::run(spec, &root, *dry_run, o),
+        Cmd::Run {
+            spec,
+            dry_run,
+            task,
+        } => run::run(spec, &root, *dry_run, task.as_deref(), o),
         Cmd::Ps { all } => run::ps(&root, *all, o),
         Cmd::Tools => run::tools(&root, o),
+        Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
+        Cmd::Image(ImageCmd::List) => image::list(&root, o),
+        Cmd::Image(ImageCmd::Add {
+            reference,
+            name,
+            tools,
+            default,
+        }) => image::add(reference, name.as_deref(), tools, *default, &root, o),
+        Cmd::Image(ImageCmd::Remove { name }) => image::remove(name, &root, o),
+        Cmd::Image(ImageCmd::Catalogue) => image::catalogue_list(&root, o),
+        Cmd::Image(ImageCmd::Spec { name }) => image::scaffold(name, &root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
         Cmd::Agent {
@@ -334,26 +398,31 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             show_source,
             timeout,
             allow_hosts,
-        } => agent::agent(
-            agent::AgentRequest {
-                task: &task.join(" "),
-                state_root: &root,
-                requested_backend: *agent,
-                model: model.as_deref(),
-                show_source: *show_source,
-                timeout: *timeout,
-                allow_hosts,
-            },
-            o,
-        ),
-        Cmd::Ask {
-            question,
-            agent,
-            model,
-            timeout,
-        } => agent::ask(&question.join(" "), *agent, model.as_deref(), *timeout, o),
+            tool,
+        } => {
+            if let Some(tool) = tool {
+                agent::with_tool(&task.join(" "), tool, allow_hosts, &root, o)
+            } else {
+                agent::agent(
+                    agent::AgentRequest {
+                        task: &task.join(" "),
+                        state_root: &root,
+                        requested_backend: *agent,
+                        model: model.as_deref(),
+                        show_source: *show_source,
+                        timeout: *timeout,
+                        allow_hosts,
+                    },
+                    o,
+                )
+            }
+        }
         Cmd::Agents { set_default } => agent::agents(*set_default, o),
-        Cmd::Setup { agent: preferred } => agent::setup(*preferred, o),
+        Cmd::Setup {
+            agent: preferred,
+            tools,
+            no_tools,
+        } => agent::setup(*preferred, &root, tools.as_deref(), *no_tools, o),
     }
 }
 

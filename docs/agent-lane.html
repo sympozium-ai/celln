@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="concepts.html">Concepts</a><a href="kubernetes.html">Kubernetes</a><a href="dispatcher.html">Dispatcher</a><a href="sympozium-celln-actions.html">Sympozium actions</a><a href="integration-proof.html">Proof</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent lane — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a href="tutorial.html">Tutorial</a><a aria-current="page" href="concepts.html">Concepts</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
 <main class="shell page"><aside class="aside"><a href="#what">What it is</a><a href="#build">Have it write something</a><a href="#forge">Forging and attestation</a><a href="#backend">Choosing who writes it</a><a href="#egress">Network is brokered</a><a href="#enforced">What's enforced</a></aside>
 <article>
 <div class="eyebrow">Concepts &middot; 3 of 4</div>
@@ -27,7 +27,7 @@
 
 <h2 id="backend">Choosing who writes it</h2>
 <p>Backends are subprocess adapters over CLIs you've already authenticated — <code>claude</code>, <code>codex</code>, <code>ollama</code> — or a plain API call for DeepSeek. Celln never reads, stores, or forwards a credential; it stays on the host, and cells have no ambient network, so it never enters the guest either.</p>
-<pre>$ celln setup                         # discovers codex, claude, or ollama
+<pre>$ celln setup                         # finds an agent CLI and materialises the default tool images
 &#10004; default agent: openai (~/.config/celln/config.toml)
 
 $ celln agents
@@ -38,12 +38,12 @@ $ celln agents
 $ celln agents --set-default anthropic # change the saved default
 $ celln agent --agent openai "&hellip;"       # override it for one invocation
 $ CELLN_AGENT=local celln agent "&hellip;"    # override it for one shell command</pre>
-<p>Use <code>celln ask "&hellip;"</code> for a question — it talks to the selected backend directly, on the host, because no program runs and there's nothing to contain. <code>celln agent "&hellip;"</code> is for work that generates code to run; that's the path Celln seals and governs.</p>
+<p><code>celln agent "&hellip;"</code> is for work that generates code to run — that's the path Celln seals and governs. <code>--tool python</code> runs the model's program with a lent interpreter instead of forging a Rust binary.</p>
 
 <h2 id="egress">Network is brokered, never ambient</h2>
 <p>A cell has no in-kernel network stack. Network-shaped work has to declare exactly where it may reach <em>before</em> the model is even called:</p>
 <pre>celln agent --allow-host example.com "crawl https://example.com/&hellip;"</pre>
-<p>Without <code>--allow-host</code>, Celln returns <code>Unsupported</code> rather than generating a crawler that can never connect. When it is granted, Pilot brokers that one bounded fetch over vsock; private addresses and redirects that leave the declared destination are refused. Getting the model provider itself into a cell is the same egress problem as any other network access, and gets the same answer.</p>
+<p>Without <code>--allow-host</code>, Celln returns <code>Unsupported</code> rather than generating a crawler that can never connect. When it is granted, Pilot passes the request over vsock and the <em>host</em> performs the fetch; private addresses and redirects that leave the declared destination are refused. Getting the model provider itself into a cell is the same egress problem as any other network access, and gets the same answer.</p>
 
 <h2 id="enforced">What's actually enforced</h2>
 <ul>

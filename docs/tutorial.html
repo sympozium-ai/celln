@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="A guided tutorial: run real tools in a Celln cell, and learn the trust model from what happens."><title>Tutorial — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a aria-current="page" href="tutorial.html">Tutorial</a><a href="concepts.html">Concepts</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
+<main class="shell page"><aside class="aside"><a href="#setup">Setup</a><a href="#a">A · agent uses python</a><a href="#b">B · reaching a host</a><a href="#c">C · several tools</a><a href="#add">Adding a tool</a><a href="#recap">What you learned</a></aside>
+<article>
+<div class="eyebrow">Guided tutorial</div>
+<h1>Three cells, three ideas.</h1>
+<p class="lede">Each example here runs for real and teaches one thing. By the end you will have run an interpreter on agent-written code, reached the internet from a cell that has no network, and lent two independent toolchains to one cell — and you will have seen the trust model refuse things along the way.</p>
+
+<p>Every output below is copied from a real run. You need Linux with <code>/dev/kvm</code>, and <code>skopeo</code> and <code>e2fsprogs</code> installed.</p>
+
+<h2 id="setup">Setup: what a tool <em>is</em></h2>
+<p>A tool in Celln is not a name. It is bytes, hashed, that the host vouches for. Most real tools — <code>python</code>, <code>curl</code>, <code>node</code> — are not one file but a <strong>closure</strong>: a binary, its loader, and the shared objects it resolves by absolute path. Celln lends that closure as a sealed, read-only filesystem built from an OCI image.</p>
+<pre>$ celln setup
+$ celln image catalogue
+  &#10004; python     /usr/bin/python /bin/sh      materialised
+  &#10004; curl       /usr/bin/curl                materialised</pre>
+<p>The catalogue is compiled into the binary and pinned by digest, never by tag. A tag can be moved; if a spec named one, what your cell is lent could change without your spec changing. Updating a pin is a reviewed commit, which is why a CI job re-resolves the tags weekly and opens a pull request rather than changing anything silently.</p>
+<p>Pulling is deliberately its own step. A registry round trip takes seconds to minutes; doing it while building a cell would put the network on the spawn path. A cell only ever maps bytes that already exist.</p>
+<pre>$ celln image spec python &gt; my.toml   # scaffolds a runnable spec</pre>
+
+<h2 id="a">A · An agent allowed to use python</h2>
+<p>The idea: <strong>the same binary can carry different authority depending on what it is fed.</strong></p>
+<p><code>examples/cells/a-agent-uses-python.toml</code>:</p>
+<pre>name = "agent-uses-python"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[run]
+exec = "/usr/bin/python"
+input = "data"                     <span class="dim"># the agent wrote what follows</span>
+args = ["-c", "…"]</pre>
+<p>Two lines are doing the work. <code>interpreter = true</code> says this binary executes whatever it is handed. <code>input = "data"</code> says the thing it is being handed came from the agent, not through the attestation gate.</p>
+<pre>$ celln run examples/cells/a-agent-uses-python.toml
+  &#10004; /usr/bin/python permitted in the <b>agent</b> lane
+  &#10004; pilot: /usr/bin/python permitted:agent
+
+agent code running in a cell
+  computed: 97e5c19818d31f1152e0193e
+  socket: PermissionError - confined to the agent lane</pre>
+<p>python is fully attested, and this invocation still ran in the <em>agent</em> lane. That is the <strong>laundering ban</strong>: an attested interpreter fed agent-authored input is demoted for that call, so passing code through a trusted binary is not a way to launder it into trusted authority.</p>
+<p>The demotion is not cosmetic. Notice <code>socket()</code> failing — the agent lane adds a seccomp filter and a Landlock boundary immediately before <code>execve</code>. Change <code>input</code> to <code>"none"</code> and the same binary, with the same hash, runs in the tool lane and can open a socket. Same bytes, different authority, decided per invocation.</p>
+<div class="callout"><strong>Try it:</strong> flip <code>input = "data"</code> to <code>"none"</code> and watch the lane change in the output. Nothing else about the spec moves.</div>
+
+<h2 id="b">B · Reaching a host from a cell with no network</h2>
+<p>The idea: <strong>capabilities are brokered, not granted.</strong></p>
+<p>A cell has no network stack at all. Put <code>curl</code> in one and it runs perfectly and reaches nothing:</p>
+<pre>$ celln run examples/cells/curl.toml     <span class="dim"># with args = ["https://example.com"]</span>
+curl: (28) Resolving timed out after 5002 milliseconds</pre>
+<p>Egress is a capability the <em>host</em> performs on the cell's behalf, and you have to name who it may talk to:</p>
+<pre>[cell]
+memory = "512MiB"
+allow_hosts = ["google.com", "www.google.com"]
+
+[[tool]]
+alias = "/fetch"
+builtin = "fetch"
+
+[run]
+exec = "/fetch"
+args = ["https://google.com"]</pre>
+<pre>$ celln run examples/cells/b-fetch-google.toml
+  &middot; egress brokered by the host: google.com, www.google.com
+  &#10004; pilot: /fetch permitted:tool
+  &#10004; /fetch exit=0
+  <span class="dim">fetched 82445 bytes; starts: '&lt;!doctype html&gt;&lt;html itemscope=""…'</span></pre>
+<p>Real bytes, from the real internet, into a cell with no interface. The guest hands a URL over four I/O ports; the host validates it, pins the DNS result before connecting, follows redirects one hop at a time re-authorising each, and bounds the size and the time. Ask for somewhere you did not declare:</p>
+<pre>pilot-fetch: CELLN_FETCH_ERROR:host "example.com" is not declared in this cell's allowlist</pre>
+<p>A spec that declares <code>builtin = "fetch"</code> with no <code>allow_hosts</code> is a spec error, not a cell with open egress. Hermetic is the default you have to opt out of, one host at a time.</p>
+<div class="callout"><strong>Why can't <code>curl</code> do this?</strong> It would need a socket, so the host would have to broker raw TCP instead of a validated URL — and that discards the DNS pinning, the redirect re-authorisation and the protocol allowlist that make the capability safe. The rule this follows is <em>broker capabilities, never binaries</em>: the cell asks for <code>fetch(url)</code>, never for <code>curl(argv)</code>.</div>
+
+<h2 id="c">C · Several tools, from several images</h2>
+<p>The idea: <strong>tools map onto images; they do not own them.</strong></p>
+<p>It is tempting to solve "I need python and curl" by finding one big image with both. Don't: that lends a whole distribution — compilers, headers, package managers — to run two commands. Lend a tool and its closure instead, and let a cell mount more than one:</p>
+<pre>[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[[tool]]
+alias = "/bin/sh"
+image = "python"                   <span class="dim"># same image: shares the mount</span>
+exec  = "/bin/dash"
+interpreter = true
+
+[[tool]]
+alias = "/usr/bin/curl"
+image = "curl"                     <span class="dim"># a second, independent image</span>
+exec  = "/usr/bin/curl"</pre>
+<pre>$ celln run examples/cells/c-curl-and-python.toml
+  &middot; cell sealed, 3 tool(s) lent read-only
+  &middot; image mounted at /tools1
+  &#10004; pilot: /usr/bin/python permitted:tool   exit=0
+  &#10004; pilot: /usr/bin/curl   permitted:tool   exit=0
+  &#10004; pilot: /bin/sh         permitted:tool   exit=0
+
+python   OpenSSL 3.5.6 7 Apr 2026
+curl 8.21.0 (x86_64-pc-linux-musl) libcurl/8.21.0 OpenSSL/3.5.7 …</pre>
+<p>Each image becomes its own sealed namespace with its own mount. The clearest evidence they are genuinely separate is in that output: python reports <strong>OpenSSL 3.5.6</strong> from a glibc image, curl reports <strong>OpenSSL 3.5.7</strong> from a musl one. Two libcs, two TLS stacks, one cell, neither aware of the other.</p>
+<p>Because tools reference images rather than owning them, all three shapes are the same mechanism:</p>
+<table>
+<thead><tr><th>Shape</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>one tool, one image</td><td>the ordinary case</td></tr>
+<tr><td>many tools, one image</td><td><code>python</code> and <code>sh</code> above — one mount, one physical copy</td></tr>
+<tr><td>many tools, many images</td><td>independent closures side by side</td></tr>
+</tbody>
+</table>
+<p>Sharing is also what makes this cheap. An image is content-addressed, so every cell leasing it maps <em>the same physical copy</em> — sixty-four cells, one allocation. And because the pages are sealed read-only by hardware, one cell cannot alter what another sees.</p>
+
+<h2 id="add">Adding a tool</h2>
+<p>The catalogue ships with a small default set, but adding your own is one command. You do not need the digest, and you do not need to know the image's internal layout:</p>
+<pre>$ celln image add busybox:1.36
+&#9679; busybox:1.36 → busybox@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+&#9679; pulling …
+  &middot; 1 layer(s), 4 MiB
+  + 10 MiB  tier=verified  blake3:8a71ce8bd4eae1c1…
+  + added <b>busybox</b> to ~/.celln/tools.toml
+      /usr/bin/busybox → /bin/busybox
+  &middot; use it with: celln image spec busybox &gt; cell.toml</pre>
+<p>You named a <em>tag</em>, and celln resolved it to the digest it points at right now and pinned that. The tag is remembered only so it can be re-checked later; what gets lent is the digest. It then materialised the image, looked inside it without mounting it, and found the executables worth exposing.</p>
+<pre>$ celln image catalogue
+  &#10004; python     /usr/bin/python /bin/sh      materialised
+  &#10004; curl       /usr/bin/curl                materialised
+  &#10004; busybox    /usr/bin/busybox             materialised, <b>local</b></pre>
+<p>It is usable immediately, exactly like a shipped entry:</p>
+<pre>$ celln image spec busybox &gt; cell.toml
+$ celln run cell.toml
+  &#10004; pilot: /usr/bin/busybox permitted:tool
+  &middot; /usr/bin/busybox exit=0</pre>
+
+<h3>When the guess needs help</h3>
+<p>By default celln exposes binaries named after the image, which is what "add node" usually means. Name them yourself when it is not:</p>
+<pre>$ celln image add node:22-slim \
+    --tool /usr/bin/node=/usr/local/bin/node \
+    --tool /usr/bin/npm=/usr/local/bin/npm</pre>
+<p>If nothing obvious matches, celln refuses and lists what it found rather than guessing. Anything whose name looks like an interpreter is marked as one, so the laundering ban applies to it — check that, because an unmarked interpreter keeps full tool-lane authority even when fed agent-written code.</p>
+<p><code>--default</code> makes <code>celln setup</code> materialise it too. <code>celln image remove &lt;name&gt;</code> drops it.</p>
+
+<h3>Local, shipped, or neither</h3>
+<table>
+<thead><tr><th>Where</th><th>Use it for</th></tr></thead>
+<tbody>
+<tr><td><code>celln image add</code> → <code>~/.celln/tools.toml</code></td><td>Your own tools. Local entries shadow shipped ones of the same name, so you can pin your own build of something.</td></tr>
+<tr><td>A digest straight in a spec — <code>image = "node@sha256:…"</code></td><td>One-off or project-specific tools. No catalogue entry needed at all.</td></tr>
+<tr><td><code>crates/celln-cli/tools.toml</code>, via a pull request</td><td>Tools worth shipping to everyone. CI re-resolves those tags weekly and opens a PR when upstream moves.</td></tr>
+</tbody>
+</table>
+<div class="callout"><strong>Lend a tool, not a distribution.</strong> Pick the smallest image that carries the tool and its dependencies — everything in it is lent to every cell that names it, and <code>image pull</code> refuses anything over 512&nbsp;MiB. If a tool is <em>static</em> it needs no image at all: a spec can lend it directly with <code>path</code>.</div>
+
+<h2 id="recap">What you learned</h2>
+<ul>
+<li><strong>A tool is bytes the host vouches for</strong>, pinned by digest, and usually a closure rather than a file.</li>
+<li><strong>Authority is decided per invocation.</strong> An attested interpreter fed agent-written input is demoted to the agent lane and confined — the laundering ban.</li>
+<li><strong>The cell is hermetic.</strong> Reaching the network is a brokered capability you declare host by host, exposed as a narrow verb rather than a binary with argv.</li>
+<li><strong>Lend closures, not distributions.</strong> Several images can be mounted at once, shared between tools, and shared between cells at one physical copy.</li>
+</ul>
+<p>Next: <a href="concepts.html">the concepts</a> in order, or <a href="security.html">the security boundary</a> for what is enforced and what is not claimed.</p>
+</article></main>
+<footer><div class="shell">Celln documentation &middot; <a href="https://github.com/sympozium-ai/celln">GitHub</a></div></footer></body></html>

@@ -85,12 +85,37 @@ pub const EBDA_GPA: u64 = 0x9_fc00;
 /// trusting anything it reads there, so drift shows up as a loud mismatch
 /// rather than a silent pass.
 pub const TOOL_WINDOW_GPA: u64 = 0x600_0000; // 96 MiB
-/// Size of that hole. RAM resumes above it.
-pub const TOOL_WINDOW_SIZE: u64 = 32 << 20;
+
+/// Smallest tool window. Larger images widen it; `mem_size` is unaffected
+/// because RAM is extended to keep the same amount above the hole.
+pub const MIN_TOOL_WINDOW: u64 = 32 << 20;
+
+/// nd_pmem refuses a namespace whose base or length is not 2 MiB aligned.
+const PMEM_ALIGN: u64 = 2 << 20;
+
+/// Each namespace is padded to the alignment nd_pmem requires, so they can sit
+/// back to back and still each be mappable.
+pub fn pmem_extent(len: usize) -> u64 {
+    (len as u64).div_ceil(PMEM_ALIGN) * PMEM_ALIGN
+}
+
+/// Total hole needed for every namespace, never under the minimum.
+pub fn tool_window_size(pmems: &[usize]) -> u64 {
+    let want: u64 = pmems.iter().map(|&l| pmem_extent(l)).sum();
+    want.max(MIN_TOOL_WINDOW).div_ceil(PMEM_ALIGN) * PMEM_ALIGN
+}
 
 /// Marker at the start of the probe tool, so the guest can tell "I mapped the
 /// sealed page-set" apart from "I mapped something plausible".
-pub const PROBE_MAGIC: &[u8] = b"CELLNTOOL";
+///
+/// Deliberately a fixed-size array rather than a slice. This was `&[u8; 8]`
+/// (`NOUSTOOL`) until the Celln rename made it one byte longer and relaxed the
+/// type to `&[u8]` — which silently turned two compile-checked lengths into
+/// runtime bugs: `probe_tool` panicked copying 9 bytes into 8, and the toolfs
+/// assertion scanned 8-byte windows for a 9-byte needle and never matched.
+/// Keeping the length in the type is what makes a future rename fail to build
+/// instead of failing on hardware.
+pub const PROBE_MAGIC: &[u8; 9] = b"CELLNTOOL";
 /// Offset of the callable function within the probe tool.
 pub const PROBE_FN_OFF: usize = 16;
 /// What that function returns.
@@ -102,7 +127,7 @@ pub const PROBE_FN_RETURNS: u8 = 0x5a;
 /// real process, not merely present.
 pub fn probe_tool() -> Vec<u8> {
     let mut t = vec![0u8; PAGE];
-    t[..8].copy_from_slice(PROBE_MAGIC);
+    t[..PROBE_MAGIC.len()].copy_from_slice(PROBE_MAGIC);
     t[PROBE_FN_OFF..PROBE_FN_OFF + 6].copy_from_slice(&[
         0xb8,
         PROBE_FN_RETURNS,
@@ -336,7 +361,7 @@ pub struct BootConfig {
     /// Declare the sealed tool window to the kernel as persistent memory, so
     /// the nvdimm drivers turn it into `/dev/pmem0` and a filesystem inside it
     /// can be mounted with DAX. Size in bytes; see [`BootConfig::with_pmem`].
-    pub pmem_bytes: Option<usize>,
+    pub pmem_bytes: Vec<usize>,
 }
 
 impl BootConfig {
@@ -361,7 +386,7 @@ impl BootConfig {
                 .into(),
             mem_size: 256 << 20,
             timeout: Duration::from_secs(20),
-            pmem_bytes: None,
+            pmem_bytes: Vec::new(),
         }
     }
 
@@ -373,7 +398,14 @@ impl BootConfig {
     /// tells the kernel it exists at all — and it announces it as pmem, which
     /// is memory the kernel maps but never allocates from.
     pub fn with_pmem(mut self, len: usize) -> Self {
-        self.pmem_bytes = Some(len);
+        self.pmem_bytes = vec![len];
+        self
+    }
+
+    /// Declare several namespaces, one per sealed image. They appear in the
+    /// guest as /dev/pmem0, /dev/pmem1, … in this order.
+    pub fn with_pmems(mut self, lens: &[usize]) -> Self {
+        self.pmem_bytes = lens.to_vec();
         self
     }
 
@@ -735,6 +767,8 @@ pub struct ForkTiming {
 pub struct Mote {
     ram: Arc<OwnedFd>,
     ram_size: usize,
+    /// Width of the tool-window hole, so a fork rebuilds the same RAM split.
+    tool_window: u64,
     cpuid: kvm_bindings::CpuId,
     regs: kvm_bindings::kvm_regs,
     sregs: kvm_bindings::kvm_sregs,
@@ -831,27 +865,19 @@ impl LinuxCell {
                 image.init_size()
             )));
         }
-        let tool_end = (TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE) as usize;
-        if cfg.mem_size <= tool_end {
-            return Err(VmmError::Backend(format!(
-                "mem_size {} must exceed the tool window end {tool_end:#x}; RAM \
-                 has to continue above the hole for the kernel to register it",
-                cfg.mem_size
-            )));
-        }
         if (needed as u64) > TOOL_WINDOW_GPA {
             return Err(VmmError::Backend(format!(
                 "kernel needs {needed:#x}, which runs into the tool window at \
                  {TOOL_WINDOW_GPA:#x}"
             )));
         }
-        if let Some(len) = cfg.pmem_bytes {
-            if len as u64 > TOOL_WINDOW_SIZE {
-                return Err(VmmError::Backend(format!(
-                    "pmem image of {len} bytes exceeds the tool window \
-                     ({TOOL_WINDOW_SIZE} bytes)"
-                )));
-            }
+        let window = tool_window_size(&cfg.pmem_bytes);
+        if (cfg.mem_size as u64) <= TOOL_WINDOW_GPA {
+            return Err(VmmError::Backend(format!(
+                "mem_size {} must exceed {TOOL_WINDOW_GPA:#x}; RAM has to \
+                 continue above the tool window for the kernel to register it",
+                cfg.mem_size
+            )));
         }
 
         let kvm = Kvm::new().map_err(|e| VmmError::Unsupported(format!("/dev/kvm: {e}")))?;
@@ -867,14 +893,18 @@ impl LinuxCell {
         vm.create_pit2(Default::default())
             .map_err(|e| kvm_err("create_pit2", e))?;
 
-        let mem = Mem::memfd_shared(cfg.mem_size, "celln-mote-ram")?;
-        // RAM in two memslots, with the sealed tool window as a hole between
-        // them. The host allocation stays contiguous, so a GPA is still an
-        // offset into it; the hole is simply never mapped as RAM.
-        let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+        // The window is a hole in RAM rather than a region above it: pmem past
+        // last_pfn is parsed and then ignored, so no device ever appears. RAM
+        // is extended by the window size so the guest still gets mem_size.
+        let mem = Mem::memfd_shared(cfg.mem_size + window as usize, "celln-mote-ram")?;
+        let tool_end = TOOL_WINDOW_GPA + window;
         for (slot, gpa, len) in [
             (RAM_SLOT_LOW, 0u64, TOOL_WINDOW_GPA),
-            (RAM_SLOT_HIGH, tool_end, cfg.mem_size as u64 - tool_end),
+            (
+                RAM_SLOT_HIGH,
+                tool_end,
+                cfg.mem_size as u64 - TOOL_WINDOW_GPA,
+            ),
         ] {
             let region = kvm_userspace_memory_region {
                 slot,
@@ -907,7 +937,7 @@ impl LinuxCell {
         mem.write(CMDLINE_GPA, &cmdline)?;
         mem.write(
             ZERO_PAGE_GPA,
-            &zero_page(&image, cfg.mem_size, initrd, cfg.pmem_bytes),
+            &zero_page(&image, cfg.mem_size, initrd, &cfg.pmem_bytes),
         )?;
         mem.write(GDT_GPA, &boot_gdt())?;
         write_page_tables(&mem)?;
@@ -977,7 +1007,9 @@ impl LinuxCell {
             .map_err(|e| kvm_err("set_user_memory_region(tool)", e))?;
         self.tools.insert(hash.clone(), (self.next_slot, gpa, len));
         self.next_slot += 1;
-        self.next_tool_gpa += len as u64;
+        // Advance by the aligned extent, not the raw length, so the Nth
+        // sealed image lands exactly on the Nth declared namespace base.
+        self.next_tool_gpa += pmem_extent(len);
         Ok(gpa)
     }
 
@@ -1075,6 +1107,7 @@ impl LinuxCell {
         Ok(Mote {
             ram,
             ram_size: self._mem.len,
+            tool_window: tool_window_size(&self.cfg.pmem_bytes),
             cpuid: self.cpuid.clone(),
             regs: vcpu.get_regs().map_err(|e| kvm_err("get_regs", e))?,
             sregs: vcpu.get_sregs().map_err(|e| kvm_err("get_sregs", e))?,
@@ -1138,7 +1171,7 @@ impl LinuxCell {
         let mem = Mem::cow_of(&mote.ram, mote.ram_size)?;
         t.cow_mmap = mark.elapsed();
         let mark = Instant::now();
-        let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+        let tool_end = TOOL_WINDOW_GPA + mote.tool_window;
         for (slot, gpa, len) in [
             (RAM_SLOT_LOW, 0u64, TOOL_WINDOW_GPA),
             (RAM_SLOT_HIGH, tool_end, mote.ram_size as u64 - tool_end),
@@ -1473,7 +1506,7 @@ fn zero_page(
     image: &BzImage,
     mem_size: usize,
     initrd: Option<(u32, u32)>,
-    pmem_bytes: Option<usize>,
+    pmem_bytes: &[usize],
 ) -> Vec<u8> {
     let mut zp = vec![0u8; PAGE];
     zp[HDR_START..HDR_END].copy_from_slice(&image.bytes[HDR_START..HDR_END]);
@@ -1501,7 +1534,8 @@ fn zero_page(
         zp[off + 16..off + 20].copy_from_slice(&kind.to_le_bytes());
         *n += 1;
     };
-    let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+    let window = tool_window_size(pmem_bytes);
+    let tool_end = TOOL_WINDOW_GPA + window;
     push(&mut zp, &mut entries, 0, EBDA_GPA, E820_RAM);
     push(
         &mut zp,
@@ -1510,20 +1544,17 @@ fn zero_page(
         TOOL_WINDOW_GPA - KERNEL_GPA,
         E820_RAM,
     );
-    if let Some(len) = pmem_bytes {
-        push(
-            &mut zp,
-            &mut entries,
-            TOOL_WINDOW_GPA,
-            len as u64,
-            E820_PRAM,
-        );
+    // One e820 entry per namespace, laid out back to back inside the hole.
+    let mut at = TOOL_WINDOW_GPA;
+    for &len in pmem_bytes {
+        push(&mut zp, &mut entries, at, len as u64, E820_PRAM);
+        at += pmem_extent(len);
     }
     push(
         &mut zp,
         &mut entries,
         tool_end,
-        mem_size as u64 - tool_end,
+        mem_size as u64 - TOOL_WINDOW_GPA,
         E820_RAM,
     );
     zp[BP_E820_ENTRIES] = entries;
@@ -1612,6 +1643,55 @@ mod tests {
                 None
             }
         }
+    }
+
+    #[test]
+    fn tool_window_is_2mib_aligned_and_never_under_the_minimum() {
+        assert_eq!(tool_window_size(&[]), MIN_TOOL_WINDOW);
+        assert_eq!(tool_window_size(&[4096]), MIN_TOOL_WINDOW);
+        assert_eq!(tool_window_size(&[192 << 20]), 192 << 20);
+
+        // nd_pmem rejects an unaligned namespace outright, so a real image
+        // size has to round up rather than be used verbatim.
+        let image = 144_703_488usize;
+        let w = tool_window_size(&[image]);
+        assert!(w >= image as u64);
+        assert_eq!(w % PMEM_ALIGN, 0);
+        assert!(w - (image as u64) < PMEM_ALIGN);
+    }
+
+    #[test]
+    fn a_large_window_does_not_shrink_guest_ram() {
+        // The window is a hole in RAM, so widening it must extend the
+        // allocation rather than take memory away from the guest.
+        let mem = 256usize << 20;
+        for pmem in [vec![], vec![8 << 20], vec![138 << 20]] {
+            let w = tool_window_size(&pmem);
+            let low = TOOL_WINDOW_GPA;
+            let high = mem as u64 - TOOL_WINDOW_GPA;
+            assert_eq!(low + high, mem as u64, "guest RAM must stay {mem}");
+            assert!(TOOL_WINDOW_GPA + w + high <= (mem as u64 + w));
+        }
+    }
+
+    #[test]
+    fn several_namespaces_are_laid_out_back_to_back_and_aligned() {
+        // Each image gets its own namespace, and the Nth seal has to land on
+        // the Nth declared base or the guest mounts the wrong bytes.
+        let lens = [10 << 20, 3 << 20, 1234567];
+        let total = tool_window_size(&lens);
+        assert!(total >= lens.iter().map(|&l| pmem_extent(l)).sum::<u64>());
+        assert_eq!(total % PMEM_ALIGN, 0);
+
+        let mut at = TOOL_WINDOW_GPA;
+        for &l in &lens {
+            assert_eq!(at % PMEM_ALIGN, 0, "every namespace base must align");
+            at += pmem_extent(l);
+        }
+        assert!(
+            at <= TOOL_WINDOW_GPA + total,
+            "namespaces must fit the hole"
+        );
     }
 
     #[test]
@@ -1792,7 +1872,7 @@ mod tests {
 
         let image = std::fs::read(&toolfs).unwrap();
         assert!(
-            image.windows(8).any(|w| w == PROBE_MAGIC),
+            image.windows(PROBE_MAGIC.len()).any(|w| w == PROBE_MAGIC),
             "tool filesystem image does not contain the probe magic"
         );
 

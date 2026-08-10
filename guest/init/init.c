@@ -252,7 +252,57 @@ static int insmod(const char *path) {
  * mapping puts the guest's store against a read-only memslot, where the
  * hardware refuses it. Magic and execution alone would pass either way.
  */
-static void probe_tool_by_path(void) {
+/* Put /tools back down and bring it up read-only, for pilot.
+ *
+ * This is the shape production actually wants, and it must happen on *every*
+ * path that mounted the filesystem — not just the one where the probe payload
+ * was found. It used to live at the tail of the probe, after several early
+ * returns, so a real image (which contains no `probe` fixture) left /tools
+ * mounted read-write. That is not cosmetic: the kernel's writeback thread
+ * eventually tries to flush dirty pages into a read-only memslot and dies with
+ * an invalid opcode in arch_wb_cache_pmem, and until it does, writes appear to
+ * succeed while silently landing nowhere. Read-only turns that into a clean
+ * EROFS at the syscall.
+ *
+ * A real unmount, not MNT_DETACH: lazy leaves the read-write superblock alive
+ * and the read-only mount that follows is refused as an RO-state change.
+ */
+static void remount_tools_ro(void) {
+	sys(SYS_umount2, (long) "/tools", 0, 0, 0, 0, 0);
+	long rc = sys(SYS_mount, (long) "/dev/pmem0", (long) "/tools", (long) "ext2",
+	              1 /* MS_RDONLY */, (long) "dax=always", 0);
+	if (rc != 0)
+		rc = sys(SYS_mount, (long) "/dev/pmem0", (long) "/tools", (long) "ext4",
+		         1 /* MS_RDONLY */, (long) "dax=always", 0);
+	report("dax_ro_mount", rc == 0 ? "ok" : "failed");
+}
+
+/* Mount every additional sealed namespace read-only at /tools1, /tools2, …
+ *
+ * The host lays namespaces back to back in the tool window and declares one
+ * e820 entry each, so the kernel publishes /dev/pmem0, /dev/pmem1, … in the
+ * same order. pmem0 stays at /tools; the rest get numbered mounts, which is
+ * how one cell is lent several independent images. */
+static void mount_extra_tools(void) {
+	char dev[] = "/dev/pmemN";
+	char dir[] = "/toolsN";
+	for (int i = 1; i < 8; i++) {
+		dev[9] = (char)('0' + i);
+		dir[6] = (char)('0' + i);
+		long fd = sys(SYS_open, (long)dev, O_RDONLY, 0, 0, 0, 0);
+		if (fd < 0) break;
+		sys(SYS_close, fd, 0, 0, 0, 0, 0);
+		long rc = sys(SYS_mount, (long)dev, (long)dir, (long) "ext2",
+		              1 /* MS_RDONLY */, (long) "dax=always", 0);
+		if (rc != 0)
+			rc = sys(SYS_mount, (long)dev, (long)dir, (long) "ext4",
+			         1 /* MS_RDONLY */, (long) "dax=always", 0);
+		report(rc == 0 ? "tools_mounted" : "tools_mount_failed", dir);
+	}
+}
+
+/* Returns 1 if /tools ended up mounted and so needs the read-only remount. */
+static int probe_tool_dax(void) {
 	sys(SYS_mount, (long) "proc", (long) "/proc", (long) "proc", 0, 0, 0);
 	sys(SYS_mount, (long) "sysfs", (long) "/sys", (long) "sysfs", 0, 0, 0);
 
@@ -276,7 +326,7 @@ static void probe_tool_by_path(void) {
 	}
 	if (dev < 0) {
 		report("dax", "no-pmem-device");
-		return;
+		return 0;
 	}
 	sys(SYS_close, dev, 0, 0, 0, 0, 0);
 	report("dax_pmem", "present");
@@ -294,14 +344,14 @@ static void probe_tool_by_path(void) {
 	if (rc != 0) {
 		report("dax_mount", "failed");
 		report_hex("dax_mount_err", (unsigned long)-rc);
-		return;
+		return 0;
 	}
 	report("dax_mount", "ok");
 
 	long fd = sys(SYS_open, (long) "/tools/probe", O_RDWR, 0, 0, 0, 0);
 	if (fd < 0) {
 		report("dax_open", "failed");
-		return;
+		return 1;
 	}
 	report("dax_open", "ok");
 
@@ -311,7 +361,7 @@ static void probe_tool_by_path(void) {
 	if ((unsigned long)p > (unsigned long)-4096L) {
 		report("dax_mmap", "failed");
 		sys(SYS_close, fd, 0, 0, 0, 0, 0);
-		return;
+		return 1;
 	}
 	report("dax_mmap", "ok");
 
@@ -345,32 +395,17 @@ static void probe_tool_by_path(void) {
 	 * wise fail with "would change RO state". */
 	sys(SYS_munmap, (long) p, 4096, 0, 0, 0, 0);
 
-	/* Unmount before anything tries to shut down.
-	 *
-	 * We mounted read-write on purpose, because the write is what proves the
-	 * mapping is direct rather than a page-cache copy. But leaving a DAX
-	 * filesystem mounted read-write on a *read-only* memslot means the
-	 * kernel's writeback thread will eventually try to flush dirty pages into
-	 * memory it cannot write, which on this host dies with an invalid opcode
-	 * in arch_wb_cache_pmem. Production mounts tools read-only; here we simply
-	 * put it down once the proof is finished. A real unmount, not MNT_DETACH:
-	 * lazy leaves the read-write superblock alive, and the read-only mount
-	 * that follows would be refused as an RO-state change. */
-	sys(SYS_umount2, (long) "/tools", 0, 0, 0, 0, 0);
+	/* We mounted read-write on purpose, because the write above is what proves
+	 * the mapping is direct rather than a page-cache copy. The caller puts it
+	 * back down read-only — on this path and on every early return that got
+	 * far enough to mount. */
+	return 1;
+}
 
-	/* Re-mount read-only and leave it up for pilot.
-	 *
-	 * This is the shape production actually wants: tools are read-only, so
-	 * there are no dirty pages and no writeback to fault on. It also means
-	 * pilot can execve straight out of the sealed mapping — with DAX there is
-	 * no page-cache copy, so the instructions the guest runs are the host's
-	 * pages, and revoking them stops the program mid-execution. */
-	rc = sys(SYS_mount, (long) "/dev/pmem0", (long) "/tools", (long) "ext2",
-	         1 /* MS_RDONLY */, (long) "dax=always", 0);
-	if (rc != 0)
-		rc = sys(SYS_mount, (long) "/dev/pmem0", (long) "/tools", (long) "ext4",
-		         1 /* MS_RDONLY */, (long) "dax=always", 0);
-	report("dax_ro_mount", rc == 0 ? "ok" : "failed");
+static void probe_tool_by_path(void) {
+	if (probe_tool_dax())
+		remount_tools_ro();
+	mount_extra_tools();
 }
 
 void _start(void) {

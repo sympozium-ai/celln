@@ -173,6 +173,7 @@ pub fn forge(
         ask_model(backend, model, &brief, timeout_secs).map_err(|error| error.to_string())?;
 
     let work = crate::agent::tempdir().map_err(|error| error.to_string())?;
+    let work = work.path();
     let (code, proof) =
         match forge::build_and_verify(program.source.as_bytes(), &work.join("forge")) {
             Ok(built) => built,
@@ -243,6 +244,7 @@ pub fn launch(
         .map_err(|error| error.to_string())?;
 
     let work = crate::agent::tempdir().map_err(|error| error.to_string())?;
+    let work = work.path();
     // The toolfs mount path is fixed by this file's own name — mktoolfs.sh
     // seals it into the image root under this basename, so pilot finds it at
     // `/tools/program` regardless of what alias the request declares. The

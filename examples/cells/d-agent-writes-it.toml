@@ -1,0 +1,21 @@
+# (d) The spec is the policy; a model fills in the code.
+#
+# Everything that constrains the cell — which tools, how much memory, which
+# hosts — is declared and reviewable. Only the program is written on demand,
+# and because model-written code is agent-authored input handed to an attested
+# interpreter, it lands in the agent lane without anyone asking for that.
+
+name = "analyst"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[agent]
+exec = "/usr/bin/python"
+task = "print a 5x5 multiplication table, aligned"

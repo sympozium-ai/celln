@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Proves the public setup → ask → agent → ps flow without an API account.
+# Proves the public setup → agent → ps flow without an API account.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,12 +15,13 @@ export PATH="$root/tests/fixtures:$PATH"
 export CELLN_CONFIG="$work/config.toml"
 export CELLN_ROOT="$work/state"
 
-"$bin" setup --agent openai --no-json | grep -F 'default agent: openai'
-"$bin" ask 'What is a binary tree?' --no-json | grep -F 'A binary tree stores'
+"$bin" setup --agent openai --no-tools --no-json | grep -F 'default agent: openai'
 "$bin" agent 'Print the acceptance marker.' --no-json | tee "$work/agent.out"
 grep -F 'pilot: /agent/program permitted:agent' "$work/agent.out"
 grep -F 'CELLN_ACCEPTANCE_OK' "$work/agent.out"
 "$bin" ps -a --no-json | tee "$work/ps.out"
-grep -E 'agent.*dissolved' "$work/ps.out"
+# The registry shows the cell by its task, not by the word "agent"; asserting
+# on the latter passed only because this never ran without /dev/kvm.
+grep -E 'Print the acceptance marker.*dissolved' "$work/ps.out"
 
-echo 'acceptance: setup, question, sealed agent cell, output, and history passed'
+echo 'acceptance: setup, sealed agent cell, output, and history passed'

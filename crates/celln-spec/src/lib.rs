@@ -15,8 +15,48 @@ pub struct Spec {
     #[serde(default, rename = "tool")]
     pub tools: Vec<Tool>,
 
+    #[serde(default, rename = "run")]
+    pub run: Option<Runs>,
+
+    /// Let a model write what this cell runs. The spec stays the policy — the
+    /// tools, the memory, the hosts — and only the code is filled in.
     #[serde(default)]
-    pub run: Option<Run>,
+    pub agent: Option<AgentTask>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTask {
+    /// What the program should do. `--task` overrides it.
+    #[serde(default)]
+    pub task: Option<String>,
+    /// Which declared tool interprets the answer. Must be an interpreter.
+    pub exec: String,
+}
+
+/// A cell may run one tool or several. `[run]` is one, `[[run]]` is a list;
+/// each invocation is hash-checked and lane-resolved on its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Runs {
+    One(Box<Run>),
+    Many(Vec<Run>),
+}
+
+impl Runs {
+    pub fn as_slice(&self) -> Vec<&Run> {
+        match self {
+            Runs::One(r) => vec![r.as_ref()],
+            Runs::Many(v) => v.iter().collect(),
+        }
+    }
+}
+
+impl Spec {
+    /// Every declared invocation, in order.
+    pub fn run_list(&self) -> Vec<&Run> {
+        self.run.as_ref().map(Runs::as_slice).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +67,12 @@ pub struct Cell {
 
     #[serde(default = "default_tier")]
     pub require_tier: Tier,
+
+    /// Exact DNS names the host will fetch on this cell's behalf. Empty means
+    /// the cell is hermetic. This is a host capability, not a network: the
+    /// guest has no stack, and every URL is validated host-side.
+    #[serde(default)]
+    pub allow_hosts: Vec<String>,
 }
 
 impl Default for Cell {
@@ -34,6 +80,7 @@ impl Default for Cell {
         Cell {
             memory: default_memory(),
             require_tier: default_tier(),
+            allow_hosts: Vec::new(),
         }
     }
 }
@@ -71,8 +118,24 @@ pub struct Tool {
     /// authority comes from the content hash, never from this path.
     pub alias: String,
 
-    /// Where the bytes come from on this host.
-    pub path: PathBuf,
+    /// Where the bytes come from on this host. One of `path` or `image`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+
+    /// A digest-pinned OCI reference whose whole filesystem is lent, for tools
+    /// that are a dependency closure rather than one file. Materialise it with
+    /// `celln image pull` first.
+    #[serde(default)]
+    pub image: Option<String>,
+
+    /// Path to execute *inside* `image`.
+    #[serde(default)]
+    pub exec: Option<String>,
+
+    /// A capability the host provides rather than bytes it lends. Only
+    /// `"fetch"` today: the bounded HTTPS fetch, which needs `allow_hosts`.
+    #[serde(default)]
+    pub builtin: Option<String>,
 
     /// True for interpreters (python, sh, node…). An interpreter fed input the
     /// agent wrote is moved to the agent lane *for that invocation* — the
@@ -737,13 +800,86 @@ impl Spec {
                     fix: "aliases look like paths, e.g. \"/usr/bin/python\"".into(),
                 });
             }
-            if !tool.path.exists() {
-                out.push(Problem {
-                    field: format!("{at}.path"),
-                    message: format!("{} does not exist", tool.path.display()),
-                    fix: "point at a real file on this host; a tool is bytes, and \
-                          they have to come from somewhere"
+            if let Some(b) = &tool.builtin {
+                if b != "fetch" {
+                    out.push(Problem {
+                        field: format!("{at}.builtin"),
+                        message: format!("{b:?} is not a known capability"),
+                        fix: "the only builtin is \"fetch\"".into(),
+                    });
+                }
+                if tool.path.is_some() || tool.image.is_some() {
+                    out.push(Problem {
+                        field: at.clone(),
+                        message: "a builtin has no path or image".into(),
+                        fix: "remove path/image; a builtin is a host capability".into(),
+                    });
+                }
+                if self.cell.allow_hosts.is_empty() {
+                    out.push(Problem {
+                        field: "cell.allow_hosts".into(),
+                        message: "the fetch builtin needs at least one allowed host".into(),
+                        fix: "set allow_hosts = [\"example.com\"]; the cell is \
+                              hermetic until a host is named"
+                            .into(),
+                    });
+                }
+                continue;
+            }
+            match (&tool.path, &tool.image) {
+                (Some(_), Some(_)) => out.push(Problem {
+                    field: at.clone(),
+                    message: "sets both path and image".into(),
+                    fix: "a tool comes from one place: a file on this host, or \
+                          an image. Remove one."
                         .into(),
+                }),
+                (None, None) => out.push(Problem {
+                    field: at.clone(),
+                    message: "has no path or image".into(),
+                    fix: "set path = \"/usr/bin/…\" for a single binary, or \
+                          image = \"name@sha256:…\" for a dependency closure"
+                        .into(),
+                }),
+                (Some(p), None) => {
+                    if !p.exists() {
+                        out.push(Problem {
+                            field: format!("{at}.path"),
+                            message: format!("{} does not exist", p.display()),
+                            fix: "point at a real file on this host; a tool is \
+                                  bytes, and they have to come from somewhere"
+                                .into(),
+                        });
+                    }
+                }
+                (None, Some(image)) => {
+                    if let Err(why) = check_digest_pinned(image) {
+                        out.push(Problem {
+                            field: format!("{at}.image"),
+                            message: why,
+                            fix: "pin it with `celln image add <name:tag>`, then \
+                                  use the catalogue name here; a tag can be \
+                                  moved, which would change what the cell is \
+                                  lent without the spec changing"
+                                .into(),
+                        });
+                    }
+                    if tool.exec.is_none() {
+                        out.push(Problem {
+                            field: format!("{at}.exec"),
+                            message: "an image tool must say what to run".into(),
+                            fix: "set exec = \"/usr/local/bin/python3.12\", a \
+                                  path inside the image"
+                                .into(),
+                        });
+                    }
+                }
+            }
+            if tool.image.is_none() && tool.exec.is_some() {
+                out.push(Problem {
+                    field: format!("{at}.exec"),
+                    message: "exec only applies to an image tool".into(),
+                    fix: "drop exec, or set image = \"name@sha256:…\"".into(),
                 });
             }
         }
@@ -761,10 +897,38 @@ impl Spec {
             }
         }
 
-        if let Some(run) = &self.run {
+        if let Some(a) = &self.agent {
+            match self.tools.iter().find(|t| t.alias == a.exec) {
+                None => out.push(Problem {
+                    field: "agent.exec".into(),
+                    message: format!("{:?} is not one of the tools", a.exec),
+                    fix: "point agent.exec at a declared [[tool]] that can \
+                          interpret what the model writes"
+                        .into(),
+                }),
+                Some(t) if !t.interpreter => out.push(Problem {
+                    field: "agent.exec".into(),
+                    message: format!("{:?} is not marked as an interpreter", a.exec),
+                    fix: "model-written code is agent-authored input, so the \
+                          tool running it has to be an interpreter — set \
+                          interpreter = true"
+                        .into(),
+                }),
+                Some(_) => {}
+            }
+            if self.run.is_some() {
+                out.push(Problem {
+                    field: "agent".into(),
+                    message: "a cell either declares runs or asks for one".into(),
+                    fix: "remove [run]/[[run]], or remove [agent]".into(),
+                });
+            }
+        }
+
+        for (i, run) in self.run_list().iter().enumerate() {
             if !aliases.contains(&run.exec.as_str()) {
                 out.push(Problem {
-                    field: "run.exec".into(),
+                    field: format!("run[{i}].exec"),
                     message: format!("{:?} is not one of the tools", run.exec),
                     fix: format!(
                         "add a [[tool]] with alias = {:?}, or point run.exec at one of: {}",
@@ -827,8 +991,32 @@ impl Spec {
     }
 }
 
+/// An image reference must name immutable bytes.
+fn check_digest_pinned(reference: &str) -> Result<(), String> {
+    let r = reference.trim_start_matches("docker://");
+    // A bare word is a catalogue name, which celln resolves to a pin it ships.
+    if !r.contains('@') && !r.contains('/') && !r.contains(':') {
+        return Ok(());
+    }
+    let Some((name, digest)) = r.split_once('@') else {
+        return Err(format!("{reference:?} is a tag, not a digest"));
+    };
+    if name.is_empty() {
+        return Err(format!("{reference:?} has no image name"));
+    }
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(format!("{reference:?} must use a sha256: digest"));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{reference:?} digest is not 64 hex characters"));
+    }
+    Ok(())
+}
+
 /// Names that are interpreters in practice. Used only to warn.
-fn looks_like_interpreter(alias: &str) -> bool {
+/// Names that are interpreters in practice. Used to warn, and to guess when
+/// adding a tool to the catalogue.
+pub fn looks_like_interpreter(alias: &str) -> bool {
     let base = alias.rsplit('/').next().unwrap_or(alias);
     let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     matches!(
@@ -894,10 +1082,22 @@ require_tier = "verified"
 # Each tool is lent to the cell as sealed, read-only memory. The guest can read
 # and execute it and cannot modify it — not even as root, not even with its own
 # page tables. Revoking it stops it in every running cell.
+# Most real tools are a dependency closure - a binary plus its loader and the
+# shared objects it resolves by absolute path - so they are lent as a whole
+# sealed filesystem. `celln image catalogue` lists what is available;
+# `celln image add <name:tag>` pins and adds anything else.
 [[tool]]
 alias = "/usr/bin/python"      # the name the agent uses
-path = "/usr/bin/python3"      # where the bytes come from on this host
+image = "python"               # a catalogue name, or name@sha256:...
+exec  = "/usr/local/bin/python3.12"   # the path inside that image
 interpreter = true             # see below
+
+# A single *static* binary already on this host can be lent directly instead.
+# It has to be static: a cell carries no loader and no libc.
+#
+# [[tool]]
+# alias = "/usr/bin/mytool"
+# path = "/usr/local/bin/mytool"
 
 # `interpreter = true` is the most consequential line in this file. An
 # interpreter fed something the agent wrote is moved to the agent lane for
@@ -907,7 +1107,7 @@ interpreter = true             # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["review.py"]
+args = ["-c", "print('hello from a sealed cell')"]
 # Where the input came from:
 #   none — nothing interpreted
 #   tool — came in through the attestation gate
@@ -929,7 +1129,7 @@ mod tests {
         assert_eq!(spec.name, "my-agent");
         assert_eq!(spec.tools.len(), 1);
         assert!(spec.tools[0].interpreter);
-        assert_eq!(spec.run.unwrap().input, Input::Data);
+        assert_eq!(spec.run_list()[0].input, Input::Data);
     }
 
     #[test]
@@ -965,9 +1165,56 @@ mod tests {
     fn run_exec_must_name_a_declared_tool() {
         let spec = spec_from("name = \"x\"\n[run]\nexec = \"/usr/bin/ghost\"\n");
         let p = spec.problems();
-        assert!(p.iter().any(|p| p.field == "run.exec"), "{p:?}");
+        assert!(p.iter().any(|p| p.field == "run[0].exec"), "{p:?}");
         // and the fix lists what is actually available
         assert!(p.iter().any(|p| p.fix.contains("none declared")));
+    }
+
+    #[test]
+    fn an_agent_block_needs_a_declared_interpreter() {
+        let base = "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n";
+        // not a declared tool
+        let s = spec_from(&format!("{base}[agent]\nexec = \"/ghost\"\n"));
+        assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
+        // declared, but not an interpreter
+        let s = spec_from(&format!("{base}[agent]\nexec = \"/p\"\n"));
+        assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
+        // an interpreter is fine
+        let ok = spec_from(
+            "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
+             interpreter = true\n[agent]\nexec = \"/p\"\n",
+        );
+        assert!(!ok.problems().iter().any(|p| p.field.starts_with("agent")));
+    }
+
+    #[test]
+    fn a_cell_either_declares_runs_or_asks_for_one() {
+        let s = spec_from(
+            "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
+             interpreter = true\n[run]\nexec = \"/p\"\n[agent]\nexec = \"/p\"\n",
+        );
+        assert!(s.problems().iter().any(|p| p.field == "agent"));
+    }
+
+    #[test]
+    fn a_cell_can_declare_several_runs() {
+        let one = spec_from("name = \"x\"\n[run]\nexec = \"/a\"\n");
+        assert_eq!(one.run_list().len(), 1);
+
+        let many = spec_from(
+            "name = \"x\"\n\
+             [[run]]\nexec = \"/a\"\nargs = [\"1\"]\n\
+             [[run]]\nexec = \"/b\"\ninput = \"data\"\n",
+        );
+        let runs = many.run_list();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].exec, "/a");
+        assert_eq!(runs[0].args, ["1"]);
+        assert_eq!(runs[1].input, Input::Data);
+
+        // every invocation is checked, not just the first
+        let bad = spec_from("name = \"x\"\n[[run]]\nexec = \"/ok\"\n[[run]]\nexec = \"/ghost\"\n");
+        assert!(bad.problems().iter().any(|p| p.field == "run[1].exec"));
     }
 
     #[test]
@@ -978,6 +1225,60 @@ mod tests {
             .warnings()
             .iter()
             .any(|w| w.message.contains("laundering") || w.message.contains("interpreter")));
+    }
+
+    fn spec_with(tool: &str) -> Spec {
+        toml::from_str(&format!(
+            "name = \"t\"\n[cell]\nmemory = \"256MiB\"\n\n[[tool]]\n{tool}\n"
+        ))
+        .expect("parses")
+    }
+
+    fn fields(spec: &Spec) -> Vec<String> {
+        spec.problems().into_iter().map(|p| p.field).collect()
+    }
+
+    #[test]
+    fn an_image_tool_must_be_digest_pinned() {
+        let d = "a".repeat(64);
+        let ok = spec_with(&format!(
+            "alias = \"/usr/bin/python\"\nimage = \"python@sha256:{d}\"\nexec = \"/usr/local/bin/python3\""
+        ));
+        assert!(ok.problems().is_empty(), "{:?}", ok.problems());
+
+        // A tag can be moved, so it cannot name what a cell is lent.
+        let tagged =
+            spec_with("alias = \"/usr/bin/python\"\nimage = \"python:3.12-slim\"\nexec = \"/x\"");
+        assert!(fields(&tagged).iter().any(|f| f == "tool[0].image"));
+
+        for bad in [
+            "python@sha256:short",
+            "python@sha512:{d}",
+            "python@sha256:zz",
+        ] {
+            let s = spec_with(&format!("alias = \"/a\"\nimage = \"{bad}\"\nexec = \"/x\""));
+            assert!(!s.problems().is_empty(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_tool_names_exactly_one_source() {
+        let both =
+            spec_with("alias = \"/a\"\npath = \"/bin/sh\"\nimage = \"x@sha256:aa\"\nexec = \"/x\"");
+        assert!(fields(&both).iter().any(|f| f == "tool[0]"));
+
+        let neither = spec_with("alias = \"/a\"");
+        assert!(fields(&neither).iter().any(|f| f == "tool[0]"));
+    }
+
+    #[test]
+    fn an_image_tool_must_say_what_to_run() {
+        let d = "b".repeat(64);
+        let no_exec = spec_with(&format!("alias = \"/a\"\nimage = \"p@sha256:{d}\""));
+        assert!(fields(&no_exec).iter().any(|f| f == "tool[0].exec"));
+
+        let stray = spec_with("alias = \"/a\"\npath = \"/bin/sh\"\nexec = \"/x\"");
+        assert!(fields(&stray).iter().any(|f| f == "tool[0].exec"));
     }
 
     #[test]

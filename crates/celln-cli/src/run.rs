@@ -9,6 +9,76 @@ use celln_manifest::{Hash, Input, Lane, Tier};
 use celln_spec::Spec;
 use std::path::Path;
 
+/// Where a tool's bytes come from, for display.
+fn source_of(t: &celln_spec::Tool) -> String {
+    if let Some(b) = &t.builtin {
+        return format!("host capability: {b}");
+    }
+    match (&t.path, &t.image) {
+        (Some(p), _) => p.display().to_string(),
+        (_, Some(image)) => match &t.exec {
+            Some(exec) => format!("{image} → {exec}"),
+            None => image.clone(),
+        },
+        _ => "(no source)".into(),
+    }
+}
+
+/// The filesystem image backing an image tool.
+fn image_path(t: &celln_spec::Tool, root: &Path) -> Result<std::path::PathBuf> {
+    let named = t
+        .image
+        .as_deref()
+        .with_context(|| format!("tool {} has no path or image", t.alias))?;
+    let resolved = crate::image::resolve_ref(named, root)?;
+    let image = resolved.as_str();
+    let digest = image
+        .trim_start_matches("docker://")
+        .split_once('@')
+        .map(|(_, d)| d)
+        .with_context(|| format!("tool {} image is not digest-pinned", t.alias))?;
+    let path = crate::image::images_dir(root).join(format!("{}.ext2", digest.replace(':', "_")));
+    if !path.exists() {
+        anyhow::bail!(
+            "{} is not materialised — run `celln image pull {image}`",
+            t.alias
+        );
+    }
+    Ok(path)
+}
+
+/// The bytes a tool's alias is attested against.
+///
+/// For an image tool that is the executable *inside* the image, not the image
+/// itself: pilot re-hashes whatever it finds at that path in the cell, so the
+/// manifest has to carry the same thing.
+fn tool_bytes(t: &celln_spec::Tool, root: &Path) -> Result<Vec<u8>> {
+    if t.builtin.as_deref() == Some("fetch") {
+        // Same search order as mkinitramfs.sh: an installed runtime first,
+        // then a build tree, so this works from a checkout too.
+        let runtime = crate::agent::runtime_root()?;
+        for c in [
+            runtime.join("pilot/pilot-fetch"),
+            runtime.join("target/x86_64-unknown-linux-musl/release/pilot-fetch"),
+        ] {
+            if c.exists() {
+                return std::fs::read(&c).with_context(|| format!("reading {}", c.display()));
+            }
+        }
+        anyhow::bail!("pilot-fetch is not built; run `celln setup`");
+    }
+    if let Some(p) = &t.path {
+        return std::fs::read(p)
+            .with_context(|| format!("reading tool {} from {}", t.alias, p.display()));
+    }
+    let exec = t
+        .exec
+        .as_deref()
+        .with_context(|| format!("tool {} has an image but no exec", t.alias))?;
+    crate::image::extract(&image_path(t, root)?, exec)
+        .with_context(|| format!("reading {exec} for tool {}", t.alias))
+}
+
 /// Map the spec's tier vocabulary onto the manifest's.
 fn tier_of(t: celln_spec::Tier) -> Tier {
     match t {
@@ -106,17 +176,20 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
         };
         o.event(
             "tool",
-            serde_json::json!({"alias": t.alias, "path": t.path, "interpreter": t.interpreter}),
-            format!(
-                "  {:<24} {}  {}",
-                t.alias,
-                dim(kind),
-                dim(&t.path.display().to_string())
-            ),
+            serde_json::json!({
+                "alias": t.alias, "path": t.path, "image": t.image,
+                "exec": t.exec, "interpreter": t.interpreter,
+            }),
+            format!("  {:<24} {}  {}", t.alias, dim(kind), dim(&source_of(t))),
         );
     }
 
-    if let Some(run) = &spec.run {
+    let plan = spec.run_list();
+    if !plan.is_empty() {
+        o.say("");
+        o.say(bold("run"));
+    }
+    for run in plan {
         let interp = spec
             .tools
             .iter()
@@ -125,8 +198,6 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
             .unwrap_or(false);
         let demoted = interp && run.input == celln_spec::Input::Data;
         let lane = if demoted { "agent" } else { "tool" };
-        o.say("");
-        o.say(bold("run"));
         o.event(
             "run_plan",
             serde_json::json!({
@@ -158,11 +229,40 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
 }
 
 /// `celln run` — seal a cell from a spec and drive its lifecycle.
-pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
+pub fn run(path: &Path, root: &Path, dry_run: bool, task: Option<&str>, o: &Out) -> Result<u8> {
     let spec = match load(path, o) {
         Ok(s) => s,
         Err(code) => return Ok(code),
     };
+    run_spec(spec, root, Path::new(path), dry_run, task, o)
+}
+
+/// The body of a run, over a spec that may have been built rather than parsed.
+///
+/// `celln agent --tool` constructs one in memory and comes through here, so an
+/// ad-hoc run and a declared one take exactly the same path and reach exactly
+/// the same trust decisions.
+pub fn run_spec(
+    mut spec: Spec,
+    root: &Path,
+    origin: &Path,
+    dry_run: bool,
+    task: Option<&str>,
+    o: &Out,
+) -> Result<u8> {
+    // A model fills in the code; the spec keeps the policy.
+    if let Some(agent) = spec.agent.clone() {
+        let task = task
+            .map(str::to_owned)
+            .or_else(|| agent.task.clone())
+            .context("this cell asks a model for its program but no task was given; pass --task")?;
+        let source = crate::agent::write_program(&spec, &agent.exec, &task, root, o)?;
+        spec.run = Some(celln_spec::Runs::One(Box::new(celln_spec::Run {
+            exec: agent.exec.clone(),
+            args: vec![source.flag, source.code],
+            input: celln_spec::Input::Data,
+        })));
+    }
     for w in spec.warnings() {
         o.warn(format!("{}: {}", w.field, w.message));
     }
@@ -184,7 +284,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let mut record = crate::cells::begin(
         root,
         &spec.name,
-        path,
+        origin,
         spec.tools.iter().map(|t| t.alias.clone()).collect(),
     )
     .ok();
@@ -200,8 +300,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     // traffic — serve fast, upgrade trust async.
     let mut resolved = Vec::new();
     for t in &spec.tools {
-        let bytes = std::fs::read(&t.path)
-            .with_context(|| format!("reading tool {} from {}", t.alias, t.path.display()))?;
+        let bytes = tool_bytes(t, root)?;
         let r = assayer.resolve(&t.alias, &bytes, t.interpreter)?;
         o.event(
             "tool_resolved",
@@ -243,9 +342,44 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
         return Ok(exit::OK);
     }
 
-    // Seal the cell. This is a real microVM with real stage-2 sealing.
-    let sealed = match seal_cell(&spec, &resolved, o) {
-        Ok(b) => b,
+    // Apply the exec gate and the laundering ban to each declared run, on the
+    // host, before a cell exists. Pilot repeats the check in-cell against the
+    // bytes it actually finds; agreeing twice is the point.
+    for r in spec.run_list() {
+        let Some(hash) = resolved
+            .iter()
+            .find(|(t, _, _)| t.alias == r.exec)
+            .map(|(_, h, _)| h.clone())
+        else {
+            continue;
+        };
+        match pilot::exec(assayer.manifest(), &hash, input_of(r.input, Lane::Data)) {
+            pilot::ExecOutcome::Run { lane, .. } => o.event(
+                "exec_permitted",
+                serde_json::json!({"exec": r.exec, "lane": lane.to_string()}),
+                format!(
+                    "  {} {} permitted in the {} lane",
+                    green("✔"),
+                    r.exec,
+                    bold(&lane.to_string())
+                ),
+            ),
+            pilot::ExecOutcome::Denied(e) => o.event(
+                "exec_denied",
+                serde_json::to_value(&e).unwrap_or_default(),
+                format!("  {} {} refused: {}", red("✘"), r.exec, e.reason),
+            ),
+        }
+    }
+
+    let outcome = execute(&spec, &resolved, root, o);
+    let code = match outcome {
+        Ok(code) => {
+            if let Some(r) = record.as_mut() {
+                crate::cells::finish(root, r, "kvm", None);
+            }
+            code
+        }
         Err(e) => {
             if let Some(r) = record.as_mut() {
                 crate::cells::finish(root, r, "kvm", Some(e.to_string()));
@@ -254,107 +388,279 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
         }
     };
 
-    // Apply the exec gate and the laundering ban to the declared run.
-    if let Some(r) = &spec.run {
-        let entry_hash = resolved
-            .iter()
-            .find(|(t, _, _)| t.alias == r.exec)
-            .map(|(_, h, _)| h.clone());
-        if let Some(hash) = entry_hash {
-            let lane_if_data = Lane::Data;
-            match pilot::exec(assayer.manifest(), &hash, input_of(r.input, lane_if_data)) {
-                pilot::ExecOutcome::Run { lane, .. } => {
+    o.event(
+        "cell_dissolved",
+        serde_json::json!({
+            "id": record.as_ref().map(|r| r.id.clone()), "name": spec.name,
+            "sealed_tools": resolved.len(), "backend": "kvm",
+        }),
+        format!("{} cell dissolved", green("●")),
+    );
+    Ok(code)
+}
+
+/// Seal a real cell, run every declared invocation in it, and print what they
+/// produced.
+///
+/// A spec's tools are sealed as one filesystem image, so exactly one image tool
+/// is supported per cell; single-binary tools are packed alongside it.
+#[cfg(target_os = "linux")]
+fn execute(
+    spec: &Spec,
+    resolved: &[(celln_spec::Tool, Hash, Vec<u8>)],
+    root: &Path,
+    o: &Out,
+) -> Result<u8> {
+    use warden::vmm::boot::{BootConfig, LinuxCell};
+
+    if !Path::new("/dev/kvm").exists() {
+        anyhow::bail!("no /dev/kvm on this host");
+    }
+    let runtime = crate::agent::runtime_root()?;
+    let work = crate::agent::tempdir()?;
+    let work = work.path();
+
+    // Every distinct image becomes its own sealed namespace. Tools sharing an
+    // image share the mount, so 1:1, many:1 and many:many all fall out of the
+    // same mapping.
+    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    for (t, _, _) in resolved.iter().filter(|(t, _, _)| t.image.is_some()) {
+        let path = image_path(t, root)?;
+        let key = path.display().to_string();
+        if !images.iter().any(|(k, _)| *k == key) {
+            images.push((key, std::fs::read(&path)?));
+        }
+    }
+    let mount_of = |t: &celln_spec::Tool| -> Option<String> {
+        let path = image_path(t, root).ok()?;
+        let key = path.display().to_string();
+        let idx = images.iter().position(|(k, _)| *k == key)?;
+        Some(if idx == 0 {
+            "/tools".to_string()
+        } else {
+            format!("/tools{idx}")
+        })
+    };
+    let files: Vec<&(celln_spec::Tool, Hash, Vec<u8>)> = resolved
+        .iter()
+        .filter(|(t, _, _)| t.path.is_some())
+        .collect();
+
+    // A run request per declared invocation, each naming the bytes pilot must
+    // re-hash before it will exec them.
+    let mut runs = Vec::new();
+    for r in spec.run_list() {
+        let Some((tool, _, _)) = resolved.iter().find(|(t, _, _)| t.alias == r.exec) else {
+            continue;
+        };
+        let (path, root_dir) = match (&tool.image, &tool.exec) {
+            _ if tool.builtin.as_deref() == Some("fetch") => ("/pilot-fetch".to_string(), None),
+            (Some(_), Some(exec)) => (exec.clone(), mount_of(tool)),
+            _ => (
+                format!(
+                    "/tools/{}",
+                    tool.path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                ),
+                None,
+            ),
+        };
+        runs.push(serde_json::json!({
+            "path": path,
+            "alias": tool.alias,
+            "args": r.args,
+            "agent_authored_input": r.input == celln_spec::Input::Data,
+            "root": root_dir,
+        }));
+    }
+    let run_json = work.join("run.json");
+    std::fs::write(
+        &run_json,
+        serde_json::to_vec_pretty(&serde_json::json!({ "runs": runs }))?,
+    )?;
+
+    // The manifest pilot checks against is this host's store, which already
+    // holds every tool resolved above.
+    let manifest = root.join("manifest.json");
+    let toolfs = work.join("toolfs.img");
+    match images.first() {
+        Some((_, bytes)) => std::fs::write(&toolfs, bytes)?,
+        None => {
+            let mut args = vec![toolfs.display().to_string(), "32".into()];
+            for (t, _, bytes) in &files {
+                let staged = work.join(
+                    t.path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .context("tool path has no file name")?,
+                );
+                std::fs::write(&staged, bytes)?;
+                args.push(staged.display().to_string());
+            }
+            crate::agent::sh(&runtime, "scripts/mktoolfs.sh", &args)?;
+        }
+    }
+
+    let initrd = work.join("initramfs.cpio");
+    crate::agent::sh_env(
+        &runtime,
+        "scripts/mkinitramfs.sh",
+        &[initrd.display().to_string()],
+        &[
+            ("CELLN_MANIFEST", manifest.display().to_string()),
+            ("CELLN_RUN_JSON", run_json.display().to_string()),
+            (
+                "CELLN_PILOT_DIR",
+                runtime.join("pilot").display().to_string(),
+            ),
+        ],
+    )?;
+
+    let payload = std::fs::read(&toolfs)?;
+    let mut lens: Vec<usize> = vec![payload.len()];
+    lens.extend(images.iter().skip(1).map(|(_, b)| b.len()));
+
+    let kernel = BootConfig::host_kernel()
+        .context("no readable /boot/vmlinuz-* with matching /lib/modules")?;
+    let mut cfg = BootConfig::new(&kernel)
+        .with_pmems(&lens)
+        .with_initrd(&initrd);
+    cfg.mem_size = spec.memory_bytes() as usize;
+
+    let mut cell = LinuxCell::boot(cfg).context("booting the cell")?;
+    let h = Hash::of(&payload);
+    cell.seal_tool(&h, &payload).context("sealing tools")?;
+    for (_, bytes) in images.iter().skip(1) {
+        cell.seal_tool(&Hash::of(bytes), bytes)
+            .context("sealing an additional image")?;
+    }
+    o.event(
+        "cell_sealed",
+        serde_json::json!({"backend": "kvm", "hash": h.0, "bytes": payload.len()}),
+        format!(
+            "  {} cell sealed, {} tool(s) lent read-only",
+            dim("·"),
+            resolved.len()
+        ),
+    );
+
+    if !spec.cell.allow_hosts.is_empty() {
+        cell.enable_http_fetch(warden::egress::HttpPolicy::new(
+            spec.cell.allow_hosts.clone(),
+        ));
+        o.event(
+            "egress",
+            serde_json::json!({ "allow_hosts": spec.cell.allow_hosts }),
+            format!(
+                "  {} egress brokered by the host: {}",
+                dim("·"),
+                spec.cell.allow_hosts.join(", ")
+            ),
+        );
+    }
+    let report = cell.run().context("running the cell")?;
+    if !report.console.contains("CELLN:pilot=alive") {
+        let tail: Vec<&str> = report.console.lines().rev().take(8).collect();
+        anyhow::bail!(
+            "the cell booted but pilot never started, so nothing ran. \
+             Guest console tail: {}",
+            tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        );
+    }
+    for m in report
+        .console
+        .lines()
+        .filter_map(|l| l.strip_prefix("CELLN:tools_mounted="))
+    {
+        o.event(
+            "image_mounted",
+            serde_json::json!({ "mount": m }),
+            format!("  {} image mounted at {}", dim("·"), m),
+        );
+    }
+    let mut code = 0u8;
+    for line in report.console.lines() {
+        let Some(rest) = line.strip_prefix("CELLN:pilot_run_") else {
+            continue;
+        };
+        let Some((key, val)) = rest.split_once('=') else {
+            continue;
+        };
+        if let Some(alias) = key.strip_suffix("_exit") {
+            let exit = val.parse::<i32>().unwrap_or(1).clamp(0, 255) as u8;
+            if exit != 0 {
+                code = exit;
+            }
+            o.event(
+                "run_exit",
+                serde_json::json!({"alias": alias, "exit": exit}),
+                format!("  {} {} exit={}", dim("·"), alias, exit),
+            );
+        } else {
+            o.event(
+                "pilot_verdict",
+                serde_json::json!({"alias": key, "verdict": val}),
+                format!(
+                    "  {} pilot: {} {}",
+                    if val.starts_with("permitted") {
+                        green("✔")
+                    } else {
+                        red("✘")
+                    },
+                    key,
+                    val
+                ),
+            );
+            if val == "denied" {
+                code = exit::REFUSED;
+                for line in report
+                    .console
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("CELLN:explain "))
+                {
                     o.event(
-                        "exec_permitted",
-                        serde_json::json!({"exec": r.exec, "lane": lane.to_string()}),
-                        format!(
-                            "  {} {} permitted in the {} lane",
-                            green("✔"),
-                            r.exec,
-                            bold(&lane.to_string())
-                        ),
-                    );
-                }
-                pilot::ExecOutcome::Denied(e) => {
-                    o.event(
-                        "exec_denied",
-                        serde_json::to_value(&e).unwrap_or_default(),
-                        format!("  {} {} refused: {}", red("✘"), r.exec, e.reason),
+                        "explain",
+                        serde_json::json!({ "line": line }),
+                        format!("    {}", dim(line.trim())),
                     );
                 }
             }
         }
     }
-
-    if let Some(r) = record.as_mut() {
-        crate::cells::finish(root, r, sealed, None);
+    // One block per invocation, so a cell running several tools prints all of
+    // them rather than only the first.
+    let mut rest = report.console.as_str();
+    while let Some(start) = rest.find("CELLN:out-begin") {
+        let Some(nl) = rest[start..].find('\n') else {
+            break;
+        };
+        let after = start + nl + 1;
+        let Some(end) = rest[after..].find("CELLN:out-end") else {
+            break;
+        };
+        let text = rest[after..after + end].trim_end_matches(['\r', '\n']);
+        if !text.trim().is_empty() {
+            let text = text.replace("\r\n", "\n");
+            o.event("output", serde_json::json!({"stdout": text}), String::new());
+            if !o.is_json() {
+                println!("{text}");
+            }
+        }
+        rest = &rest[after + end..];
     }
-    o.event(
-        "cell_dissolved",
-        serde_json::json!({"id": record.as_ref().map(|r| r.id.clone()), "name": spec.name, "sealed_tools": resolved.len(), "backend": sealed}),
-        format!("{} cell dissolved", green("●")),
-    );
-
-    if !o.is_json() {
-        o.say("");
-        o.say(dim(
-            "in-cell execution of your command is not wired yet (build plan M5:\n\
-             stripped mote kernel + pilot). What ran here is real: a hardware-isolated\n\
-             cell, your tools sealed into it as read-only memory, and every trust\n\
-             decision applied. `celln verify` proves the isolation on this machine.",
-        ));
-    }
-    Ok(exit::OK)
-}
-
-/// Seal a real cell and map the resolved tools into it. Returns the backend name.
-#[cfg(target_os = "linux")]
-fn seal_cell(
-    spec: &Spec,
-    resolved: &[(celln_spec::Tool, Hash, Vec<u8>)],
-    o: &Out,
-) -> Result<&'static str> {
-    use warden::vmm::kvm::KvmVmm;
-    use warden::Cell;
-
-    let vmm = KvmVmm::new().context("opening /dev/kvm")?;
-    let mut cell = Cell::seal(spec.name.clone(), vmm, "mote:cell-cli")?;
-    o.event(
-        "cell_sealed",
-        serde_json::json!({"backend": "kvm", "phase": format!("{:?}", cell.phase())}),
-        format!("  {} microVM sealed, phase={:?}", dim("·"), cell.phase()),
-    );
-
-    for (t, hash, bytes) in resolved {
-        cell.map_tool(hash, bytes)?;
-        o.event(
-            "tool_sealed",
-            serde_json::json!({"alias": t.alias, "hash": hash.to_string()}),
-            format!("  {} {} sealed read-only into the cell", dim("·"), t.alias),
-        );
-    }
-
-    // First tainted exec closes materialisation for this lineage, permanently.
-    cell.on_first_tainted_exec();
-    o.event(
-        "ratchet",
-        serde_json::json!({"phase": format!("{:?}", cell.phase())}),
-        format!(
-            "  {} authority ratcheted to {:?} — no further tools can be lent",
-            dim("·"),
-            cell.phase()
-        ),
-    );
-    cell.dissolve()?;
-    Ok("kvm")
+    Ok(code)
 }
 
 #[cfg(not(target_os = "linux"))]
-fn seal_cell(
+fn execute(
     _spec: &Spec,
     _resolved: &[(celln_spec::Tool, Hash, Vec<u8>)],
+    _root: &Path,
     _o: &Out,
-) -> Result<&'static str> {
+) -> Result<u8> {
     anyhow::bail!("hardware isolation needs Linux with /dev/kvm")
 }
 
@@ -470,7 +776,8 @@ pub fn tools(root: &Path, o: &Out) -> Result<u8> {
     let m = assayer.manifest();
     if m.is_empty() {
         o.note(dim(
-            "no tools attested yet — `celln run` admits them as it resolves",
+            "no tools attested yet — `celln run` admits them as it resolves, \
+             or `celln prewarm` admits the usual suspects up front",
         ));
         return Ok(exit::OK);
     }
@@ -489,6 +796,38 @@ pub fn tools(root: &Path, o: &Out) -> Result<u8> {
             })
         ),
     );
+
+    let mut entries: Vec<_> = m.entries().collect();
+    entries.sort_by(|a, b| a.alias.cmp(&b.alias));
+    for e in entries {
+        let revoked = m.is_revoked(&e.hash);
+        o.event(
+            "tool_entry",
+            serde_json::json!({
+                "alias": e.alias,
+                "hash": e.hash.to_string(),
+                "tier": e.tier.to_string(),
+                "interpreter": e.interpreter,
+                "author": e.author.to_string(),
+                "revoked": revoked,
+            }),
+            format!(
+                "  {} {:<32} tier={:<8} {}{}",
+                if revoked { red("✘") } else { green("✔") },
+                e.alias,
+                e.tier.to_string(),
+                dim(&format!(
+                    "author={} interpreter={}",
+                    e.author, e.interpreter
+                )),
+                if revoked {
+                    format!("  {}", red("REVOKED"))
+                } else {
+                    String::new()
+                }
+            ),
+        );
+    }
     Ok(exit::OK)
 }
 

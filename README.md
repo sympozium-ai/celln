@@ -8,16 +8,90 @@
 **Celln** runs agents in isolated **cells** that borrow verified tools instead
 of rebuilding Linux environments.
 
+```console
+$ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
+  ✔ /usr/bin/python permitted in the agent lane
+GIF image
+```
+
+A model wrote that code. An attested python ran it, on input you have no reason
+to trust, in a cell with no network and nothing writable but `/tmp` — then the
+cell dissolved.
+
+Read the second line again. It says **agent** lane, and nobody asked for it.
+python is fully attested and keeps its hash, but code a model wrote is
+agent-authored input, so handing it to an attested interpreter demotes that
+invocation. Authority is decided per call, not per binary.
+
+## Declaring it instead
+
+That one-liner is the short path. For anything you'd repeat, a spec is the
+durable artifact — reviewable, checked in, and the thing that says what a cell
+may ever be lent. Two tools, from two separate images, in one cell:
+
+```toml
+# cell.toml
+name = "two-tools"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"                    # digest-pinned; a tag is refused
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[[tool]]
+alias = "/usr/bin/curl"
+image = "curl"                      # a second, independent image
+exec  = "/usr/bin/curl"
+
+[[run]]
+exec = "/usr/bin/python"
+args = ["-c", "import ssl; print('python  ', ssl.OPENSSL_VERSION)"]
+
+[[run]]
+exec = "/usr/bin/curl"
+args = ["--version"]
+```
+
+```console
+$ celln setup                       # once: agent CLI + default tool images
+$ celln run cell.toml
+● sealing cell two-tools
+  · cell sealed, 2 tool(s) lent read-only
+  · image mounted at /tools1
+  ✔ pilot: /usr/bin/python permitted:tool   exit=0
+  ✔ pilot: /usr/bin/curl   permitted:tool   exit=0
+
+python   OpenSSL 3.5.6 7 Apr 2026
+curl 8.21.0 (x86_64-pc-linux-musl) libcurl/8.21.0 OpenSSL/3.5.7 …
+● cell dissolved
+```
+
+Look at the two OpenSSL versions. python came from a glibc image, curl from
+a musl one — two libcs and two TLS stacks in the same cell, each its own sealed
+namespace, neither aware of the other. Nothing was installed, and nothing
+persists: the tools are read-only memory the host lent and can revoke.
+
+Need a tool that isn't shipped? One command — give it a tag, celln pins the
+digest:
+
+```console
+$ celln image add node:22-slim
+● node:22-slim → node@sha256:0f1cd7…
+  + added node to ~/.celln/tools.toml
+      /usr/bin/node → /usr/local/bin/node
+```
+
 ## How is this different?
 
 Most agent runtimes give an agent a machine. Celln gives it a temporary,
 read-only lease on the tools it needs.
 
-[Read the documentation →](https://sympozium-ai.github.io/celln/)
-
-```sh
-celln agent "Build me something dangerous that should only run in an isolated environment."
-```
+[Read the documentation →](https://sympozium-ai.github.io/celln/) ·
+[Guided tutorial →](https://sympozium-ai.github.io/celln/tutorial.html)
 
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
@@ -63,41 +137,59 @@ specs and runs `celln demo`, and `celln doctor` says which you have.
 
 ## Use it
 
-**1. Write a spec** — what your agent may be lent, and what it intends to run.
+**1. Get a tool.** Most real tools are a *closure* — a binary, its loader and
+the shared objects it resolves by absolute path — so celln lends them as a
+sealed filesystem built from a digest-pinned OCI image. `celln setup`
+materialises the defaults; pulling is its own step so starting a cell never
+waits on a registry.
 
 ```sh
-celln spec init > agent.toml
+$ celln image catalogue
+  ✔ python     /usr/bin/python /bin/sh      materialised
+  ✔ curl       /usr/bin/curl                materialised
+```
+
+**2. Write a spec** — what your agent may be lent, and what it intends to run.
+
+```sh
+celln image spec python > agent.toml     # or: celln spec init
 ```
 
 ```toml
 name = "code-reviewer"
 
 [cell]
-memory = "256MiB"
+memory = "512MiB"
 require_tier = "verified"
 
 [[tool]]
 alias = "/usr/bin/python"     # the name your agent uses
-path = "/usr/bin/python3"     # where the bytes come from
+image = "python"              # a catalogue name; a tag is refused
+exec  = "/usr/local/bin/python3.12"
 interpreter = true            # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["review.py"]
+args = ["-c", "print(1 + 1)"]
 input = "data"                # the agent wrote it
 ```
 
-**2. Check it** — validation, plus what the trust model will decide.
+A tool comes from exactly one of three places: `image` + `exec` for a closure,
+`path` for a single static binary already on this host, or `builtin = "fetch"`
+for the brokered HTTPS capability. A cell can declare several `[[run]]`
+invocations and mount several images at once.
+
+**3. Check it** — validation, plus what the trust model will decide.
 
 ```sh
 $ celln spec check agent.toml
-✔ code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
+✔ code-reviewer  1 tool(s), 512MiB memory, require_tier=verified
 
 tools
-  /usr/bin/python          interpreter  /usr/bin/python3
+  /usr/bin/python          interpreter  python → /usr/local/bin/python3.12
 
 run
-  /usr/bin/python review.py
+  /usr/bin/python -c print(1 + 1)
   runs in the agent lane — demoted: an interpreter fed agent-authored input
 ```
 
@@ -105,20 +197,30 @@ run
 the agent lane — including the `python -c "…"` form that file-level taint
 tracking misses.
 
-**3. Run it.**
+**4. Run it.**
 
 ```sh
 $ celln run agent.toml
 ● sealing cell code-reviewer
   + /usr/bin/python        tier=verified cold — verified now, forged queued
-  · microVM sealed, phase=Materialise
-  · /usr/bin/python sealed read-only into the cell
-  · authority ratcheted to Work — no further tools can be lent
   ✔ /usr/bin/python permitted in the agent lane
+  · cell sealed, 1 tool(s) lent read-only
+  ✔ pilot: /usr/bin/python permitted:agent
+  · /usr/bin/python exit=0
+
+2
 ● cell dissolved
 ```
 
-**4. Verify the isolation.**
+The verdict appears twice on purpose: once on the host before the cell exists,
+and once from pilot inside it, after re-hashing the bytes it actually found.
+
+A [guided tutorial](https://sympozium-ai.github.io/celln/tutorial.html) works
+through three worked examples — an agent using python, a cell reaching a named
+host with no network stack of its own, and two independent toolchains in one
+cell.
+
+**5. Verify the isolation.**
 
 ```sh
 $ celln verify
@@ -127,12 +229,33 @@ proving isolation on this machine
   ✔ revoking a tool stops it in an already-running cell
 ```
 
-## Experimental: a model writes code, a cell runs it
+## A model writes code, a cell runs it
 
-This is for **computations, not questions**. A cell exists to contain code you
-would rather not run unsealed — if nothing executes, it has nothing to protect
-you from, and asking the model directly is the right tool. `--show-source`
-prints what it wrote.
+A cell exists to contain code you would rather not run unsealed.
+`--show-source` prints what the model wrote.
+
+**With a lent interpreter.** The shortest path: name a catalogue tool, and the
+model writes that tool's language.
+
+```sh
+$ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
+● asking openai for Python to run as /usr/bin/python
+  · replied in 6s, 8 lines
+  ≡ /usr/bin/python        tier=verified warm — page map, no build
+  ✔ /usr/bin/python permitted in the agent lane
+  · cell sealed, 1 tool(s) lent read-only
+  ✔ pilot: /usr/bin/python permitted:agent
+  · /usr/bin/python exit=0
+
+GIF image
+```
+
+Nobody asked for the **agent** lane there. The model's code is agent-authored
+input handed to an attested interpreter, so it is demoted for that invocation —
+python keeps its hash and loses its authority.
+
+**Or forged from source.** Without `--tool`, the model writes Rust and Celln
+compiles it, which is where the more interesting claim lives:
 
 ```sh
 $ celln agent "print the first 100 primes, space separated"
@@ -182,7 +305,7 @@ toolchain, not across every environment.
 Pick who writes it — `celln agents` shows what this host can use:
 
 ```sh
-$ celln setup                         # discovers codex, claude, or ollama
+$ celln setup                         # finds an agent CLI and materialises the default tool images
 ✔ default agent: openai (~/.config/celln/config.toml)
 
 $ celln agents
@@ -203,13 +326,12 @@ The saved setting is credential-free:
 default = "openai"
 ```
 
-Use `celln ask "…"` for a question: it asks the selected agent directly on the
-host because no program runs and there is nothing to contain. Use `celln agent
-"…"` for work that generates code to run; that path is where Celln seals
-and governs the resulting program. The agent selects a runtime from the cell's
-sealed capability set; today that set contains one static Rust runtime. Adding
-a runtime is a capability change—not a prompt convention—because its bytes
-must be attested, sealed, and revocable too.
+`celln agent "…"` is for work that generates code to run; that path is where
+Celln seals and governs the resulting program. Without `--tool` the model
+writes Rust, which is forged into a static binary and attested. With
+`--tool python` it writes that tool's language instead, and the program is
+interpreted by a lent, attested interpreter — which makes it agent-authored
+input, and so agent-lane, automatically.
 
 Network-shaped work must declare exactly where it may reach before a model is
 called:
@@ -272,16 +394,13 @@ The full set is published at [sympozium-ai.github.io/celln](https://sympozium-ai
 |---|---|---|
 | Start here | [Start here](https://sympozium-ai.github.io/celln/start.html) | Five commands, about five minutes: install, connect an agent, then `doctor` / `spec` / `run` / `verify` / `agent` in order. |
 | Command reference | [CLI](https://sympozium-ai.github.io/celln/cli.html) | The commands most people need, grouped: daily use, asking an agent, running declared tools, inspecting a run. |
+| Tutorial | [Tutorial](https://sympozium-ai.github.io/celln/tutorial.html) | Three worked cells, each teaching one idea; plus adding your own tool. |
 | Concepts hub | [Concepts](https://sympozium-ai.github.io/celln/concepts.html) | The four-page series below, as one entry point. |
 | The model | [Model](https://sympozium-ai.github.io/celln/model.html) | Mote, cell, assay, warden, pilot — the vocabulary and one cell's lifecycle. |
-| Tool lane | [Tool lane](https://sympozium-ai.github.io/celln/tool-lane.html) | `celln spec` / `celln run` walkthrough: declaring a host binary, tiers, the interpreter flag. |
+| Tool lane | [Tool lane](https://sympozium-ai.github.io/celln/tool-lane.html) | `celln spec` / `celln run`: declaring a tool, closures and images, tiers, the interpreter flag. |
 | Agent lane | [Agent lane](https://sympozium-ai.github.io/celln/agent-lane.html) | `celln agent` walkthrough: forging, attestation, choosing a backend, brokered egress. |
 | Security boundary | [Security](https://sympozium-ai.github.io/celln/security.html) | What's hardware-enforced, what's brokered, and what Celln does not claim. |
 | Vocabulary reference | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) | Every term (mote, cell, lane, tier, …) in one place. |
-| Kubernetes node plane | [Kubernetes](https://sympozium-ai.github.io/celln/kubernetes.html) | The admission seam a control plane uses to find and check a Celln-capable node. |
-| Dispatcher runtime | [Dispatcher](https://sympozium-ai.github.io/celln/dispatcher.html) | The `celln.dev/v1alpha1` `ExecutionRequest`/`ExecutionReceipt` contract a running dispatcher implements. |
-| Sympozium integration | [Sympozium actions](https://sympozium-ai.github.io/celln/sympozium-celln-actions.html) | How Sympozium selects Celln for one hermetic action via `AgentRun.spec.backend: celln` — and deliberately not for ensembles. |
-| Integration proof | [Proof](https://sympozium-ai.github.io/celln/integration-proof.html) | A real AgentRun, dispatched through Sympozium, executed in a real sealed KVM cell — with evidence. |
 | Run the hardware checks | `celln verify` and `make bench-kvm` | Reproduce the isolation proofs and spawn-latency measurements on your own KVM host. |
 | Working on Celln itself | [AGENTS.md](AGENTS.md), then `make help` | Contributor setup, the Makefile targets, what CI runs. |
 

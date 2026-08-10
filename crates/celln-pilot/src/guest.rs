@@ -77,10 +77,41 @@ const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
     | LANDLOCK_ACCESS_FS_MAKE_SYM
     | LANDLOCK_ACCESS_FS_REFER;
 
+/// Enter a sealed image as the filesystem root, immediately before `execve`.
+///
+/// A single static binary can be exec'd straight off the sealed mount, but a
+/// real tool is a *closure* — the binary plus its loader plus every shared
+/// object it needs — and a dynamic loader resolves those by absolute path
+/// (`/lib64/ld-linux-x86-64.so.2`). Mounted at `/tools`, none of those paths
+/// exist. `chroot` makes the sealed image the root, so the closure resolves
+/// against itself and never against the host.
+///
+/// This runs in the child, after fork and before exec, so pilot itself keeps
+/// its own view of the filesystem — it still has to reach `/celln/manifest.json`
+/// for the next request.
+fn enter_root(root: &str) -> io::Result<()> {
+    let path = CString::new(root).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    unsafe {
+        if libc::chroot(path.as_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let slash = CString::new("/").expect("constant path");
+        if libc::chdir(slash.as_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Apply the agent lane immediately before `execve`. The parent stays pilot and
 /// retains its narrow supervisory authority; the child can read/execute tools,
 /// write only its workspace, and cannot create a network socket.
-fn enter_agent_lane() -> io::Result<()> {
+///
+/// `workspace` is the one writable path. Without a sealed image that is the
+/// initramfs scratch dir; inside one it is the tmpfs the caller mounted over
+/// the image's own `/tmp`, because the image itself is read-only by hardware
+/// and nothing in it can be written to.
+fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err(io::Error::last_os_error());
@@ -121,11 +152,16 @@ fn enter_agent_lane() -> io::Result<()> {
             }
             Ok(())
         };
-        // The generated executable is the only tool the agent lane receives.
+        // The executable being run is the only tool the agent lane receives.
         // Do not grant the `/tools` directory: that would let it discover and
         // read every future host-lent tool by name.
+        //
+        // Inside a chroot'ed sealed image this rule is already satisfied by
+        // construction — the root *is* the one image being lent, so the grant
+        // on "/" below is scoped to exactly that image and nothing else. A
+        // second image is a second mount the child never sees.
         add(
-            "/tools/program",
+            exec_path,
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
         )?;
         // pilot-fetch uses I/O ports to talk to the host broker, not sockets.
@@ -135,16 +171,22 @@ fn enter_agent_lane() -> io::Result<()> {
         // requires READ_FILE for this static execve. The image is immutable;
         // write access remains limited to the workspace, and egress remains
         // host-authorised by the broker.
+        // READ_DIR as well as READ_FILE: a real tool resolves its own runtime
+        // by walking directories (python locates `encodings` before it can
+        // start), and without it the interpreter dies before running anything.
+        // It grants no reach a READ_FILE on this hierarchy did not already —
+        // inside a chroot the hierarchy is the one image being lent.
         add(
             "/",
-            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
         )?;
-        add(WORKSPACE, FS_ALL)?;
+        add(workspace, FS_ALL)?;
         if libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0) != 0 {
             return Err(io::Error::last_os_error());
         }
         libc::close(ruleset);
-        let work = CString::new(WORKSPACE).expect("constant path");
+        let work =
+            CString::new(workspace).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         if libc::chdir(work.as_ptr()) != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -248,6 +290,9 @@ const RUN_REQUEST: &str = "/celln/run.json";
 #[derive(Deserialize)]
 struct RunRequest {
     /// Where the bytes live in the cell — normally on the sealed DAX mount.
+    ///
+    /// When `root` is set this is relative to *that* root, not to pilot's own
+    /// filesystem, because the child is chroot'ed before it execs.
     path: String,
     /// What the agent calls it. Only used for reporting; authority comes from
     /// the hash, never from the name or the path.
@@ -257,6 +302,82 @@ struct RunRequest {
     /// Whether the input this invocation is being fed was written by the agent.
     #[serde(default)]
     agent_authored_input: bool,
+    /// A sealed image mount to enter as `/` before exec, for tools that are a
+    /// dependency closure rather than one static binary. Absent means the old
+    /// behaviour: exec `path` directly out of the sealed mount.
+    #[serde(default)]
+    root: Option<String>,
+}
+
+/// One cell can be asked to run several tools. Each invocation is hash-checked
+/// and lane-resolved on its own; sharing a cell grants nothing.
+#[derive(Deserialize)]
+struct RunFile {
+    #[serde(default)]
+    runs: Vec<RunRequest>,
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    alias: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    agent_authored_input: bool,
+}
+
+impl RunFile {
+    fn invocations(self) -> Vec<RunRequest> {
+        if !self.runs.is_empty() {
+            let root = self.root;
+            return self
+                .runs
+                .into_iter()
+                .map(|mut r| {
+                    r.root = r.root.or_else(|| root.clone());
+                    r
+                })
+                .collect();
+        }
+        match (self.path, self.alias) {
+            (Some(path), Some(alias)) => vec![RunRequest {
+                path,
+                alias,
+                args: self.args,
+                agent_authored_input: self.agent_authored_input,
+                root: self.root,
+            }],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// Mount a small writable tmpfs over `<root>/tmp`.
+///
+/// The sealed image is read-only *by hardware* — nothing in the guest can
+/// write it, which is the whole point — but real tools assume somewhere to
+/// scratch. This gives each cell its own private tmpfs at a path the image
+/// already provides, so the read-only image stays shareable across every cell
+/// while the writes stay per-cell.
+fn mount_scratch(root: &str) -> io::Result<()> {
+    let target = CString::new(format!("{root}/tmp"))
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let fstype = CString::new("tmpfs").expect("constant");
+    let source = CString::new("tmpfs").expect("constant");
+    unsafe {
+        if libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -353,7 +474,7 @@ fn run_requested(manifest: &Manifest) {
     let Ok(bytes) = std::fs::read(RUN_REQUEST) else {
         return; // nothing asked of this cell
     };
-    let req: RunRequest = match serde_json::from_slice(&bytes) {
+    let file: RunFile = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
         Err(e) => {
             report("pilot_run", "unparseable");
@@ -362,7 +483,37 @@ fn run_requested(manifest: &Manifest) {
         }
     };
 
-    let Ok(code) = std::fs::read(&req.path) else {
+    // Each sealed root needs its scratch mounted once, not once per tool.
+    let mut mounted: Vec<String> = Vec::new();
+    let invocations = file.invocations();
+    report("pilot_runs", &invocations.len().to_string());
+    for req in invocations {
+        if let Some(root) = req.root.clone() {
+            if !mounted.contains(&root) {
+                match mount_scratch(&root) {
+                    Ok(()) => report("pilot_scratch", "tmpfs"),
+                    Err(e) => {
+                        report("pilot_scratch", "failed");
+                        eprintln!("pilot: tmpfs on {root}/tmp: {e}");
+                    }
+                }
+                mounted.push(root);
+            }
+        }
+        run_one(manifest, &req);
+    }
+}
+
+fn run_one(manifest: &Manifest, req: &RunRequest) {
+    // Where pilot itself can read the bytes, which is not where the child will
+    // exec them from: the child is chroot'ed, so its `/usr/bin/x` is pilot's
+    // `/tools/usr/bin/x`. Hash the bytes here, before any chroot, so the
+    // exec-by-hash check is made against the file that will actually run.
+    let host_view = match &req.root {
+        Some(root) => format!("{root}{}", req.path),
+        None => req.path.clone(),
+    };
+    let Ok(code) = std::fs::read(&host_view) else {
         report(&format!("pilot_run_{}", req.alias), "absent");
         return;
     };
@@ -393,9 +544,26 @@ fn run_requested(manifest: &Manifest) {
             println!("CELLN:out-begin");
             let mut command = std::process::Command::new(&req.path);
             command.args(&req.args);
-            if lane != Lane::Tool {
+            let root = req.root.clone();
+            let exec_path = req.path.clone();
+            // Inside a sealed image the only writable place is the tmpfs just
+            // mounted; outside one it is the initramfs scratch dir.
+            let workspace = if root.is_some() { "/tmp" } else { WORKSPACE }.to_string();
+            let confine = lane != Lane::Tool;
+            if root.is_some() || confine {
                 unsafe {
-                    command.pre_exec(enter_agent_lane);
+                    command.pre_exec(move || {
+                        // Order matters: chroot first, so every Landlock rule
+                        // below is resolved inside the image rather than
+                        // against pilot's own filesystem.
+                        if let Some(r) = &root {
+                            enter_root(r)?;
+                        }
+                        if confine {
+                            enter_agent_lane(&workspace, &exec_path)?;
+                        }
+                        Ok(())
+                    });
                 }
             }
             let status = command.status();

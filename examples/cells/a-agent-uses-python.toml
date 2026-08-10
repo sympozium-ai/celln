@@ -1,0 +1,32 @@
+# (a) An agent allowed to use python.
+#
+# The tool is host-declared and attested; the *code* is the agent's. Marking
+# the input `data` is what says so, and it moves this invocation into the agent
+# lane even though python itself is fully attested. Same binary, same hash,
+# less authority — that is the laundering ban.
+
+name = "agent-uses-python"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[run]
+exec = "/usr/bin/python"
+input = "data"                     # the agent wrote what follows
+args = ["-c", """
+import json, hashlib, socket
+print("agent code running in a cell")
+print("  computed:", hashlib.sha256(b"celln").hexdigest()[:24])
+print("  json:", json.dumps({"ok": True}))
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print("  socket: CREATED")
+except Exception as e:
+    print("  socket:", type(e).__name__, "- confined to the agent lane")
+"""]

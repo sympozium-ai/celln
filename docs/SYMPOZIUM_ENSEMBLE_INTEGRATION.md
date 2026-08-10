@@ -54,6 +54,6 @@ an agent-to-agent, delegation, or shared-memory participant.
 
 ## What remains open
 
-Two things, stated once rather than scattered: the guest still boots this host's own kernel rather than the mote bundle's declared one (kernel/initrd hashes are verified to exist, not booted from — see `docs/dispatcher.html`), and the run-creation UI doesn't yet gate the `celln` backend option on live dispatcher/provider availability, so a misconfigured node surfaces as a failed run rather than an unavailable choice.
+Two things, stated once rather than scattered: the guest still boots this host's own kernel rather than the mote bundle's declared one (kernel/initrd hashes are verified to exist, not booted from), and the run-creation UI doesn't yet gate the `celln` backend option on live dispatcher/provider availability, so a misconfigured node surfaces as a failed run rather than an unavailable choice.
 
 The run-creation UX also doesn't yet gate the `celln` backend option on live dispatcher/provider availability — it's always offered, and a misconfigured or disabled Celln surfaces as a failed run rather than an unavailable option. Both gaps are tracked, not hidden, and neither blocks using Celln for what it's for today: one bounded, sensitive, or high-risk computation, selected explicitly, per run.

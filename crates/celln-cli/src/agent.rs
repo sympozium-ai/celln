@@ -344,7 +344,13 @@ pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
     Ok(crate::exit::OK)
 }
 
-pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
+pub fn setup(
+    preferred: Option<Backend>,
+    root: &Path,
+    tools: Option<&str>,
+    no_tools: bool,
+    o: &Out,
+) -> Result<u8> {
     let backend = match preferred {
         Some(backend) if backend.available() => backend,
         Some(backend) => {
@@ -414,6 +420,20 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
         }
         Err(e) => {
             o.warn(format!("could not install runtime assets: {e:#}"));
+        }
+    }
+
+    if no_tools {
+        o.note(format!(
+            "  {} skipping tool images; `celln image catalogue` lists them",
+            dim("·")
+        ));
+    } else {
+        o.say("");
+        o.say(bold("tool images"));
+        match crate::image::pull_defaults(root, tools, o) {
+            Ok(n) => o.note(format!("  {} {n} image(s) ready", dim("·"))),
+            Err(e) => o.warn(format!("tool images: {e:#}")),
         }
     }
 
@@ -629,7 +649,7 @@ fn resolve_runtime_home() -> Result<PathBuf> {
     Ok(home.join(".celln/runtime"))
 }
 
-fn which(program: &str) -> Option<PathBuf> {
+pub(crate) fn which(program: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|d| d.join(program))
@@ -675,6 +695,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     }
     let runtime_root = runtime_root()?;
     let work = tempdir()?;
+    let work = work.path();
     // The cell has no ambient network. Do not make an agent spend
     // time generating a program that cannot possibly perform its stated job.
     const NEEDS_EGRESS: &[&str] = &[
@@ -860,51 +881,6 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
 
     // ── 4. seal a cell and run it ────────────────────────────────────────
     run_in_cell(&toolfs, &initrd, allow_hosts, state_root, task, o)
-}
-
-/// Questions do not need a cell: no generated program runs, so there is
-/// nothing to contain. Keep this path visibly separate from `celln agent`.
-pub fn ask(
-    question: &str,
-    requested_backend: Option<Backend>,
-    model: Option<&str>,
-    timeout: u64,
-    o: &Out,
-) -> Result<u8> {
-    let backend = match select_backend(requested_backend, o)? {
-        Some(backend) => backend,
-        None => return Ok(crate::exit::HOST_INCAPABLE),
-    };
-    if !backend.available() {
-        o.warn(format!(
-            "{} needs `{}` on PATH — see `celln agents`",
-            backend.label(),
-            backend.program()
-        ));
-        return Ok(crate::exit::HOST_INCAPABLE);
-    }
-    let model = model.or_else(|| backend.default_model());
-    o.event(
-        "agent_question",
-        serde_json::json!({ "question": question, "backend": backend.label(), "model": model }),
-        format!(
-            "{} asking {} ({})",
-            bold("●"),
-            backend.label(),
-            model.unwrap_or("cli default")
-        ),
-    );
-    let answer = ask_model_text(backend, model, question, timeout)?;
-    o.event(
-        "agent_answer",
-        serde_json::json!({ "answer": answer }),
-        if o.is_json() {
-            String::new()
-        } else {
-            answer.clone()
-        },
-    );
-    Ok(crate::exit::OK)
 }
 
 fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>> {
@@ -1452,10 +1428,142 @@ pub(crate) fn runtime_root() -> Result<PathBuf> {
     )
 }
 
-pub(crate) fn tempdir() -> Result<PathBuf> {
-    let base = std::env::temp_dir().join(format!("celln-agent-{}", std::process::id()));
-    std::fs::create_dir_all(&base)?;
-    Ok(base)
+/// Scratch for one run: a toolfs image and an initramfs, so image-sized.
+///
+/// Returns a guard rather than a path because these used to be named by pid
+/// and left behind. On a host where /tmp is a tmpfs — which is most of them —
+/// that leaks the image size in RAM per run; it reached 13 GiB here before it
+/// was noticed. Dropping the guard removes the directory.
+pub(crate) fn tempdir() -> Result<tempfile::TempDir> {
+    Ok(tempfile::Builder::new().prefix("celln-").tempdir()?)
+}
+
+/// A program a model wrote, and how to hand it to its interpreter.
+pub(crate) struct WrittenProgram {
+    pub(crate) flag: String,
+    pub(crate) code: String,
+}
+
+const TOOL_BRIEF: &str = "\
+Write a single %LANGUAGE% program that does the following:
+
+%TASK%
+
+Requirements:
+- use only the %LANGUAGE% standard library
+- write the result to stdout
+- exit 0 on success
+- the program runs sealed, with no network and no writable filesystem except /tmp
+
+Reply with exactly one fenced code block containing the program, and no prose.
+";
+
+/// Pull the program out of a fenced block, tolerating a language tag and prose.
+fn extract_fenced(reply: &str) -> Option<String> {
+    let start = reply.find("```")?;
+    let after = reply[start + 3..].find('\n')? + start + 4;
+    let end = reply[after..].find("```")? + after;
+    let body = reply[after..end].trim_end();
+    (!body.trim().is_empty()).then(|| body.to_string())
+}
+
+/// Ask the configured model for a program the declared tool can interpret.
+pub(crate) fn write_program(
+    spec: &celln_spec::Spec,
+    exec_alias: &str,
+    task: &str,
+    root: &Path,
+    o: &Out,
+) -> Result<WrittenProgram> {
+    let tool = spec
+        .tools
+        .iter()
+        .find(|t| t.alias == exec_alias)
+        .with_context(|| format!("{exec_alias} is not a declared tool"))?;
+    let image = tool
+        .image
+        .as_deref()
+        .with_context(|| format!("{exec_alias} must come from an image to interpret model code"))?;
+    let (_, provide) =
+        crate::image::interpreter_for(image.split(&['@', ':'][..]).next().unwrap_or(image), root)?;
+    let language = provide.language.clone().unwrap_or_else(|| "code".into());
+    let flag = provide.code_flag.clone().unwrap_or_else(|| "-c".into());
+
+    let backend = match select_backend(None, o)? {
+        Some(b) => b,
+        None => bail!("no agent CLI configured; run `celln setup`"),
+    };
+    let model = backend.default_model();
+    o.event(
+        "agent_brief",
+        serde_json::json!({ "task": task, "language": language, "backend": backend.label() }),
+        format!(
+            "{} asking {} for {} to run as {}",
+            bold("●"),
+            backend.label(),
+            language,
+            exec_alias
+        ),
+    );
+    let brief = TOOL_BRIEF
+        .replace("%LANGUAGE%", &language)
+        .replace("%TASK%", task);
+    let started = Instant::now();
+    let reply = ask_model_text(backend, model, &brief, 120)?;
+    let code = extract_fenced(&reply)
+        .with_context(|| format!("{} did not return a fenced program", backend.label()))?;
+    o.note(format!(
+        "  {} replied in {:.0}s, {} lines",
+        dim("·"),
+        started.elapsed().as_secs_f32(),
+        code.lines().count()
+    ));
+    Ok(WrittenProgram { flag, code })
+}
+
+/// `celln agent --tool <name> "<task>"` — no spec file.
+///
+/// Builds the cell a spec would have described and runs it through the same
+/// path, so an ad-hoc run reaches the same trust decisions as a declared one.
+pub fn with_tool(
+    task: &str,
+    tool: &str,
+    allow_hosts: &[String],
+    root: &Path,
+    o: &Out,
+) -> Result<u8> {
+    let (image, provide) = crate::image::interpreter_for(tool, root)?;
+    if crate::image::image_is_materialised(&image, root) {
+        // nothing to do
+    } else {
+        o.note(format!(
+            "  {} {tool} is not materialised yet; pulling it once",
+            dim("·")
+        ));
+        crate::image::pull(&image.ref_, root, o)?;
+    }
+    let spec = celln_spec::Spec {
+        name: tool.to_string(),
+        cell: celln_spec::Cell {
+            memory: "512MiB".into(),
+            require_tier: celln_spec::Tier::Verified,
+            allow_hosts: allow_hosts.to_vec(),
+        },
+        tools: vec![celln_spec::Tool {
+            alias: provide.alias.clone(),
+            path: None,
+            image: Some(image.name.clone()),
+            exec: Some(provide.exec.clone()),
+            builtin: None,
+            interpreter: true,
+        }],
+        run: None,
+        agent: Some(celln_spec::AgentTask {
+            task: Some(task.to_string()),
+            exec: provide.alias.clone(),
+        }),
+    };
+    crate::run::run_spec(spec, root, Path::new("<agent --tool>"), false, None, o)
 }
 
 #[cfg(test)]

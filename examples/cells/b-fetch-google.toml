@@ -1,0 +1,20 @@
+# (b) A cell that can reach google.com.
+#
+# The cell still has no network stack. `allow_hosts` lends a *host capability*:
+# the guest hands a URL over I/O ports and warden performs the fetch, HTTPS
+# only, DNS pinned before connect, each redirect re-authorised, size and time
+# bounded. Anything not named here is refused.
+
+name = "fetch-google"
+
+[cell]
+memory = "512MiB"
+allow_hosts = ["google.com", "www.google.com"]
+
+[[tool]]
+alias = "/fetch"
+builtin = "fetch"
+
+[run]
+exec = "/fetch"
+args = ["https://google.com"]
