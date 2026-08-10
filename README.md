@@ -300,16 +300,14 @@ The full set is published at [sympozium-ai.github.io/celln](https://sympozium-ai
 |---|---|---|
 | Start here | [Start here](https://sympozium-ai.github.io/celln/start.html) | Five commands, about five minutes: install, connect an agent, then `doctor` / `spec` / `run` / `verify` / `agent` in order. |
 | Command reference | [CLI](https://sympozium-ai.github.io/celln/cli.html) | The commands most people need, grouped: daily use, asking an agent, running declared tools, inspecting a run. |
+| Tutorial | [Tutorial](https://sympozium-ai.github.io/celln/tutorial.html) | Three worked cells, each teaching one idea; plus adding your own tool. |
 | Concepts hub | [Concepts](https://sympozium-ai.github.io/celln/concepts.html) | The four-page series below, as one entry point. |
 | The model | [Model](https://sympozium-ai.github.io/celln/model.html) | Mote, cell, assay, warden, pilot — the vocabulary and one cell's lifecycle. |
-| Tool lane | [Tool lane](https://sympozium-ai.github.io/celln/tool-lane.html) | `celln spec` / `celln run` walkthrough: declaring a host binary, tiers, the interpreter flag. |
+| Tool lane | [Tool lane](https://sympozium-ai.github.io/celln/tool-lane.html) | `celln spec` / `celln run`: declaring a tool, closures and images, tiers, the interpreter flag. |
 | Agent lane | [Agent lane](https://sympozium-ai.github.io/celln/agent-lane.html) | `celln agent` walkthrough: forging, attestation, choosing a backend, brokered egress. |
 | Security boundary | [Security](https://sympozium-ai.github.io/celln/security.html) | What's hardware-enforced, what's brokered, and what Celln does not claim. |
 | Vocabulary reference | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) | Every term (mote, cell, lane, tier, …) in one place. |
-| Kubernetes node plane | [Kubernetes](https://sympozium-ai.github.io/celln/kubernetes.html) | The admission seam a control plane uses to find and check a Celln-capable node. |
-| Dispatcher runtime | [Dispatcher](https://sympozium-ai.github.io/celln/dispatcher.html) | The `celln.dev/v1alpha1` `ExecutionRequest`/`ExecutionReceipt` contract a running dispatcher implements. |
-| Sympozium integration | [Sympozium actions](https://sympozium-ai.github.io/celln/sympozium-celln-actions.html) | How Sympozium selects Celln for one hermetic action via `AgentRun.spec.backend: celln` — and deliberately not for ensembles. |
-| Integration proof | [Proof](https://sympozium-ai.github.io/celln/integration-proof.html) | A real AgentRun, dispatched through Sympozium, executed in a real sealed KVM cell — with evidence. |
+| Dispatcher runtime | [Dispatcher](https://sympozium-ai.github.io/celln/dispatcher.html) | The `celln.dev/v1alpha1` contract a running dispatcher implements. Reference material, not part of the guided path. |
 | Run the hardware checks | `celln verify` and `make bench-kvm` | Reproduce the isolation proofs and spawn-latency measurements on your own KVM host. |
 | Working on Celln itself | [AGENTS.md](AGENTS.md), then `make help` | Contributor setup, the Makefile targets, what CI runs. |
 
