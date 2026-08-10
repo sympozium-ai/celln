@@ -85,17 +85,18 @@ pub const EBDA_GPA: u64 = 0x9_fc00;
 /// trusting anything it reads there, so drift shows up as a loud mismatch
 /// rather than a silent pass.
 pub const TOOL_WINDOW_GPA: u64 = 0x600_0000; // 96 MiB
-/// Size of that hole. RAM resumes above it.
-///
-/// This 32 MiB cap is the ceiling on how large a sealed tool image can be, and
-/// it is why a cell cannot currently be lent a full dependency closure (a
-/// python OCI rootfs is ~138 MiB). Widening it in place is *not* the fix:
-/// because the window is a hole punched in low RAM, a larger window forces
-/// every cell's `mem_size` above the window end — measured, a 192 MiB window
-/// makes the stock 256 MiB cell fail to boot outright. Lifting this properly
-/// means relocating the window above RAM so its size stops constraining guest
-/// memory.
-pub const TOOL_WINDOW_SIZE: u64 = 32 << 20;
+
+/// Smallest tool window. Larger images widen it; `mem_size` is unaffected
+/// because RAM is extended to keep the same amount above the hole.
+pub const MIN_TOOL_WINDOW: u64 = 32 << 20;
+
+/// nd_pmem refuses a namespace whose base or length is not 2 MiB aligned.
+const PMEM_ALIGN: u64 = 2 << 20;
+
+pub fn tool_window_size(pmem_bytes: Option<usize>) -> u64 {
+    let want = pmem_bytes.unwrap_or(0) as u64;
+    want.max(MIN_TOOL_WINDOW).div_ceil(PMEM_ALIGN) * PMEM_ALIGN
+}
 
 /// Marker at the start of the probe tool, so the guest can tell "I mapped the
 /// sealed page-set" apart from "I mapped something plausible".
@@ -752,6 +753,8 @@ pub struct ForkTiming {
 pub struct Mote {
     ram: Arc<OwnedFd>,
     ram_size: usize,
+    /// Width of the tool-window hole, so a fork rebuilds the same RAM split.
+    tool_window: u64,
     cpuid: kvm_bindings::CpuId,
     regs: kvm_bindings::kvm_regs,
     sregs: kvm_bindings::kvm_sregs,
@@ -848,27 +851,19 @@ impl LinuxCell {
                 image.init_size()
             )));
         }
-        let tool_end = (TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE) as usize;
-        if cfg.mem_size <= tool_end {
-            return Err(VmmError::Backend(format!(
-                "mem_size {} must exceed the tool window end {tool_end:#x}; RAM \
-                 has to continue above the hole for the kernel to register it",
-                cfg.mem_size
-            )));
-        }
         if (needed as u64) > TOOL_WINDOW_GPA {
             return Err(VmmError::Backend(format!(
                 "kernel needs {needed:#x}, which runs into the tool window at \
                  {TOOL_WINDOW_GPA:#x}"
             )));
         }
-        if let Some(len) = cfg.pmem_bytes {
-            if len as u64 > TOOL_WINDOW_SIZE {
-                return Err(VmmError::Backend(format!(
-                    "pmem image of {len} bytes exceeds the tool window \
-                     ({TOOL_WINDOW_SIZE} bytes)"
-                )));
-            }
+        let window = tool_window_size(cfg.pmem_bytes);
+        if (cfg.mem_size as u64) <= TOOL_WINDOW_GPA {
+            return Err(VmmError::Backend(format!(
+                "mem_size {} must exceed {TOOL_WINDOW_GPA:#x}; RAM has to \
+                 continue above the tool window for the kernel to register it",
+                cfg.mem_size
+            )));
         }
 
         let kvm = Kvm::new().map_err(|e| VmmError::Unsupported(format!("/dev/kvm: {e}")))?;
@@ -884,14 +879,18 @@ impl LinuxCell {
         vm.create_pit2(Default::default())
             .map_err(|e| kvm_err("create_pit2", e))?;
 
-        let mem = Mem::memfd_shared(cfg.mem_size, "celln-mote-ram")?;
-        // RAM in two memslots, with the sealed tool window as a hole between
-        // them. The host allocation stays contiguous, so a GPA is still an
-        // offset into it; the hole is simply never mapped as RAM.
-        let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+        // The window is a hole in RAM rather than a region above it: pmem past
+        // last_pfn is parsed and then ignored, so no device ever appears. RAM
+        // is extended by the window size so the guest still gets mem_size.
+        let mem = Mem::memfd_shared(cfg.mem_size + window as usize, "celln-mote-ram")?;
+        let tool_end = TOOL_WINDOW_GPA + window;
         for (slot, gpa, len) in [
             (RAM_SLOT_LOW, 0u64, TOOL_WINDOW_GPA),
-            (RAM_SLOT_HIGH, tool_end, cfg.mem_size as u64 - tool_end),
+            (
+                RAM_SLOT_HIGH,
+                tool_end,
+                cfg.mem_size as u64 - TOOL_WINDOW_GPA,
+            ),
         ] {
             let region = kvm_userspace_memory_region {
                 slot,
@@ -1092,6 +1091,7 @@ impl LinuxCell {
         Ok(Mote {
             ram,
             ram_size: self._mem.len,
+            tool_window: tool_window_size(self.cfg.pmem_bytes),
             cpuid: self.cpuid.clone(),
             regs: vcpu.get_regs().map_err(|e| kvm_err("get_regs", e))?,
             sregs: vcpu.get_sregs().map_err(|e| kvm_err("get_sregs", e))?,
@@ -1155,7 +1155,7 @@ impl LinuxCell {
         let mem = Mem::cow_of(&mote.ram, mote.ram_size)?;
         t.cow_mmap = mark.elapsed();
         let mark = Instant::now();
-        let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+        let tool_end = TOOL_WINDOW_GPA + mote.tool_window;
         for (slot, gpa, len) in [
             (RAM_SLOT_LOW, 0u64, TOOL_WINDOW_GPA),
             (RAM_SLOT_HIGH, tool_end, mote.ram_size as u64 - tool_end),
@@ -1518,7 +1518,8 @@ fn zero_page(
         zp[off + 16..off + 20].copy_from_slice(&kind.to_le_bytes());
         *n += 1;
     };
-    let tool_end = TOOL_WINDOW_GPA + TOOL_WINDOW_SIZE;
+    let window = tool_window_size(pmem_bytes);
+    let tool_end = TOOL_WINDOW_GPA + window;
     push(&mut zp, &mut entries, 0, EBDA_GPA, E820_RAM);
     push(
         &mut zp,
@@ -1540,7 +1541,7 @@ fn zero_page(
         &mut zp,
         &mut entries,
         tool_end,
-        mem_size as u64 - tool_end,
+        mem_size as u64 - TOOL_WINDOW_GPA,
         E820_RAM,
     );
     zp[BP_E820_ENTRIES] = entries;
@@ -1628,6 +1629,35 @@ mod tests {
                 eprintln!("skipping: no readable /boot/vmlinuz-* on this host");
                 None
             }
+        }
+    }
+
+    #[test]
+    fn tool_window_is_2mib_aligned_and_never_under_the_minimum() {
+        assert_eq!(tool_window_size(None), MIN_TOOL_WINDOW);
+        assert_eq!(tool_window_size(Some(4096)), MIN_TOOL_WINDOW);
+        assert_eq!(tool_window_size(Some(192 << 20)), 192 << 20);
+
+        // nd_pmem rejects an unaligned namespace outright, so a real image
+        // size has to round up rather than be used verbatim.
+        let image = 144_703_488usize;
+        let w = tool_window_size(Some(image));
+        assert!(w >= image as u64);
+        assert_eq!(w % PMEM_ALIGN, 0);
+        assert!(w - (image as u64) < PMEM_ALIGN);
+    }
+
+    #[test]
+    fn a_large_window_does_not_shrink_guest_ram() {
+        // The window is a hole in RAM, so widening it must extend the
+        // allocation rather than take memory away from the guest.
+        let mem = 256usize << 20;
+        for pmem in [None, Some(8 << 20), Some(138 << 20)] {
+            let w = tool_window_size(pmem);
+            let low = TOOL_WINDOW_GPA;
+            let high = mem as u64 - TOOL_WINDOW_GPA;
+            assert_eq!(low + high, mem as u64, "guest RAM must stay {mem}");
+            assert!(TOOL_WINDOW_GPA + w + high <= (mem as u64 + w));
         }
     }
 
