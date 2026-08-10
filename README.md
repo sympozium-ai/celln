@@ -299,7 +299,7 @@ toolchain, not across every environment.
 Pick who writes it — `celln agents` shows what this host can use:
 
 ```sh
-$ celln setup                         # discovers codex, claude, or ollama
+$ celln setup                         # finds an agent CLI and materialises the default tool images
 ✔ default agent: openai (~/.config/celln/config.toml)
 
 $ celln agents

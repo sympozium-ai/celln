@@ -51,7 +51,7 @@ agent code running in a cell
 <h2 id="b">B · Reaching a host from a cell with no network</h2>
 <p>The idea: <strong>capabilities are brokered, not granted.</strong></p>
 <p>A cell has no network stack at all. Put <code>curl</code> in one and it runs perfectly and reaches nothing:</p>
-<pre>$ celln run examples/cells/curl.toml     <span class="dim"># args = ["https://example.com"]</span>
+<pre>$ celln run examples/cells/curl.toml     <span class="dim"># with args = ["https://example.com"]</span>
 curl: (28) Resolving timed out after 5002 milliseconds</pre>
 <p>Egress is a capability the <em>host</em> performs on the cell's behalf, and you have to name who it may talk to:</p>
 <pre>[cell]

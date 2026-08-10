@@ -46,7 +46,7 @@ interpreter = true            # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["-c", "print(review())"]
+args = ["-c", "print('reviewed 42 files')"]
 input = "data"                # the agent wrote it</pre>
 <p><code>alias</code> is only a naming convenience — the content hash is the actual authority, never the name. <code>image</code> plus <code>exec</code> names the closure the bytes come from, pinned by digest so it cannot change under you; <code>path</code> is the alternative for a genuinely static binary already on this host.</p>
 
@@ -56,23 +56,25 @@ input = "data"                # the agent wrote it</pre>
 &#10004; code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
 
 tools
-  /usr/bin/python          interpreter  /usr/bin/python3
+  /usr/bin/python          interpreter  python &rarr; /usr/local/bin/python3.12
 
 run
-  /usr/bin/python review.py
+  /usr/bin/python -c print('reviewed 42 files')
   runs in the agent lane &mdash; demoted: an interpreter fed agent-authored input</pre>
-<p>Notice the verdict: even though <code>python</code> is fully attested, this particular invocation is demoted to the <em>agent</em> lane, because the input it's being fed (<code>review.py</code>) is marked <code>data</code> — something the agent wrote, not something that came in through the attestation gate. See <a href="agent-lane.html">the agent lane</a> for why that matters.</p>
+<p>Notice the verdict: even though <code>python</code> is fully attested, this particular invocation is demoted to the <em>agent</em> lane, because the input it's being fed is marked <code>data</code> — something the agent wrote, not something that came in through the attestation gate. See <a href="agent-lane.html">the agent lane</a> for why that matters.</p>
 
 <h2 id="run">Run it</h2>
 <pre>$ celln run agent.toml
 &#9679; sealing cell code-reviewer
   + /usr/bin/python        tier=verified cold &mdash; verified now, forged queued
-  &middot; microVM sealed, phase=Materialise
-  &middot; /usr/bin/python sealed read-only into the cell
-  &middot; authority ratcheted to Work &mdash; no further tools can be lent
   &#10004; /usr/bin/python permitted in the agent lane
+  &middot; cell sealed, 1 tool(s) lent read-only
+  &#10004; pilot: /usr/bin/python permitted:agent
+  &middot; /usr/bin/python exit=0
+
+reviewed 42 files
 &#9679; cell dissolved</pre>
-<p>"Authority ratcheted" is not a log message you can ignore: once a cell's first tainted exec happens, materialisation closes for that cell's lineage permanently. Rights only shrink from there — there is no path back to "lend one more tool."</p>
+<p>The verdict appears twice on purpose: once on the host before the cell exists, and once from pilot inside it, after re-hashing the bytes it actually found. Behind them is the authority ratchet &mdash; once a cell's first tainted exec happens, materialisation closes for that lineage permanently. Rights only shrink from there; there is no path back to "lend one more tool."</p>
 
 <h2 id="interpreter">The interpreter flag</h2>
 <p><code>interpreter = true</code> is the single most consequential line in a spec. An interpreter fed something the agent wrote is moved to the agent lane for that invocation — this is the <strong>laundering ban</strong>, and it's why <code>python evil.py</code> and <code>python -c "&hellip;"</code> don't get to launder agent-authored code into full tool-lane authority just by passing through an attested binary. Leave an interpreter marked <code>interpreter = false</code> and you've quietly created a hole: anything fed to it keeps full tool-lane authority, including code the agent wrote. <code>celln spec check</code> guesses at this from the binary's name and warns if your answer disagrees.</p>
