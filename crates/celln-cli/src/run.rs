@@ -9,6 +9,43 @@ use celln_manifest::{Hash, Input, Lane, Tier};
 use celln_spec::Spec;
 use std::path::Path;
 
+/// Where a tool's bytes come from, for display.
+fn source_of(t: &celln_spec::Tool) -> String {
+    match (&t.path, &t.image) {
+        (Some(p), _) => p.display().to_string(),
+        (_, Some(image)) => match &t.exec {
+            Some(exec) => format!("{image} → {exec}"),
+            None => image.clone(),
+        },
+        _ => "(no source)".into(),
+    }
+}
+
+/// An image tool is lent as its whole filesystem, which `celln image pull`
+/// must have already built — a cell maps bytes, it does not fetch them.
+fn tool_bytes(t: &celln_spec::Tool, root: &Path) -> Result<Vec<u8>> {
+    if let Some(p) = &t.path {
+        return std::fs::read(p)
+            .with_context(|| format!("reading tool {} from {}", t.alias, p.display()));
+    }
+    let image = t
+        .image
+        .as_deref()
+        .with_context(|| format!("tool {} has no path or image", t.alias))?;
+    let digest = image
+        .trim_start_matches("docker://")
+        .split_once('@')
+        .map(|(_, d)| d)
+        .with_context(|| format!("tool {} image is not digest-pinned", t.alias))?;
+    let path = crate::image::images_dir(root).join(format!("{}.ext2", digest.replace(':', "_")));
+    std::fs::read(&path).with_context(|| {
+        format!(
+            "{} is not materialised — run `celln image pull {image}`",
+            t.alias
+        )
+    })
+}
+
 /// Map the spec's tier vocabulary onto the manifest's.
 fn tier_of(t: celln_spec::Tier) -> Tier {
     match t {
@@ -106,13 +143,11 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
         };
         o.event(
             "tool",
-            serde_json::json!({"alias": t.alias, "path": t.path, "interpreter": t.interpreter}),
-            format!(
-                "  {:<24} {}  {}",
-                t.alias,
-                dim(kind),
-                dim(&t.path.display().to_string())
-            ),
+            serde_json::json!({
+                "alias": t.alias, "path": t.path, "image": t.image,
+                "exec": t.exec, "interpreter": t.interpreter,
+            }),
+            format!("  {:<24} {}  {}", t.alias, dim(kind), dim(&source_of(t))),
         );
     }
 
@@ -200,8 +235,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     // traffic — serve fast, upgrade trust async.
     let mut resolved = Vec::new();
     for t in &spec.tools {
-        let bytes = std::fs::read(&t.path)
-            .with_context(|| format!("reading tool {} from {}", t.alias, t.path.display()))?;
+        let bytes = tool_bytes(t, root)?;
         let r = assayer.resolve(&t.alias, &bytes, t.interpreter)?;
         o.event(
             "tool_resolved",

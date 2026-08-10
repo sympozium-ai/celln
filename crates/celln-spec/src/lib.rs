@@ -71,8 +71,19 @@ pub struct Tool {
     /// authority comes from the content hash, never from this path.
     pub alias: String,
 
-    /// Where the bytes come from on this host.
-    pub path: PathBuf,
+    /// Where the bytes come from on this host. One of `path` or `image`.
+    #[serde(default)]
+    pub path: Option<PathBuf>,
+
+    /// A digest-pinned OCI reference whose whole filesystem is lent, for tools
+    /// that are a dependency closure rather than one file. Materialise it with
+    /// `celln image pull` first.
+    #[serde(default)]
+    pub image: Option<String>,
+
+    /// Path to execute *inside* `image`.
+    #[serde(default)]
+    pub exec: Option<String>,
 
     /// True for interpreters (python, sh, node…). An interpreter fed input the
     /// agent wrote is moved to the agent lane *for that invocation* — the
@@ -737,13 +748,59 @@ impl Spec {
                     fix: "aliases look like paths, e.g. \"/usr/bin/python\"".into(),
                 });
             }
-            if !tool.path.exists() {
-                out.push(Problem {
-                    field: format!("{at}.path"),
-                    message: format!("{} does not exist", tool.path.display()),
-                    fix: "point at a real file on this host; a tool is bytes, and \
-                          they have to come from somewhere"
+            match (&tool.path, &tool.image) {
+                (Some(_), Some(_)) => out.push(Problem {
+                    field: at.clone(),
+                    message: "sets both path and image".into(),
+                    fix: "a tool comes from one place: a file on this host, or \
+                          an image. Remove one."
                         .into(),
+                }),
+                (None, None) => out.push(Problem {
+                    field: at.clone(),
+                    message: "has no path or image".into(),
+                    fix: "set path = \"/usr/bin/…\" for a single binary, or \
+                          image = \"name@sha256:…\" for a dependency closure"
+                        .into(),
+                }),
+                (Some(p), None) => {
+                    if !p.exists() {
+                        out.push(Problem {
+                            field: format!("{at}.path"),
+                            message: format!("{} does not exist", p.display()),
+                            fix: "point at a real file on this host; a tool is \
+                                  bytes, and they have to come from somewhere"
+                                .into(),
+                        });
+                    }
+                }
+                (None, Some(image)) => {
+                    if let Err(why) = check_digest_pinned(image) {
+                        out.push(Problem {
+                            field: format!("{at}.image"),
+                            message: why,
+                            fix: "pin the digest: a tag can be moved, which \
+                                  would change what the cell is lent without \
+                                  the spec changing"
+                                .into(),
+                        });
+                    }
+                    if tool.exec.is_none() {
+                        out.push(Problem {
+                            field: format!("{at}.exec"),
+                            message: "an image tool must say what to run".into(),
+                            fix: "set exec = \"/usr/local/bin/python3.12\", a \
+                                  path inside the image"
+                                .into(),
+                        });
+                    }
+                }
+            }
+            if tool.image.is_none() && tool.exec.is_some() {
+                out.push(Problem {
+                    field: format!("{at}.exec"),
+                    message: "exec only applies to an image tool".into(),
+                    fix: "drop exec, or set image = \"name@sha256:…\"".into(),
                 });
             }
         }
@@ -827,6 +884,24 @@ impl Spec {
     }
 }
 
+/// An image reference must name immutable bytes.
+fn check_digest_pinned(reference: &str) -> Result<(), String> {
+    let r = reference.trim_start_matches("docker://");
+    let Some((name, digest)) = r.split_once('@') else {
+        return Err(format!("{reference:?} is a tag, not a digest"));
+    };
+    if name.is_empty() {
+        return Err(format!("{reference:?} has no image name"));
+    }
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        return Err(format!("{reference:?} must use a sha256: digest"));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{reference:?} digest is not 64 hex characters"));
+    }
+    Ok(())
+}
+
 /// Names that are interpreters in practice. Used only to warn.
 fn looks_like_interpreter(alias: &str) -> bool {
     let base = alias.rsplit('/').next().unwrap_or(alias);
@@ -898,6 +973,16 @@ require_tier = "verified"
 alias = "/usr/bin/python"      # the name the agent uses
 path = "/usr/bin/python3"      # where the bytes come from on this host
 interpreter = true             # see below
+
+# A tool that is a dependency closure - a binary plus its loader and shared
+# objects - is lent as a whole filesystem instead. Materialise it first with
+# `celln image pull`, and pin the digest: a tag can be moved.
+#
+# [[tool]]
+# alias = "/usr/bin/python"
+# image = "python@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36"
+# exec  = "/usr/local/bin/python3.12"
+# interpreter = true
 
 # `interpreter = true` is the most consequential line in this file. An
 # interpreter fed something the agent wrote is moved to the agent lane for
@@ -978,6 +1063,60 @@ mod tests {
             .warnings()
             .iter()
             .any(|w| w.message.contains("laundering") || w.message.contains("interpreter")));
+    }
+
+    fn spec_with(tool: &str) -> Spec {
+        toml::from_str(&format!(
+            "name = \"t\"\n[cell]\nmemory = \"256MiB\"\n\n[[tool]]\n{tool}\n"
+        ))
+        .expect("parses")
+    }
+
+    fn fields(spec: &Spec) -> Vec<String> {
+        spec.problems().into_iter().map(|p| p.field).collect()
+    }
+
+    #[test]
+    fn an_image_tool_must_be_digest_pinned() {
+        let d = "a".repeat(64);
+        let ok = spec_with(&format!(
+            "alias = \"/usr/bin/python\"\nimage = \"python@sha256:{d}\"\nexec = \"/usr/local/bin/python3\""
+        ));
+        assert!(ok.problems().is_empty(), "{:?}", ok.problems());
+
+        // A tag can be moved, so it cannot name what a cell is lent.
+        let tagged =
+            spec_with("alias = \"/usr/bin/python\"\nimage = \"python:3.12-slim\"\nexec = \"/x\"");
+        assert!(fields(&tagged).iter().any(|f| f == "tool[0].image"));
+
+        for bad in [
+            "python@sha256:short",
+            "python@sha512:{d}",
+            "python@sha256:zz",
+        ] {
+            let s = spec_with(&format!("alias = \"/a\"\nimage = \"{bad}\"\nexec = \"/x\""));
+            assert!(!s.problems().is_empty(), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_tool_names_exactly_one_source() {
+        let both =
+            spec_with("alias = \"/a\"\npath = \"/bin/sh\"\nimage = \"x@sha256:aa\"\nexec = \"/x\"");
+        assert!(fields(&both).iter().any(|f| f == "tool[0]"));
+
+        let neither = spec_with("alias = \"/a\"");
+        assert!(fields(&neither).iter().any(|f| f == "tool[0]"));
+    }
+
+    #[test]
+    fn an_image_tool_must_say_what_to_run() {
+        let d = "b".repeat(64);
+        let no_exec = spec_with(&format!("alias = \"/a\"\nimage = \"p@sha256:{d}\""));
+        assert!(fields(&no_exec).iter().any(|f| f == "tool[0].exec"));
+
+        let stray = spec_with("alias = \"/a\"\npath = \"/bin/sh\"\nexec = \"/x\"");
+        assert!(fields(&stray).iter().any(|f| f == "tool[0].exec"));
     }
 
     #[test]
