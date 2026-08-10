@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+
+- `celln image list` showed a bare sha256 per image, which identifies nothing
+  a person is trying to recall. It now shows the name the image was pulled
+  under, its size, a shortened digest and the tag it was pinned from. An image
+  whose catalogue entry has gone shows as `(untracked)` with its digest, so it
+  can still be identified and cleaned up. JSON keeps the full digest and gains
+  the name and tag.
+
 ## 0.5.0
 
 Celln could seal and attest any file, but only ever *run* one shape of thing: a
