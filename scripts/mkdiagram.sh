@@ -50,7 +50,7 @@ frame() {
   local lane_fill="$DIM" lane_text=""
   case "$lane" in
     tool) lane_fill="$OK";   lane_text="tool lane" ;;
-    data) lane_fill="$WARN"; lane_text="data lane · demoted" ;;
+    data) lane_fill="$WARN"; lane_text="agent lane · demoted" ;;
   esac
 
   cat > "$work/f$(printf '%03d' "$i").svg" <<SVG
