@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Install Celln, connect an agent, and run the five-minute tour: doctor, spec, run, verify, and agent."><title>Start here — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a aria-current="page" href="start.html">Start here</a><a href="tutorial.html">Tutorial</a><a href="concepts.html">Concepts</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
-<main class="shell page"><aside class="aside"><a href="#install">Install</a><a href="#doctor">What can this host do?</a><a href="#setup">Connect an agent</a><a href="#spec">Write &amp; check a spec</a><a href="#run">Seal a cell</a><a href="#verify">Verify</a><a href="#build">Have a model write code</a><a href="#piping">Piping</a><a href="#troubleshooting">Troubleshooting</a><a href="#next">Where to go next</a></aside>
+<main class="shell page"><aside class="aside"><a href="#install">Install</a><a href="#doctor">What can this host do?</a><a href="#setup">Connect an agent</a><a href="#spec">Write &amp; check a spec</a><a href="#run">Seal a cell</a><a href="#verify">Verify</a><a href="#build">Let a model write it</a><a href="#piping">Piping</a><a href="#troubleshooting">Troubleshooting</a><a href="#next">Where to go next</a></aside>
 <article>
 <div class="eyebrow">Getting started</div>
 <h1>Five commands, about five minutes.</h1>
@@ -87,7 +87,47 @@ proving isolation on this machine
 <p><strong>Expected result.</strong> The first proof builds a guest that enters 32-bit protected mode, installs page tables <em>it wrote itself</em>, maps the sealed tool page writable in them, and writes. Guest-side that write is entirely legal — ring 0, PTE says writable, no fault. It still does not land, because stage-2 sits below the guest's own translation. Nothing in the guest is enforcing this. The guest is root.</p>
 
 <h2 id="build">Have a model write the code, and run it sealed</h2>
-<p><code>celln agent</code> is the path that executes agent-authored code. A cell exists to contain code you would rather not run unsealed.</p>
+<p>A cell exists to contain code you would rather not run unsealed. There are two ways in, and both end up in the agent lane.</p>
+
+<h3>In the spec</h3>
+<p>Replace <code>[run]</code> with <code>[agent]</code>, and the file keeps the policy &mdash; which tools, how much memory, which hosts &mdash; while only the program is written on demand:</p>
+<pre>name = "analyst"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[agent]
+exec = "/usr/bin/python"       # which declared tool interprets the answer
+task = "write a python program that prints a 5x5 multiplication table"</pre>
+<pre>$ celln run analyst.toml
+&#9679; asking openai for Python to run as /usr/bin/python
+  &middot; replied in 7s, 10 lines
+  &#10004; /usr/bin/python permitted in the <b>agent</b> lane
+  &#10004; pilot: /usr/bin/python permitted:agent
+
+ 1  2  3  4  5
+ 2  4  6  8 10
+ 3  6  9 12 15
+ 4  8 12 16 20
+ 5 10 15 20 25</pre>
+<p><code>--task "&hellip;"</code> overrides the task in the file, so one reviewed spec can serve many jobs. Nobody asked for the agent lane there: model-written code is agent-authored input handed to an attested interpreter, so it is demoted for that invocation. python keeps its hash and loses its authority.</p>
+<p><code>agent.exec</code> has to name a declared tool marked <code>interpreter = true</code>, and a cell either declares runs or asks for one &mdash; never both.</p>
+
+<h3>Without a file</h3>
+<pre>$ celln agent --tool python "print the first 12 fibonacci numbers"
+  &#10004; /usr/bin/python permitted in the agent lane
+
+0 1 1 2 3 5 8 13 21 34 55 89</pre>
+<p>This builds the spec above in memory and runs it through the same path, so an ad-hoc run reaches exactly the same trust decisions as a declared one.</p>
+
+<h3>Or forged from source</h3>
+<p>Without <code>--tool</code>, the model writes Rust and Celln compiles it:</p>
 <pre>$ celln agent "print the first 100 primes, space separated"
 &#9679; asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
   &middot; waiting for claude (up to 90s; --timeout changes it)
