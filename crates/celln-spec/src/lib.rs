@@ -1082,20 +1082,22 @@ require_tier = "verified"
 # Each tool is lent to the cell as sealed, read-only memory. The guest can read
 # and execute it and cannot modify it — not even as root, not even with its own
 # page tables. Revoking it stops it in every running cell.
+# Most real tools are a dependency closure - a binary plus its loader and the
+# shared objects it resolves by absolute path - so they are lent as a whole
+# sealed filesystem. `celln image catalogue` lists what is available;
+# `celln image add <name:tag>` pins and adds anything else.
 [[tool]]
 alias = "/usr/bin/python"      # the name the agent uses
-path = "/usr/bin/python3"      # where the bytes come from on this host
+image = "python"               # a catalogue name, or name@sha256:...
+exec  = "/usr/local/bin/python3.12"   # the path inside that image
 interpreter = true             # see below
 
-# A tool that is a dependency closure - a binary plus its loader and shared
-# objects - is lent as a whole filesystem instead. Materialise it first with
-# `celln image pull`, and pin the digest: a tag can be moved.
+# A single *static* binary already on this host can be lent directly instead.
+# It has to be static: a cell carries no loader and no libc.
 #
 # [[tool]]
-# alias = "/usr/bin/python"
-# image = "python@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36"
-# exec  = "/usr/local/bin/python3.12"
-# interpreter = true
+# alias = "/usr/bin/mytool"
+# path = "/usr/local/bin/mytool"
 
 # `interpreter = true` is the most consequential line in this file. An
 # interpreter fed something the agent wrote is moved to the agent lane for
@@ -1105,7 +1107,7 @@ interpreter = true             # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["review.py"]
+args = ["-c", "print('hello from a sealed cell')"]
 # Where the input came from:
 #   none — nothing interpreted
 #   tool — came in through the attestation gate

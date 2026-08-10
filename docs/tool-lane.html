@@ -40,14 +40,15 @@ require_tier = "verified"
 
 [[tool]]
 alias = "/usr/bin/python"     # the name your agent uses
-path = "/usr/bin/python3"     # where the bytes come from on this host
+image = "python"              # the closure the bytes come from
+exec  = "/usr/local/bin/python3.12"
 interpreter = true            # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["review.py"]
+args = ["-c", "print(review())"]
 input = "data"                # the agent wrote it</pre>
-<p><code>alias</code> is only a naming convenience — the content hash is the actual authority, never the path. <code>path</code> is where the bytes come from on <em>this</em> host; nothing about the alias survives a host that doesn't have that file.</p>
+<p><code>alias</code> is only a naming convenience — the content hash is the actual authority, never the name. <code>image</code> plus <code>exec</code> names the closure the bytes come from, pinned by digest so it cannot change under you; <code>path</code> is the alternative for a genuinely static binary already on this host.</p>
 
 <h2 id="check">Check it</h2>
 <p><code>celln spec check</code> validates the file and tells you exactly what the trust model will decide before anything runs:</p>

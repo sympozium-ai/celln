@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Install Celln, connect an agent, and run the five-minute tour: doctor, spec, run, verify, and agent."><title>Start here — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a aria-current="page" href="start.html">Start here</a><a href="tutorial.html">Tutorial</a><a href="concepts.html">Concepts</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
-<main class="shell page"><aside class="aside"><a href="#install">Install</a><a href="#doctor">What can this host do?</a><a href="#setup">Connect an agent</a><a href="#ask">Ask a question</a><a href="#spec">Write &amp; check a spec</a><a href="#run">Seal a cell</a><a href="#verify">Verify</a><a href="#build">Have a model write code</a><a href="#piping">Piping</a><a href="#troubleshooting">Troubleshooting</a><a href="#next">Where to go next</a></aside>
+<main class="shell page"><aside class="aside"><a href="#install">Install</a><a href="#doctor">What can this host do?</a><a href="#setup">Connect an agent</a><a href="#spec">Write &amp; check a spec</a><a href="#run">Seal a cell</a><a href="#verify">Verify</a><a href="#build">Have a model write code</a><a href="#piping">Piping</a><a href="#troubleshooting">Troubleshooting</a><a href="#next">Where to go next</a></aside>
 <article>
 <div class="eyebrow">Getting started</div>
 <h1>Five commands, about five minutes.</h1>
@@ -30,15 +30,16 @@ rustup target add x86_64-unknown-linux-musl</pre>
 celln agents    # shows available backends</pre>
 <p><code>celln setup</code> saves your preferred backend to a credential-free config file. Change it later with <code>celln agents --set-default anthropic</code>, or override a single request with <code>--agent</code> or <code>CELLN_AGENT</code>.</p>
 
-<h2 id="ask">Ask a question</h2>
-
 <h2 id="spec">Write and check a spec</h2>
 <p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell.</p>
-<pre>celln spec init &gt; agent.toml</pre>
+<p>A tool is bytes the host vouches for, and most real tools are a <strong>closure</strong> rather than one file &mdash; a binary, its loader, and the shared objects it resolves by absolute path. Celln lends a closure as a sealed filesystem built from a digest-pinned image, materialised ahead of time by <code>celln setup</code>.</p>
+<pre>celln image spec python &gt; agent.toml</pre>
 <pre>[[tool]]
 alias = "/usr/bin/python"
-path = "/usr/bin/python3"
+image = "python"                    # a catalogue name; celln resolves the pin
+exec  = "/usr/local/bin/python3.12"
 interpreter = true</pre>
+<p><code>path = "/usr/bin/…"</code> still works, but only for a genuinely static binary: a cell carries no loader and no libc, and on a typical host about three of the two thousand binaries in <code>/usr/bin</code> qualify. <a href="tutorial.html#add">Adding your own tool</a> is one command.</p>
 <p><code>interpreter = true</code> is the most consequential line in the file. An interpreter fed something the agent wrote is moved to the agent lane <em>for that invocation</em>, so an agent cannot launder its own code into full authority by handing it to <code>python</code>. <code>celln spec check</code> warns if you forget on a name it recognises.</p>
 <pre>$ celln spec check agent.toml
 &#10004; code-reviewer  1 tool(s), 256MiB memory, require_tier=verified

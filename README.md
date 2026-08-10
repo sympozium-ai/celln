@@ -231,6 +231,26 @@ proving isolation on this machine
 A cell exists to contain code you would rather not run unsealed.
 `--show-source` prints what the model wrote.
 
+**With a lent interpreter.** The shortest path: name a catalogue tool, and the
+model writes that tool's language.
+
+```sh
+$ celln agent --tool python "print the first 12 fibonacci numbers"
+● asking openai for Python to run as /usr/bin/python
+  · replied in 7s, 10 lines
+  ✔ /usr/bin/python permitted in the agent lane
+  ✔ pilot: /usr/bin/python permitted:agent
+
+0 1 1 2 3 5 8 13 21 34 55 89
+```
+
+Nobody asked for the **agent** lane there. The model's code is agent-authored
+input handed to an attested interpreter, so it is demoted for that invocation —
+python keeps its hash and loses its authority.
+
+**Or forged from source.** Without `--tool`, the model writes Rust and Celln
+compiles it, which is where the more interesting claim lives:
+
 ```sh
 $ celln agent "print the first 100 primes, space separated"
 ● asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
