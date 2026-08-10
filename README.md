@@ -8,16 +8,87 @@
 **Celln** runs agents in isolated **cells** that borrow verified tools instead
 of rebuilding Linux environments.
 
+## What it looks like
+
+Two tools, from two separate images, in one hardware-isolated cell:
+
+```toml
+# cell.toml
+name = "two-tools"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"                    # digest-pinned; a tag is refused
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[[tool]]
+alias = "/usr/bin/curl"
+image = "curl"                      # a second, independent image
+exec  = "/usr/bin/curl"
+
+[[run]]
+exec = "/usr/bin/python"
+args = ["-c", "import ssl; print('python  ', ssl.OPENSSL_VERSION)"]
+
+[[run]]
+exec = "/usr/bin/curl"
+args = ["--version"]
+```
+
+```console
+$ celln setup                       # once: agent CLI + default tool images
+$ celln run cell.toml
+● sealing cell two-tools
+  · cell sealed, 2 tool(s) lent read-only
+  · image mounted at /tools1
+  ✔ pilot: /usr/bin/python permitted:tool   exit=0
+  ✔ pilot: /usr/bin/curl   permitted:tool   exit=0
+
+python   OpenSSL 3.5.6 7 Apr 2026
+curl 8.21.0 (x86_64-pc-linux-musl) libcurl/8.21.0 OpenSSL/3.5.7 …
+● cell dissolved
+```
+
+Look at the two OpenSSL versions. python came from a glibc image, curl from
+a musl one — two libcs and two TLS stacks in the same cell, each its own sealed
+namespace, neither aware of the other. Nothing was installed, and nothing
+persists: the tools are read-only memory the host lent and can revoke.
+
+Need a tool that isn't shipped? One command — give it a tag, celln pins the
+digest:
+
+```console
+$ celln image add node:22-slim
+● node:22-slim → node@sha256:0f1cd7…
+  + added node to ~/.celln/tools.toml
+      /usr/bin/node → /usr/local/bin/node
+```
+
+Or skip the file entirely and let a model write the program, run against a
+lent interpreter:
+
+```console
+$ celln agent --tool python "print the first 12 fibonacci numbers"
+  ✔ /usr/bin/python permitted in the agent lane
+0 1 1 2 3 5 8 13 21 34 55 89
+```
+
+That says **agent** lane, not tool lane, and nobody asked for it. Model-written
+code is agent-authored input handed to an attested interpreter, so it is
+demoted automatically — python keeps its hash and loses its authority, for that
+invocation only.
+
 ## How is this different?
 
 Most agent runtimes give an agent a machine. Celln gives it a temporary,
 read-only lease on the tools it needs.
 
-[Read the documentation →](https://sympozium-ai.github.io/celln/)
-
-```sh
-celln agent "Build me something dangerous that should only run in an isolated environment."
-```
+[Read the documentation →](https://sympozium-ai.github.io/celln/) ·
+[Guided tutorial →](https://sympozium-ai.github.io/celln/tutorial.html)
 
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
@@ -155,12 +226,10 @@ proving isolation on this machine
   ✔ revoking a tool stops it in an already-running cell
 ```
 
-## Experimental: a model writes code, a cell runs it
+## A model writes code, a cell runs it
 
-This is for **computations, not questions**. A cell exists to contain code you
-would rather not run unsealed — if nothing executes, it has nothing to protect
-you from, and asking the model directly is the right tool. `--show-source`
-prints what it wrote.
+A cell exists to contain code you would rather not run unsealed.
+`--show-source` prints what the model wrote.
 
 ```sh
 $ celln agent "print the first 100 primes, space separated"
@@ -231,13 +300,12 @@ The saved setting is credential-free:
 default = "openai"
 ```
 
-Use `celln ask "…"` for a question: it asks the selected agent directly on the
-host because no program runs and there is nothing to contain. Use `celln agent
-"…"` for work that generates code to run; that path is where Celln seals
-and governs the resulting program. The agent selects a runtime from the cell's
-sealed capability set; today that set contains one static Rust runtime. Adding
-a runtime is a capability change—not a prompt convention—because its bytes
-must be attested, sealed, and revocable too.
+`celln agent "…"` is for work that generates code to run; that path is where
+Celln seals and governs the resulting program. Without `--tool` the model
+writes Rust, which is forged into a static binary and attested. With
+`--tool python` it writes that tool's language instead, and the program is
+interpreted by a lent, attested interpreter — which makes it agent-authored
+input, and so agent-lane, automatically.
 
 Network-shaped work must declare exactly where it may reach before a model is
 called:

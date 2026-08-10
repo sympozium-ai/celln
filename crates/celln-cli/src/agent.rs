@@ -883,51 +883,6 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     run_in_cell(&toolfs, &initrd, allow_hosts, state_root, task, o)
 }
 
-/// Questions do not need a cell: no generated program runs, so there is
-/// nothing to contain. Keep this path visibly separate from `celln agent`.
-pub fn ask(
-    question: &str,
-    requested_backend: Option<Backend>,
-    model: Option<&str>,
-    timeout: u64,
-    o: &Out,
-) -> Result<u8> {
-    let backend = match select_backend(requested_backend, o)? {
-        Some(backend) => backend,
-        None => return Ok(crate::exit::HOST_INCAPABLE),
-    };
-    if !backend.available() {
-        o.warn(format!(
-            "{} needs `{}` on PATH — see `celln agents`",
-            backend.label(),
-            backend.program()
-        ));
-        return Ok(crate::exit::HOST_INCAPABLE);
-    }
-    let model = model.or_else(|| backend.default_model());
-    o.event(
-        "agent_question",
-        serde_json::json!({ "question": question, "backend": backend.label(), "model": model }),
-        format!(
-            "{} asking {} ({})",
-            bold("●"),
-            backend.label(),
-            model.unwrap_or("cli default")
-        ),
-    );
-    let answer = ask_model_text(backend, model, question, timeout)?;
-    o.event(
-        "agent_answer",
-        serde_json::json!({ "answer": answer }),
-        if o.is_json() {
-            String::new()
-        } else {
-            answer.clone()
-        },
-    );
-    Ok(crate::exit::OK)
-}
-
 fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>> {
     if let Some(backend) = requested {
         return Ok(Some(backend));

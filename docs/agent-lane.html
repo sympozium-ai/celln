@@ -38,7 +38,7 @@ $ celln agents
 $ celln agents --set-default anthropic # change the saved default
 $ celln agent --agent openai "&hellip;"       # override it for one invocation
 $ CELLN_AGENT=local celln agent "&hellip;"    # override it for one shell command</pre>
-<p>Use <code>celln ask "&hellip;"</code> for a question — it talks to the selected backend directly, on the host, because no program runs and there's nothing to contain. <code>celln agent "&hellip;"</code> is for work that generates code to run; that's the path Celln seals and governs.</p>
+<p><code>celln agent "&hellip;"</code> is for work that generates code to run — that's the path Celln seals and governs. <code>--tool python</code> runs the model's program with a lent interpreter instead of forging a Rust binary.</p>
 
 <h2 id="egress">Network is brokered, never ambient</h2>
 <p>A cell has no in-kernel network stack. Network-shaped work has to declare exactly where it may reach <em>before</em> the model is even called:</p>

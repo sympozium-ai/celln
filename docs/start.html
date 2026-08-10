@@ -31,8 +31,6 @@ celln agents    # shows available backends</pre>
 <p><code>celln setup</code> saves your preferred backend to a credential-free config file. Change it later with <code>celln agents --set-default anthropic</code>, or override a single request with <code>--agent</code> or <code>CELLN_AGENT</code>.</p>
 
 <h2 id="ask">Ask a question</h2>
-<pre>celln ask "What does a binary tree look like? Explain it briefly."</pre>
-<p><code>celln ask</code> uses your configured agent CLI directly, on the host. It is intentionally not a cell: no program runs and there is nothing to contain.</p>
 
 <h2 id="spec">Write and check a spec</h2>
 <p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell.</p>
@@ -88,7 +86,7 @@ proving isolation on this machine
 <p><strong>Expected result.</strong> The first proof builds a guest that enters 32-bit protected mode, installs page tables <em>it wrote itself</em>, maps the sealed tool page writable in them, and writes. Guest-side that write is entirely legal — ring 0, PTE says writable, no fault. It still does not land, because stage-2 sits below the guest's own translation. Nothing in the guest is enforcing this. The guest is root.</p>
 
 <h2 id="build">Have a model write the code, and run it sealed</h2>
-<p><code>celln agent</code> is the path that executes agent-authored code. This is for <strong>computations, not questions</strong>: a cell exists to contain code you would rather not run unsealed — if nothing executes, it has nothing to protect you from, and <code>celln ask</code> is the right tool.</p>
+<p><code>celln agent</code> is the path that executes agent-authored code. A cell exists to contain code you would rather not run unsealed.</p>
 <pre>$ celln agent "print the first 100 primes, space separated"
 &#9679; asking anthropic (claude-opus-5) to build: print the first 100 primes, space separated
   &middot; waiting for claude (up to 90s; --timeout changes it)

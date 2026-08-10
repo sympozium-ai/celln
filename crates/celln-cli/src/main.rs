@@ -185,25 +185,6 @@ enum Cmd {
         tool: Option<String>,
     },
 
-    /// Ask the selected agent a question on the host; no cell is needed.
-    Ask {
-        /// The question to ask.
-        #[arg(required = true, num_args = 1..)]
-        question: Vec<String>,
-
-        /// Which agent answers. Overrides CELLN_AGENT and the saved default.
-        #[arg(long, value_enum)]
-        agent: Option<agent::Backend>,
-
-        /// Override the backend's default model.
-        #[arg(long)]
-        model: Option<String>,
-
-        /// Seconds to wait for an answer before giving up.
-        #[arg(long, default_value = "90")]
-        timeout: u64,
-    },
-
     /// Find agent CLIs and manage the saved default.
     Agents {
         /// Save the backend `celln agent` uses unless overridden.
@@ -436,12 +417,6 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
                 )
             }
         }
-        Cmd::Ask {
-            question,
-            agent,
-            model,
-            timeout,
-        } => agent::ask(&question.join(" "), *agent, model.as_deref(), *timeout, o),
         Cmd::Agents { set_default } => agent::agents(*set_default, o),
         Cmd::Setup {
             agent: preferred,
