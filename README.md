@@ -97,8 +97,8 @@ read-only lease on the tools it needs.
 > machine owns.*
 
 <p align="center">
-  <img src="docs/assets/stack.gif" width="820"
-       alt="A tool is lent from the host store into a hardware-isolated cell, sealed read-only, moved to the agent lane when an interpreter is fed agent-authored input, its write refused by the hardware, and finally revoked out of the running cell.">
+  <img src="docs/assets/stack.gif" width="940"
+       alt="Two digest-pinned tool images are lent into a hardware-isolated cell, each sealed read-only at its own mount; a model writes a program, an attested python is asked to run it and that call is demoted to the agent lane, its write into the image is refused by the hardware, and the lend is finally revoked out of the running cell.">
 </p>
 
 ## Install

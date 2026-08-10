@@ -8,9 +8,14 @@
 # by ffmpeg with a generated palette — a shared palette keeps a flat-colour
 # diagram crisp and the file small. Shell for glue, per AGENTS.md.
 #
-# The animation tells the five-beat story, because a static box diagram of a
-# host and a guest looks like every other box diagram. What is worth showing is
-# the *movement*: a tool being lent, sealed, demoted, and revoked.
+# The animation tells a story because a static box diagram of a host and a
+# guest looks like every other box diagram. What is worth showing is the
+# *movement*: two closures lent, sealed, a model's program demoted when an
+# attested interpreter runs it, its write refused, and the lend taken back.
+#
+# Note there is no forge in this picture. `celln agent --tool python` asks a
+# model for Python and hands it to a lent interpreter — nothing is compiled, so
+# nothing is forged. Forging is the other path, for generated Rust.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +27,7 @@ command -v rsvg-convert >/dev/null || { echo "need rsvg-convert (librsvg)" >&2; 
 command -v ffmpeg       >/dev/null || { echo "need ffmpeg" >&2; exit 1; }
 mkdir -p "$out"
 
-W=900; H=430
+W=940; H=470
 BG="#fbfcf9"
 PANEL="#ffffff"
 INK="#17221e"
@@ -31,20 +36,19 @@ ACCENT="#165a47"
 WARN="#b44a32"
 OK="#7fa650"
 
-# frame(index, cell_op, tool_x, tool_op, sealed, agent_op, strike_op, revoke_op,
+# frame(index, cell_op, dx, tool_op, sealed, agent_op, strike_op, revoke_op,
 #       lane, caption, beat)
 #
-# Discrete states with a few tween frames between them: a stack diagram reads
-# better as deliberate steps than as constant motion.
+# `dx` slides both closures in from the host together: they are lent by the
+# same act. Discrete states with a few tween frames between them — a stack
+# diagram reads better as deliberate steps than as constant motion.
 frame() {
-  local i="$1" cell_op="$2" tool_x="$3" tool_op="$4" sealed="$5" agent_op="$6" \
+  local i="$1" cell_op="$2" dx="$3" tool_op="$4" sealed="$5" agent_op="$6" \
         strike_op="$7" revoke_op="$8" lane="$9" caption="${10}" beat="${11}"
 
-  local seal_stroke="$DIM" seal_w=1 tool_sub="verified"
+  local seal_stroke="$DIM" seal_w=1 seal_note="verified"
   if [ "$sealed" = "1" ]; then
-    seal_stroke="$ACCENT"; seal_w=2
-    # Say r-x on the tool itself. A floating badge collided with the path.
-    tool_sub="verified · r-x"
+    seal_stroke="$ACCENT"; seal_w=2; seal_note="verified · r-x"
   fi
 
   local lane_fill="$DIM" lane_text=""
@@ -62,102 +66,115 @@ frame() {
   <text x="40" y="74" font-family="DejaVu Sans Mono" font-size="12.5" fill="$DIM">every tool is memory the host lends in — and can take back</text>
 
   <!-- ── host ─────────────────────────────────────────── -->
-  <text x="40" y="126" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">HOST</text>
-  <rect x="40" y="140" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="167" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">forge</text>
-  <text x="58" y="187" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">rebuilds · proves it reproduced</text>
+  <text x="40" y="128" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">HOST</text>
+  <rect x="40" y="144" width="262" height="64" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
+  <text x="58" y="172" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">catalogue</text>
+  <text x="58" y="192" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">digest-pinned tool images</text>
 
-  <path d="M165 202 L165 212" stroke="$DIM" stroke-width="1"/>
-  <path d="M161 208 L165 215 L169 208" fill="none" stroke="$DIM" stroke-width="1"/>
-  <text x="178" y="213" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">bytes + proof</text>
+  <path d="M171 208 L171 220" stroke="$DIM" stroke-width="1"/>
+  <path d="M167 216 L171 223 L175 216" fill="none" stroke="$DIM" stroke-width="1"/>
+  <text x="184" y="221" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">the whole closure</text>
 
-  <rect x="40" y="216" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="243" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">assay</text>
-  <text x="58" y="263" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">grades the proof · tiers</text>
+  <rect x="40" y="224" width="262" height="64" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
+  <text x="58" y="252" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">assay</text>
+  <text x="58" y="272" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">hashes · grades · attests</text>
 
-  <path d="M165 278 L165 288" stroke="$DIM" stroke-width="1"/>
-  <path d="M161 284 L165 291 L169 284" fill="none" stroke="$DIM" stroke-width="1"/>
-  <text x="178" y="289" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">attested tool</text>
+  <path d="M171 288 L171 300" stroke="$DIM" stroke-width="1"/>
+  <path d="M167 296 L171 303 L175 296" fill="none" stroke="$DIM" stroke-width="1"/>
+  <text x="184" y="301" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">attested bytes</text>
 
-  <rect x="40" y="292" width="250" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-  <text x="58" y="319" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">warden</text>
-  <text x="58" y="339" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">seals · ratchets · revokes</text>
+  <rect x="40" y="304" width="262" height="64" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
+  <text x="58" y="332" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">warden</text>
+  <text x="58" y="352" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">seals · ratchets · revokes</text>
 
   <!-- ── the cell ─────────────────────────────────────── -->
   <g opacity="$cell_op">
-    <text x="470" y="126" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">CELL — hardware-isolated microVM</text>
-    <rect x="470" y="140" width="390" height="200" rx="6" fill="none" stroke="$ACCENT" stroke-width="1.5"/>
+    <text x="470" y="128" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM" letter-spacing="2">CELL — hardware-isolated microVM</text>
+    <rect x="470" y="144" width="430" height="248" rx="6" fill="none" stroke="$ACCENT" stroke-width="1.5"/>
 
-    <rect x="492" y="252" width="346" height="62" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
-    <text x="510" y="279" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">pilot</text>
-    <text x="510" y="299" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">exec-by-hash · lanes · explain</text>
+    <rect x="488" y="322" width="394" height="56" rx="4" fill="$PANEL" stroke="$DIM" stroke-width="1"/>
+    <text x="506" y="347" font-family="DejaVu Sans Mono" font-size="14" fill="$INK">pilot</text>
+    <text x="506" y="366" font-family="DejaVu Sans Mono" font-size="11.5" fill="$DIM">exec-by-hash · lanes · explain</text>
 
-    <!-- agent-authored code, which is the thing to be suspicious of -->
+    <!-- the model's program: the thing to be suspicious of -->
     <g opacity="$agent_op">
-      <rect x="492" y="180" width="150" height="46" rx="4" fill="$PANEL" stroke="$WARN" stroke-width="1" stroke-dasharray="3 3"/>
-      <text x="508" y="200" font-family="DejaVu Sans Mono" font-size="12" fill="$WARN">agent wrote this</text>
-      <text x="508" y="217" font-family="DejaVu Sans Mono" font-size="11" fill="$DIM">never attested</text>
+      <rect x="488" y="248" width="196" height="52" rx="4" fill="$PANEL" stroke="$WARN" stroke-width="1" stroke-dasharray="3 3"/>
+      <text x="504" y="270" font-family="DejaVu Sans Mono" font-size="12" fill="$WARN">a model wrote this</text>
+      <text x="504" y="288" font-family="DejaVu Sans Mono" font-size="11" fill="$DIM">python, never attested</text>
     </g>
   </g>
 
-  <!-- ── the lent tool, in flight then seated ─────────── -->
-  <g opacity="$tool_op" transform="translate($tool_x,0)">
+  <!-- ── two closures, in flight then seated ──────────── -->
+  <g opacity="$tool_op" transform="translate($dx,0)">
     <g opacity="$revoke_op">
-      <rect x="0" y="160" width="152" height="46" rx="4" fill="$PANEL" stroke="$seal_stroke" stroke-width="$seal_w"/>
-      <text x="16" y="180" font-family="DejaVu Sans Mono" font-size="12.5" fill="$INK">/usr/bin/python</text>
-      <text x="16" y="197" font-family="DejaVu Sans Mono" font-size="11" fill="$DIM">$tool_sub</text>
+      <rect x="488" y="172" width="196" height="58" rx="4" fill="$PANEL" stroke="$seal_stroke" stroke-width="$seal_w"/>
+      <text x="504" y="193" font-family="DejaVu Sans Mono" font-size="12.5" fill="$INK">/tools</text>
+      <text x="504" y="210" font-family="DejaVu Sans Mono" font-size="10.5" fill="$DIM">python@sha256:229a2c…</text>
+      <text x="504" y="224" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">glibc · $seal_note</text>
+    </g>
+    <g>
+      <rect x="700" y="172" width="182" height="58" rx="4" fill="$PANEL" stroke="$seal_stroke" stroke-width="$seal_w"/>
+      <text x="716" y="193" font-family="DejaVu Sans Mono" font-size="12.5" fill="$INK">/tools1</text>
+      <text x="716" y="210" font-family="DejaVu Sans Mono" font-size="10.5" fill="$DIM">curl@sha256:7c12af…</text>
+      <text x="716" y="224" font-family="DejaVu Sans Mono" font-size="10" fill="$DIM">musl · $seal_note</text>
     </g>
   </g>
 
-  <!-- refused write: the assertion the whole design turns on -->
-  <g opacity="$strike_op">
-    <line x1="648" y1="206" x2="682" y2="188" stroke="$WARN" stroke-width="1.5" stroke-dasharray="4 3"/>
-    <text x="560" y="246" font-family="DejaVu Sans Mono" font-size="12" fill="$WARN">write refused below the guest</text>
+  <!-- interpretation: the model's program handed to an attested tool -->
+  <g opacity="$([ -n "$lane_text" ] && echo 1 || echo 0)">
+    <path d="M586 248 L586 236" stroke="$WARN" stroke-width="1" stroke-dasharray="3 2"/>
+    <path d="M582 240 L586 233 L590 240" fill="none" stroke="$WARN" stroke-width="1"/>
+    <rect x="700" y="248" width="182" height="26" rx="3" fill="none" stroke="$lane_fill" stroke-width="1"/>
+    <text x="712" y="265" font-family="DejaVu Sans Mono" font-size="11" fill="$lane_fill">$lane_text</text>
   </g>
 
-  <!-- lane badge -->
-  <g opacity="$([ -n "$lane_text" ] && echo 1 || echo 0)">
-    <rect x="668" y="212" width="152" height="24" rx="3" fill="none" stroke="$lane_fill" stroke-width="1"/>
-    <text x="680" y="228" font-family="DejaVu Sans Mono" font-size="11" fill="$lane_fill">$lane_text</text>
+  <!-- refused write: the assertion the whole design turns on.
+       Drawn as a struck contact on the sealed mount rather than another
+       arrow — the arrow above already means "handed to", and two arrows
+       into the same box read as one motion. -->
+  <g opacity="$strike_op">
+    <line x1="648" y1="252" x2="664" y2="236" stroke="$WARN" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <line x1="658" y1="228" x2="674" y2="244" stroke="$WARN" stroke-width="2"/>
+    <line x1="674" y1="228" x2="658" y2="244" stroke="$WARN" stroke-width="2"/>
+    <text x="504" y="313" font-family="DejaVu Sans Mono" font-size="12" fill="$WARN">write into the image refused below the guest</text>
   </g>
 
   <!-- ── caption ──────────────────────────────────────── -->
-  <line x1="40" y1="368" x2="860" y2="368" stroke="$PANEL" stroke-width="1"/>
-  <text x="40" y="396" font-family="DejaVu Sans Mono" font-size="13" fill="$ACCENT">$beat</text>
-  <text x="118" y="396" font-family="DejaVu Sans Mono" font-size="13" fill="$INK">$caption</text>
+  <line x1="40" y1="412" x2="900" y2="412" stroke="$PANEL" stroke-width="1"/>
+  <text x="40" y="440" font-family="DejaVu Sans Mono" font-size="13" fill="$ACCENT">$beat</text>
+  <text x="118" y="440" font-family="DejaVu Sans Mono" font-size="13" fill="$INK">$caption</text>
 </svg>
 SVG
 }
 
 i=0
 add() { frame "$i" "$@"; i=$((i+1)); }
-
-# hold(n) repeats the previous frame so a step can be read before the next.
 hold() { local n="$1"; shift; local k; for ((k=0;k<n;k++)); do add "$@"; done; }
 
-#      cell tool_x t_op seal agent strike revoke lane  caption                                     beat
-hold 6  0.15 60   0    0    0     0      1      ""    "a cell is a fork of an already-booted mote" "1"
-hold 8  1    60   0    0    0     0      1      ""    "sealed from intent — no boot in the hot path" "1"
+#      cell dx   t_op seal agent strike revoke lane  caption                                          beat
+hold 6  0.15 -430 0    0    0     0      1      ""    "a cell is a fork of an already-booted mote"      "1"
+hold 8  1    -430 0    0    0     0      1      ""    "sealed from intent — no boot in the hot path"    "1"
 
-# the tool travels from the store into the cell
-for x in 60 160 260 360 460 530 590 640 668; do
-  add 1 "$x" 1 0 0 0 1 "" "lent as a page map, not a download" "2"
+# both closures travel from the host into the cell, lent by one act
+for x in -430 -350 -270 -190 -120 -70 -34 -12 0; do
+  add 1 "$x" 1 0 0 0 1 "" "a tool is its whole closure, not one file" "2"
 done
-hold 8  1    668  1    0    0     0      1      ""    "lent as a page map, not a download"          "2"
+hold 10 1    0    1    0    0     0      1      ""    "two images, each its own sealed mount"           "2"
 
-hold 10 1    668  1    1    0     0      1      ""    "sealed read-only — below the guest kernel"   "3"
+hold 10 1    0    1    1    0     0      1      ""    "sealed read-only — below the guest kernel"       "3"
 
-hold 4  1    668  1    1    0.4   0      1      ""    "the agent writes its own code"               "4"
-hold 8  1    668  1    1    1     0      1      tool  "the agent writes its own code"               "4"
-hold 10 1    668  1    1    1     0      1      data  "an interpreter fed it is demoted, per call"  "4"
+hold 4  1    0    1    1    0.4   0      1      ""    "a model writes the program, not the tool"        "4"
+hold 8  1    0    1    1    1     0      1      ""    "a model writes the program, not the tool"        "4"
+hold 6  1    0    1    1    1     0      1      tool  "attested python is asked to run it"              "5"
+hold 12 1    0    1    1    1     0      1      data  "so this call is demoted — the laundering ban"    "5"
 
-hold 4  1    668  1    1    1     0.5    1      data  "so it tries to rewrite the tool instead"     "5"
-hold 12 1    668  1    1    1     1      1      data  "refused — not by policy, by the hardware"    "5"
+hold 4  1    0    1    1    1     0.5    1      data  "it tries to rewrite the interpreter instead"     "6"
+hold 12 1    0    1    1    1     1      1      data  "refused — not by policy, by the hardware"        "6"
 
 for o in 0.8 0.6 0.4 0.2 0.05; do
-  add 1 668 1 1 1 0 "$o" "" "revoked — and it stops in a running cell" "6"
+  add 1 0 1 1 1 0 "$o" "" "revoked — and it stops in a running cell" "7"
 done
-hold 12 1    668  1    1    0     0      0      ""    "revoked — and it stops in a running cell"    "6"
+hold 12 1    0    1    1    1     0      0      ""    "revoked — and it stops in a running cell"        "7"
 
 printf 'frames:  %s\n' "$i"
 
@@ -172,8 +189,10 @@ ffmpeg -y -loglevel error -framerate 10 -i "$work/f%03d.png" \
 ffmpeg -y -loglevel error -framerate 10 -i "$work/f%03d.png" -i "$work/pal.png" \
   -lavfi "paletteuse=dither=none" -loop 0 "$out/stack.gif"
 
-# The still shows the key refusal: a sealed tool cannot be rewritten by the guest.
-cp "$work/f072.png" "$out/stack.png"
+# The still shows the refusal, with the demotion badge already up: the two
+# claims worth seeing if only one frame is ever seen.
+still=$(printf 'f%03d.png' $((i - 18)))
+cp "$work/$still" "$out/stack.png"
 
 printf 'gif:     %s (%s)\n' "$out/stack.gif" "$(du -h "$out/stack.gif" | cut -f1)"
 printf 'png:     %s (%s)\n' "$out/stack.png" "$(du -h "$out/stack.png" | cut -f1)"
