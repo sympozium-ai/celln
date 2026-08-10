@@ -229,11 +229,40 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
 }
 
 /// `celln run` — seal a cell from a spec and drive its lifecycle.
-pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
+pub fn run(path: &Path, root: &Path, dry_run: bool, task: Option<&str>, o: &Out) -> Result<u8> {
     let spec = match load(path, o) {
         Ok(s) => s,
         Err(code) => return Ok(code),
     };
+    run_spec(spec, root, Path::new(path), dry_run, task, o)
+}
+
+/// The body of a run, over a spec that may have been built rather than parsed.
+///
+/// `celln agent --tool` constructs one in memory and comes through here, so an
+/// ad-hoc run and a declared one take exactly the same path and reach exactly
+/// the same trust decisions.
+pub fn run_spec(
+    mut spec: Spec,
+    root: &Path,
+    origin: &Path,
+    dry_run: bool,
+    task: Option<&str>,
+    o: &Out,
+) -> Result<u8> {
+    // A model fills in the code; the spec keeps the policy.
+    if let Some(agent) = spec.agent.clone() {
+        let task = task
+            .map(str::to_owned)
+            .or_else(|| agent.task.clone())
+            .context("this cell asks a model for its program but no task was given; pass --task")?;
+        let source = crate::agent::write_program(&spec, &agent.exec, &task, root, o)?;
+        spec.run = Some(celln_spec::Runs::One(Box::new(celln_spec::Run {
+            exec: agent.exec.clone(),
+            args: vec![source.flag, source.code],
+            input: celln_spec::Input::Data,
+        })));
+    }
     for w in spec.warnings() {
         o.warn(format!("{}: {}", w.field, w.message));
     }
@@ -255,7 +284,7 @@ pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let mut record = crate::cells::begin(
         root,
         &spec.name,
-        path,
+        origin,
         spec.tools.iter().map(|t| t.alias.clone()).collect(),
     )
     .ok();
@@ -389,6 +418,7 @@ fn execute(
     }
     let runtime = crate::agent::runtime_root()?;
     let work = crate::agent::tempdir()?;
+    let work = work.path();
 
     // Every distinct image becomes its own sealed namespace. Tools sharing an
     // image share the mount, so 1:1, many:1 and many:many all fall out of the

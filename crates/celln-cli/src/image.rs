@@ -69,6 +69,54 @@ pub struct Provide {
     pub exec: String,
     #[serde(default)]
     pub interpreter: bool,
+    /// What to ask a model to write for this tool, e.g. "Python". Absent means
+    /// the tool cannot run model-written code.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// How this interpreter takes a program on the command line, e.g. `-c`.
+    #[serde(default)]
+    pub code_flag: Option<String>,
+}
+
+/// Has this catalogue image already been built into a sealed filesystem?
+pub fn image_is_materialised(image: &CatalogueImage, root: &Path) -> bool {
+    let Some((_, digest)) = image.ref_.split_once('@') else {
+        return false;
+    };
+    images_dir(root)
+        .join(format!("{}.ext2", digest.replace(':', "_")))
+        .exists()
+}
+
+/// Find a catalogue tool that can run model-written code.
+pub fn interpreter_for(name: &str, root: &Path) -> Result<(CatalogueImage, Provide)> {
+    let cat = catalogue_in(root);
+    let image = cat
+        .images
+        .iter()
+        .find(|i| i.name == name)
+        .with_context(|| {
+            format!(
+                "no tool named {name:?}. Available: {}",
+                cat.images
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+    let provide = image
+        .provides
+        .iter()
+        .find(|p| p.language.is_some() && p.code_flag.is_some())
+        .cloned()
+        .with_context(|| {
+            format!(
+                "{name} cannot run model-written code: no entry declares a \
+                 language and code_flag. Add them to its catalogue entry."
+            )
+        })?;
+    Ok((image.clone(), provide))
 }
 
 fn parse_catalogue(text: &str) -> Result<Catalogue> {

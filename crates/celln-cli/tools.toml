@@ -42,8 +42,8 @@ ref = "docker.io/library/python@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9d
 about = "CPython 3.12 with its own OpenSSL, sqlite and glibc"
 default = true
 provides = [
-  { alias = "/usr/bin/python", exec = "/usr/local/bin/python3.12", interpreter = true },
-  { alias = "/bin/sh", exec = "/bin/dash", interpreter = true },
+  { alias = "/usr/bin/python", exec = "/usr/local/bin/python3.12", interpreter = true, language = "Python", code_flag = "-c" },
+  { alias = "/bin/sh", exec = "/bin/dash", interpreter = true, language = "POSIX shell", code_flag = "-c" },
 ]
 
 [[image]]

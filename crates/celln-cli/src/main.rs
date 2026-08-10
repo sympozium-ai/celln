@@ -118,6 +118,10 @@ enum Cmd {
         /// Seal the cell but stop before running it.
         #[arg(long)]
         dry_run: bool,
+        /// What the model should write, for a spec with an [agent] block.
+        /// Overrides the task in the file.
+        #[arg(long)]
+        task: Option<String>,
     },
 
     /// List cells, like `docker ps`. Recent runs need `-a`.
@@ -172,6 +176,13 @@ enum Cmd {
         /// Without this, the cell remains hermetic.
         #[arg(long = "allow-host")]
         allow_hosts: Vec<String>,
+
+        /// Run the model's program with a catalogue tool instead of forging a
+        /// Rust binary, e.g. `--tool python`. The model writes that tool's
+        /// language, and the result is agent-authored input, so it runs in the
+        /// agent lane.
+        #[arg(long)]
+        tool: Option<String>,
     },
 
     /// Ask the selected agent a question on the host; no cell is needed.
@@ -379,7 +390,11 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             Ok(exit::OK)
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),
-        Cmd::Run { spec, dry_run } => run::run(spec, &root, *dry_run, o),
+        Cmd::Run {
+            spec,
+            dry_run,
+            task,
+        } => run::run(spec, &root, *dry_run, task.as_deref(), o),
         Cmd::Ps { all } => run::ps(&root, *all, o),
         Cmd::Tools => run::tools(&root, o),
         Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
@@ -402,18 +417,25 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             show_source,
             timeout,
             allow_hosts,
-        } => agent::agent(
-            agent::AgentRequest {
-                task: &task.join(" "),
-                state_root: &root,
-                requested_backend: *agent,
-                model: model.as_deref(),
-                show_source: *show_source,
-                timeout: *timeout,
-                allow_hosts,
-            },
-            o,
-        ),
+            tool,
+        } => {
+            if let Some(tool) = tool {
+                agent::with_tool(&task.join(" "), tool, allow_hosts, &root, o)
+            } else {
+                agent::agent(
+                    agent::AgentRequest {
+                        task: &task.join(" "),
+                        state_root: &root,
+                        requested_backend: *agent,
+                        model: model.as_deref(),
+                        show_source: *show_source,
+                        timeout: *timeout,
+                        allow_hosts,
+                    },
+                    o,
+                )
+            }
+        }
         Cmd::Ask {
             question,
             agent,

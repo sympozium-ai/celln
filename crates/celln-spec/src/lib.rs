@@ -17,6 +17,21 @@ pub struct Spec {
 
     #[serde(default, rename = "run")]
     pub run: Option<Runs>,
+
+    /// Let a model write what this cell runs. The spec stays the policy — the
+    /// tools, the memory, the hosts — and only the code is filled in.
+    #[serde(default)]
+    pub agent: Option<AgentTask>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTask {
+    /// What the program should do. `--task` overrides it.
+    #[serde(default)]
+    pub task: Option<String>,
+    /// Which declared tool interprets the answer. Must be an interpreter.
+    pub exec: String,
 }
 
 /// A cell may run one tool or several. `[run]` is one, `[[run]]` is a list;
@@ -882,6 +897,34 @@ impl Spec {
             }
         }
 
+        if let Some(a) = &self.agent {
+            match self.tools.iter().find(|t| t.alias == a.exec) {
+                None => out.push(Problem {
+                    field: "agent.exec".into(),
+                    message: format!("{:?} is not one of the tools", a.exec),
+                    fix: "point agent.exec at a declared [[tool]] that can \
+                          interpret what the model writes"
+                        .into(),
+                }),
+                Some(t) if !t.interpreter => out.push(Problem {
+                    field: "agent.exec".into(),
+                    message: format!("{:?} is not marked as an interpreter", a.exec),
+                    fix: "model-written code is agent-authored input, so the \
+                          tool running it has to be an interpreter — set \
+                          interpreter = true"
+                        .into(),
+                }),
+                Some(_) => {}
+            }
+            if self.run.is_some() {
+                out.push(Problem {
+                    field: "agent".into(),
+                    message: "a cell either declares runs or asks for one".into(),
+                    fix: "remove [run]/[[run]], or remove [agent]".into(),
+                });
+            }
+        }
+
         for (i, run) in self.run_list().iter().enumerate() {
             if !aliases.contains(&run.exec.as_str()) {
                 out.push(Problem {
@@ -1123,6 +1166,32 @@ mod tests {
         assert!(p.iter().any(|p| p.field == "run[0].exec"), "{p:?}");
         // and the fix lists what is actually available
         assert!(p.iter().any(|p| p.fix.contains("none declared")));
+    }
+
+    #[test]
+    fn an_agent_block_needs_a_declared_interpreter() {
+        let base = "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n";
+        // not a declared tool
+        let s = spec_from(&format!("{base}[agent]\nexec = \"/ghost\"\n"));
+        assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
+        // declared, but not an interpreter
+        let s = spec_from(&format!("{base}[agent]\nexec = \"/p\"\n"));
+        assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
+        // an interpreter is fine
+        let ok = spec_from(
+            "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
+             interpreter = true\n[agent]\nexec = \"/p\"\n",
+        );
+        assert!(!ok.problems().iter().any(|p| p.field.starts_with("agent")));
+    }
+
+    #[test]
+    fn a_cell_either_declares_runs_or_asks_for_one() {
+        let s = spec_from(
+            "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
+             interpreter = true\n[run]\nexec = \"/p\"\n[agent]\nexec = \"/p\"\n",
+        );
+        assert!(s.problems().iter().any(|p| p.field == "agent"));
     }
 
     #[test]
