@@ -8,9 +8,26 @@
 **Celln** runs agents in isolated **cells** that borrow verified tools instead
 of rebuilding Linux environments.
 
-## What it looks like
+```console
+$ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
+  ✔ /usr/bin/python permitted in the agent lane
+GIF image
+```
 
-Two tools, from two separate images, in one hardware-isolated cell:
+A model wrote that code. An attested python ran it, on input you have no reason
+to trust, in a cell with no network and nothing writable but `/tmp` — then the
+cell dissolved.
+
+Read the second line again. It says **agent** lane, and nobody asked for it.
+python is fully attested and keeps its hash, but code a model wrote is
+agent-authored input, so handing it to an attested interpreter demotes that
+invocation. Authority is decided per call, not per binary.
+
+## Declaring it instead
+
+That one-liner is the short path. For anything you'd repeat, a spec is the
+durable artifact — reviewable, checked in, and the thing that says what a cell
+may ever be lent. Two tools, from two separate images, in one cell:
 
 ```toml
 # cell.toml
@@ -67,20 +84,6 @@ $ celln image add node:22-slim
   + added node to ~/.celln/tools.toml
       /usr/bin/node → /usr/local/bin/node
 ```
-
-Or skip the file entirely and let a model write the program, run against a
-lent interpreter:
-
-```console
-$ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
-  ✔ /usr/bin/python permitted in the agent lane
-GIF image
-```
-
-Code a model wrote, run on input you have no reason to trust, in a cell with no
-network and nothing writable but `/tmp`. It says **agent** lane, not tool lane,
-and nobody asked for it: model-written code handed to an attested interpreter is
-demoted for that invocation. python keeps its hash and loses its authority.
 
 ## How is this different?
 
