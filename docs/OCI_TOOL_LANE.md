@@ -219,7 +219,7 @@ this feature rests on was unverified:
 
 Four real defects, each of which would have been hit by any implementation.
 
-### F1 — the tool window caps images at 32 MiB, and cannot simply be widened
+### F1 — the tool window caps images at 32 MiB — FIXED
 
 `TOOL_WINDOW_SIZE` is 32 MiB, and `boot.rs` explicitly refuses a larger pmem
 image. The window is a *hole punched in low RAM* at 96 MiB, with RAM mapped as
@@ -231,10 +231,19 @@ Backend("mem_size 268435456 must exceed the tool window end 0x12000000;
          RAM has to continue above the hole for the kernel to register it")
 ```
 
-The stock 256 MiB cell fails to boot outright. **Fix:** relocate the tool window
-*above* RAM so its size stops constraining guest memory. Only
-`probe_sealed_tool`'s `/dev/mem` path depends on the hardcoded `TOOL_GPA`; the
-real DAX path discovers the device from e820 and does not.
+The stock 256 MiB cell fails to boot outright.
+
+**Relocating the window above RAM — the obvious fix, and the one first proposed
+here — does not work, and the codebase already records why:** pmem past
+`last_pfn` is parsed and printed as `persistent RAM (type 12)`, but never
+registered in `/proc/iomem`, so `register_e820_pmem()` finds nothing and no
+device appears while every module still loads cleanly. The window has to stay a
+hole below RAM.
+
+**Fixed** by sizing the hole to the image and extending the allocation to match,
+so `mem_size` remains the RAM the guest actually gets. Sizes round up to 2 MiB
+(F3). A mote records its window width so a fork rebuilds the same split.
+Verified: a 138 MiB python image runs in a stock 256 MiB cell with no override.
 
 ### F2 — sealed images mount read-write, so writes silently vanish — FIXED
 
@@ -273,7 +282,7 @@ sealed file: 3.20.10     ← intact
 tmpfs scratch: ok        ← per-cell writes still work
 ```
 
-### F3 — image size must be 2 MiB-aligned
+### F3 — image size must be 2 MiB-aligned — FIXED
 
 `nd_pmem` refuses a misaligned namespace:
 
@@ -285,6 +294,7 @@ nd_pmem namespace0.0: probe with driver nd_pmem failed with error -95
 `mktoolfs.sh` takes its size in MiB so it is aligned by construction; an
 OCI-derived image is whatever size the rootfs needs and must be rounded up. In
 ext2 terms with 4 KiB blocks, the block count must be a multiple of 512.
+`celln image pull` now rounds up, and `tool_window_size` aligns the window.
 
 ### F4 — file ownership is wrong
 
@@ -354,13 +364,18 @@ per-tool Landlock scoping stops being optional at this size.
 
 ## Sequencing
 
-1. ~~**Decouple the read-only remount from the probe** (F2).~~ **Done.**
-2. **Relocate the tool window above RAM** (F1). Nothing larger than 32 MiB
-   ships without it.
-3. **Image → sealed ext2 builder**: skopeo pull by digest, ordered extraction,
-   2 MiB-aligned deterministic `mke2fs`, correct ownership (F3, F4).
-4. **Spec/CLI surface**: `image =` + `exec =`, digest-only validation.
-5. **Layer-level sealing and overlayfs composition**, once image count justifies
+1. ~~Restore the two red DAX proofs.~~ **Done.**
+2. ~~**Always remount a sealed image read-only** (F2).~~ **Done.**
+3. ~~**Lift the 32 MiB window cap** (F1).~~ **Done** — by sizing the hole, not
+   by moving it above RAM.
+4. ~~**Image → sealed ext2 builder**~~ **Done** as `celln image pull`
+   (F3 done; F4 outstanding).
+5. ~~**Spec surface**: `image =` + `exec =`, digest-only validation.~~ **Done.**
+6. **Wire in-cell execution for the spec path** (M5). `celln run` resolves and
+   seals an image tool but does not yet exec it — that path still uses
+   `Cell<KvmVmm>`, which never boots a kernel.
+7. **Correct file ownership** (F4).
+8. **Layer-level sealing and overlayfs composition**, once image count justifies
    the vermagic dependency.
 
 ## Reproducing the spike
