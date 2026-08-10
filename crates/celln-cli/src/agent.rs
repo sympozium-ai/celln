@@ -351,24 +351,26 @@ pub fn setup(
     no_tools: bool,
     o: &Out,
 ) -> Result<u8> {
+    // Which model writes code has nothing to do with which tools a host can
+    // lend, so a missing agent CLI must not skip the rest of setup. It used to
+    // return here, which meant a node provisioned without one silently got no
+    // tool images at all — the failure was reported as a warning about the
+    // wrong thing entirely.
     let backend = match preferred {
-        Some(backend) if backend.available() => backend,
+        Some(backend) if backend.available() => Some(backend),
         Some(backend) => {
             o.warn(format!(
                 "{} is not available — install and authenticate `{}` first",
                 backend.label(),
                 backend.program()
             ));
-            return Ok(crate::exit::HOST_INCAPABLE);
+            None
         }
         None => {
             // Interactive: show available backends and let the user pick.
             // Non-interactive (piped): fall back to auto-discovery.
             if std::io::stdout().is_terminal() {
-                match interactive_backend_select(o)? {
-                    Some(backend) => backend,
-                    None => return Ok(crate::exit::HOST_INCAPABLE),
-                }
+                interactive_backend_select(o)?
             } else {
                 match discover_backend() {
                     Some(backend) => {
@@ -377,34 +379,37 @@ pub fn setup(
                             dim("·"),
                             backend.label()
                         ));
-                        backend
+                        Some(backend)
                     }
                     None => {
                         o.warn("no agent CLI found — install and authenticate codex, claude, deepseek, or ollama, then rerun `celln setup`");
-                        return Ok(crate::exit::HOST_INCAPABLE);
+                        None
                     }
                 }
             }
         }
     };
-    let path = crate::config::set_default_agent(backend.saved_name())?;
-    o.event(
-        "agent_default",
-        serde_json::json!({"backend": backend.saved_name(), "config": path}),
-        format!("✔ default agent: {} ({})", backend.label(), path.display()),
-    );
 
-    // Validate credentials so the user finds out now, not on first use.
-    match backend.validate() {
-        Ok(()) => {
-            o.event(
-                "agent_validated",
-                serde_json::json!({"backend": backend.saved_name()}),
-                format!("✔ {} credentials verified", backend.label()),
-            );
-        }
-        Err(msg) => {
-            o.warn(format!("{}: {msg}", backend.label()));
+    if let Some(backend) = backend {
+        let path = crate::config::set_default_agent(backend.saved_name())?;
+        o.event(
+            "agent_default",
+            serde_json::json!({"backend": backend.saved_name(), "config": path}),
+            format!("✔ default agent: {} ({})", backend.label(), path.display()),
+        );
+
+        // Validate credentials so the user finds out now, not on first use.
+        match backend.validate() {
+            Ok(()) => {
+                o.event(
+                    "agent_validated",
+                    serde_json::json!({"backend": backend.saved_name()}),
+                    format!("✔ {} credentials verified", backend.label()),
+                );
+            }
+            Err(msg) => {
+                o.warn(format!("{}: {msg}", backend.label()));
+            }
         }
     }
 
@@ -437,7 +442,13 @@ pub fn setup(
         }
     }
 
-    Ok(crate::exit::OK)
+    // Still say so in the exit code: a host with tools but no agent CLI can
+    // run a declared spec and cannot ask a model to write one.
+    Ok(if backend.is_some() {
+        crate::exit::OK
+    } else {
+        crate::exit::HOST_INCAPABLE
+    })
 }
 
 /// List available backends interactively and prompt the user to pick one.

@@ -243,12 +243,18 @@ fn layer_digests(dir: &Path) -> Result<Vec<String>> {
         .collect()
 }
 
-/// Bytes an image rootfs actually occupies.
+/// Space an image rootfs will occupy in an ext2 filesystem.
 ///
-/// Counts each inode once. Hardlinks are everywhere in real images — busybox
-/// links ~400 applets to one binary — and summing directory entries instead
-/// inflated a 4 MiB rootfs to nearly 400 MiB, which then sized the filesystem
-/// (and the sealed page-set every cell shares) to match.
+/// Two corrections over summing file sizes, both learned the hard way.
+///
+/// Each inode is counted once: hardlinks are everywhere in real images —
+/// busybox links ~400 applets to one binary — and `mke2fs -d` preserves them,
+/// so counting each name inflated a 4 MiB rootfs to nearly 400 MiB.
+///
+/// And every file occupies whole blocks, so a tree of many small files costs
+/// far more than its bytes. python:3.12-slim is mostly small stdlib files:
+/// summing sizes underestimated it enough that mke2fs ran out of blocks
+/// mid-populate. Directories cost a block each too.
 fn dir_bytes(path: &Path) -> u64 {
     use std::collections::HashSet;
     use std::os::unix::fs::MetadataExt;
@@ -264,8 +270,9 @@ fn dir_bytes(path: &Path) -> u64 {
             let Ok(md) = e.metadata() else { continue };
             if md.is_dir() {
                 stack.push(e.path());
+                total += BLOCK;
             } else if md.nlink() <= 1 || seen.insert((md.dev(), md.ino())) {
-                total += md.len();
+                total += md.len().max(1).div_ceil(BLOCK) * BLOCK;
             }
         }
     }
@@ -278,7 +285,7 @@ fn build_ext2(rootfs: &Path, out: &Path) -> Result<()> {
     let blocks = want.div_ceil(BLOCK).div_ceil(blocks_per_align) * blocks_per_align;
 
     let _ = std::fs::remove_file(out);
-    let status = Command::new("mke2fs")
+    let result = Command::new("mke2fs")
         .args(["-q", "-t", "ext2", "-b", "4096", "-d"])
         .arg(rootfs)
         .args(["-F", "-U", IMAGE_UUID, "-E"])
@@ -286,10 +293,17 @@ fn build_ext2(rootfs: &Path, out: &Path) -> Result<()> {
         .arg(out)
         .arg(blocks.to_string())
         .env("SOURCE_DATE_EPOCH", "0")
-        .status()
+        .output()
         .context("running mke2fs (install e2fsprogs)")?;
-    if !status.success() {
-        bail!("mke2fs failed building the tool filesystem");
+    if !result.status.success() {
+        // mke2fs sizes the file before it populates it, so a failure leaves a
+        // plausible-looking image behind. Left there it would be listed as
+        // materialised and could be sealed into a cell.
+        let _ = std::fs::remove_file(out);
+        bail!(
+            "mke2fs could not build the tool filesystem: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -568,6 +582,39 @@ mod catalogue {
                 .filter(|i| i.name == "python")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn sizing_counts_blocks_and_counts_hardlinks_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Many small files: each costs a whole block, so bytes-summed
+        // underestimates. python:3.12-slim is mostly small stdlib files, and
+        // summing sizes sized an image mke2fs then ran out of blocks filling.
+        std::fs::create_dir(root.join("many")).unwrap();
+        for i in 0..64 {
+            std::fs::write(root.join("many").join(format!("f{i}")), b"x").unwrap();
+        }
+        let counted = dir_bytes(root);
+        assert!(
+            counted >= 64 * BLOCK,
+            "64 one-byte files must cost at least 64 blocks, got {counted}"
+        );
+
+        // Hardlinks share an inode and mke2fs -d preserves them, so they must
+        // be counted once — busybox links ~400 applets to one binary.
+        let dir2 = tempfile::tempdir().unwrap();
+        let root2 = dir2.path();
+        std::fs::write(root2.join("big"), vec![0u8; 40 * 1024]).unwrap();
+        for i in 0..20 {
+            std::fs::hard_link(root2.join("big"), root2.join(format!("l{i}"))).unwrap();
+        }
+        let linked = dir_bytes(root2);
+        assert!(
+            linked < 20 * 40 * 1024,
+            "hardlinks must not be counted per name, got {linked}"
         );
     }
 
