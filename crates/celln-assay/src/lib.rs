@@ -123,14 +123,25 @@ impl Assayer {
         // attest bytes that are not the ones about to run, which pilot then
         // refuses in-cell as unattested.
         let want = Hash::of(upstream_bytes);
+
+        // Interpreter-ness is sticky and only ever tightens. It decides whether
+        // the laundering ban fires, so a stored entry that predates the caller
+        // must not be able to say "not an interpreter" over a caller that says
+        // it is: that would run agent-authored input in the tool lane with full
+        // authority. Once anything declares a tool an interpreter, it stays one.
+        let mut interpreter = interpreter;
         if let Some(entry) = self.manifest.resolve_alias(alias) {
             if entry.hash == want && !self.manifest.is_revoked(&entry.hash) {
-                return Ok(Resolved {
-                    hash: entry.hash.clone(),
-                    tier: entry.tier,
-                    warm: true,
-                    upgrade_queued: false,
-                });
+                interpreter |= entry.interpreter;
+                if entry.interpreter == interpreter {
+                    return Ok(Resolved {
+                        hash: entry.hash.clone(),
+                        tier: entry.tier,
+                        warm: true,
+                        upgrade_queued: false,
+                    });
+                }
+                // The caller tightened it; re-admit before anything runs.
             }
         }
 
@@ -309,6 +320,38 @@ mod tests {
         let again = a.resolve("/bin/sh", b"busybox-bytes", true).unwrap();
         assert!(again.warm);
         assert_eq!(again.hash, Hash::of(b"busybox-bytes"));
+    }
+
+    #[test]
+    fn declaring_a_tool_an_interpreter_beats_a_stored_entry_that_did_not() {
+        // The laundering ban turns on this flag. A warm hit used to return the
+        // stored entry and discard the caller's declaration, so a spec that
+        // correctly marked python an interpreter ran agent-authored input in
+        // the *tool* lane, with full authority, because some earlier spec had
+        // admitted the same bytes as a plain binary.
+        let dir = tempdir().unwrap();
+        let mut a = Assayer::open(dir.path()).unwrap();
+
+        let r = a.resolve("/usr/bin/python", b"py", false).unwrap();
+        assert!(!r.warm);
+        assert!(!a.manifest().get(&r.hash).unwrap().interpreter);
+
+        // Same bytes, now declared an interpreter: it must tighten, not serve
+        // the stale entry.
+        let r = a.resolve("/usr/bin/python", b"py", true).unwrap();
+        assert!(!r.warm, "tightening must re-admit, not hit warm");
+        assert!(
+            a.manifest().get(&r.hash).unwrap().interpreter,
+            "an interpreter declaration has to survive into the manifest"
+        );
+
+        // And it is sticky: declaring false afterwards must not loosen it.
+        let r = a.resolve("/usr/bin/python", b"py", false).unwrap();
+        assert!(r.warm);
+        assert!(
+            a.manifest().get(&r.hash).unwrap().interpreter,
+            "interpreter-ness only ever tightens"
+        );
     }
 
     #[test]
