@@ -23,6 +23,11 @@ python is fully attested and keeps its hash, but code a model wrote is
 agent-authored input, so handing it to an attested interpreter demotes that
 invocation. Authority is decided per call, not per binary.
 
+<p align="center">
+  <img src="docs/assets/stack.gif" width="940"
+       alt="Two digest-pinned tool images are lent into a hardware-isolated cell, each sealed read-only at its own mount. A model writes a program, an attested python is asked to run it and that call is demoted to the agent lane, it runs and returns its answer, and the lend is finally taken back as the cell dissolves.">
+</p>
+
 ## Declaring it instead
 
 That one-liner is the short path. For anything you'd repeat, a spec is the
@@ -95,11 +100,6 @@ read-only lease on the tools it needs.
 
 > *Software is a service the host provides to the process, not property the
 > machine owns.*
-
-<p align="center">
-  <img src="docs/assets/stack.gif" width="940"
-       alt="Two digest-pinned tool images are lent into a hardware-isolated cell, each sealed read-only at its own mount; a model writes a program, an attested python is asked to run it and that call is demoted to the agent lane, its write into the image is refused by the hardware, and the lend is finally revoked out of the running cell.">
-</p>
 
 ## Install
 

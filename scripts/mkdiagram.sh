@@ -10,8 +10,13 @@
 #
 # The animation tells a story because a static box diagram of a host and a
 # guest looks like every other box diagram. What is worth showing is the
-# *movement*: two closures lent, sealed, a model's program demoted when an
-# attested interpreter runs it, its write refused, and the lend taken back.
+# *movement*: two closures lent, sealed, a model's program run by an attested
+# interpreter, the answer coming back, and the lend taken back.
+#
+# It follows the happy path deliberately. What the hardware refuses is a claim
+# worth making, but not in the picture that has to explain what Celln is for -
+# a first diagram should show the thing working. The output shown is what the
+# README's opening example actually prints.
 #
 # Note there is no forge in this picture. `celln agent --tool python` asks a
 # model for Python and hands it to a lent interpreter — nothing is compiled, so
@@ -36,7 +41,7 @@ ACCENT="#165a47"
 WARN="#b44a32"
 OK="#7fa650"
 
-# frame(index, cell_op, dx, tool_op, sealed, agent_op, strike_op, revoke_op,
+# frame(index, cell_op, dx, tool_op, sealed, agent_op, out_op, revoke_op,
 #       lane, caption, beat)
 #
 # `dx` slides both closures in from the host together: they are lent by the
@@ -44,7 +49,7 @@ OK="#7fa650"
 # diagram reads better as deliberate steps than as constant motion.
 frame() {
   local i="$1" cell_op="$2" dx="$3" tool_op="$4" sealed="$5" agent_op="$6" \
-        strike_op="$7" revoke_op="$8" lane="$9" caption="${10}" beat="${11}"
+        out_op="$7" revoke_op="$8" lane="$9" caption="${10}" beat="${11}"
 
   local seal_stroke="$DIM" seal_w=1 seal_note="verified"
   if [ "$sealed" = "1" ]; then
@@ -128,15 +133,11 @@ frame() {
     <text x="712" y="265" font-family="DejaVu Sans Mono" font-size="11" fill="$lane_fill">$lane_text</text>
   </g>
 
-  <!-- refused write: the assertion the whole design turns on.
-       Drawn as a struck contact on the sealed mount rather than another
-       arrow — the arrow above already means "handed to", and two arrows
-       into the same box read as one motion. -->
-  <g opacity="$strike_op">
-    <line x1="648" y1="252" x2="664" y2="236" stroke="$WARN" stroke-width="1.5" stroke-dasharray="4 3"/>
-    <line x1="658" y1="228" x2="674" y2="244" stroke="$WARN" stroke-width="2"/>
-    <line x1="674" y1="228" x2="658" y2="244" stroke="$WARN" stroke-width="2"/>
-    <text x="504" y="313" font-family="DejaVu Sans Mono" font-size="12" fill="$WARN">write into the image refused below the guest</text>
+  <!-- the answer. What a reader wants to know is that this produces
+       something, so the diagram ends on output rather than on a refusal. -->
+  <g opacity="$out_op">
+    <text x="504" y="313" font-family="DejaVu Sans Mono" font-size="12" fill="$ACCENT">stdout</text>
+    <text x="566" y="313" font-family="DejaVu Sans Mono" font-size="12" fill="$INK">GIF image</text>
   </g>
 
   <!-- ── caption ──────────────────────────────────────── -->
@@ -151,30 +152,31 @@ i=0
 add() { frame "$i" "$@"; i=$((i+1)); }
 hold() { local n="$1"; shift; local k; for ((k=0;k<n;k++)); do add "$@"; done; }
 
-#      cell dx   t_op seal agent strike revoke lane  caption                                          beat
-hold 6  0.15 -430 0    0    0     0      1      ""    "a cell is a fork of an already-booted mote"      "1"
-hold 8  1    -430 0    0    0     0      1      ""    "sealed from intent — no boot in the hot path"    "1"
+#      cell dx   t_op seal agent out  revoke lane  caption                                          beat
+hold 6  0.15 -430 0    0    0     0    1      ""    "a cell is a fork of an already-booted mote"      "1"
+hold 8  1    -430 0    0    0     0    1      ""    "sealed from intent — no boot in the hot path"    "1"
 
 # both closures travel from the host into the cell, lent by one act
 for x in -430 -350 -270 -190 -120 -70 -34 -12 0; do
   add 1 "$x" 1 0 0 0 1 "" "a tool is its whole closure, not one file" "2"
 done
-hold 10 1    0    1    0    0     0      1      ""    "two images, each its own sealed mount"           "2"
+hold 10 1    0    1    0    0     0    1      ""    "two images, each its own sealed mount"           "2"
 
-hold 10 1    0    1    1    0     0      1      ""    "sealed read-only — below the guest kernel"       "3"
+hold 10 1    0    1    1    0     0    1      ""    "sealed read-only — below the guest kernel"       "3"
 
-hold 4  1    0    1    1    0.4   0      1      ""    "a model writes the program, not the tool"        "4"
-hold 8  1    0    1    1    1     0      1      ""    "a model writes the program, not the tool"        "4"
-hold 6  1    0    1    1    1     0      1      tool  "attested python is asked to run it"              "5"
-hold 12 1    0    1    1    1     0      1      data  "so this call is demoted — the laundering ban"    "5"
+hold 4  1    0    1    1    0.4   0    1      ""    "a model writes the program, not the tool"        "4"
+hold 8  1    0    1    1    1     0    1      ""    "a model writes the program, not the tool"        "4"
 
-hold 4  1    0    1    1    1     0.5    1      data  "it tries to rewrite the interpreter instead"     "6"
-hold 12 1    0    1    1    1     1      1      data  "refused — not by policy, by the hardware"        "6"
+hold 6  1    0    1    1    1     0    1      tool  "attested python is asked to run it"              "5"
+hold 12 1    0    1    1    1     0    1      data  "so this call is demoted — the laundering ban"    "5"
+
+hold 4  1    0    1    1    1     0.5  1      data  "it runs, with less authority than the tool has"  "6"
+hold 14 1    0    1    1    1     1    1      data  "it runs, with less authority than the tool has"  "6"
 
 for o in 0.8 0.6 0.4 0.2 0.05; do
-  add 1 0 1 1 1 0 "$o" "" "revoked — and it stops in a running cell" "7"
+  add 1 0 1 1 1 1 "$o" "" "the lend is taken back; the cell dissolves" "7"
 done
-hold 12 1    0    1    1    1     0      0      ""    "revoked — and it stops in a running cell"        "7"
+hold 12 1    0    1    1    1     1    0      ""    "the lend is taken back; the cell dissolves"      "7"
 
 printf 'frames:  %s\n' "$i"
 
@@ -189,8 +191,8 @@ ffmpeg -y -loglevel error -framerate 10 -i "$work/f%03d.png" \
 ffmpeg -y -loglevel error -framerate 10 -i "$work/f%03d.png" -i "$work/pal.png" \
   -lavfi "paletteuse=dither=none" -loop 0 "$out/stack.gif"
 
-# The still shows the refusal, with the demotion badge already up: the two
-# claims worth seeing if only one frame is ever seen.
+# The still shows the program having run in the agent lane, with its output:
+# the whole point, in one frame.
 still=$(printf 'f%03d.png' $((i - 18)))
 cp "$work/$still" "$out/stack.png"
 
