@@ -6,6 +6,34 @@
 #
 # `.github/workflows/tool-digests.yml` re-resolves each tag and opens a PR when
 # upstream moves, so the pins stay current without ever being implicit.
+#
+# ── Adding a tool ────────────────────────────────────────────────────────────
+#
+# 1. Pick the smallest image that carries the tool and its dependencies. A
+#    distribution that happens to include it is the wrong answer: `image pull`
+#    refuses anything over 512 MiB, and a cell lends what you name here to
+#    every spec that uses it. If the tool is *static*, it does not belong in the
+#    catalogue at all — a spec can lend it directly with `path`.
+#
+# 2. Resolve the tag to a digest:
+#
+#      skopeo inspect --format '{{.Digest}}' docker://docker.io/library/NAME:TAG
+#
+# 3. Add an entry below. `tag` is recorded only so CI can re-resolve it; `ref`
+#    is the pin that is actually pulled. `default = true` means `celln setup`
+#    materialises it, so reserve that for tools most people want.
+#
+# 4. Find the exec paths *inside* the image, without mounting it:
+#
+#      celln image pull NAME@sha256:...
+#      debugfs -R "ls -l /usr/bin" ~/.celln/images/sha256_....ext2
+#
+# 5. Verify it end to end, then commit the pin with the evidence:
+#
+#      celln image spec NAME > /tmp/t.toml && celln run /tmp/t.toml
+#
+# `cargo test -p celln-cli --lib catalogue` checks that every entry is
+# digest-pinned, uniquely named, and declares absolute paths.
 
 [[image]]
 name = "python"

@@ -30,7 +30,7 @@ fn image_path(t: &celln_spec::Tool, root: &Path) -> Result<std::path::PathBuf> {
         .image
         .as_deref()
         .with_context(|| format!("tool {} has no path or image", t.alias))?;
-    let resolved = crate::image::resolve_ref(named)?;
+    let resolved = crate::image::resolve_ref(named, root)?;
     let image = resolved.as_str();
     let digest = image
         .trim_start_matches("docker://")

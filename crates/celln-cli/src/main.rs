@@ -233,6 +233,27 @@ enum ImageCmd {
     },
     /// List materialised images.
     List,
+    /// Add an image to this host's catalogue.
+    ///
+    /// Resolves the tag to a digest, materialises it, and works out what it
+    /// provides, so a tool becomes available by name without editing anything.
+    Add {
+        /// An image reference, e.g. `node:22-slim`. A tag is resolved to the
+        /// digest it points at right now and pinned.
+        reference: String,
+        /// Catalogue name. Defaults to the image's own name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Expose a specific executable: `/usr/bin/node=/usr/local/bin/node`.
+        /// Repeatable. Without it, binaries named after the image are used.
+        #[arg(long = "tool")]
+        tools: Vec<String>,
+        /// Also materialise it on `celln setup`.
+        #[arg(long)]
+        default: bool,
+    },
+    /// Remove a locally added catalogue entry.
+    Remove { name: String },
     /// Show the built-in catalogue and what is materialised.
     Catalogue,
     /// Print a runnable spec for a catalogue image. Redirect it into a file.
@@ -363,8 +384,15 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Tools => run::tools(&root, o),
         Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
         Cmd::Image(ImageCmd::List) => image::list(&root, o),
+        Cmd::Image(ImageCmd::Add {
+            reference,
+            name,
+            tools,
+            default,
+        }) => image::add(reference, name.as_deref(), tools, *default, &root, o),
+        Cmd::Image(ImageCmd::Remove { name }) => image::remove(name, &root, o),
         Cmd::Image(ImageCmd::Catalogue) => image::catalogue_list(&root, o),
-        Cmd::Image(ImageCmd::Spec { name }) => image::scaffold(name, o),
+        Cmd::Image(ImageCmd::Spec { name }) => image::scaffold(name, &root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
         Cmd::Agent {

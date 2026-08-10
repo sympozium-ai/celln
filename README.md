@@ -63,41 +63,59 @@ specs and runs `celln demo`, and `celln doctor` says which you have.
 
 ## Use it
 
-**1. Write a spec** — what your agent may be lent, and what it intends to run.
+**1. Get a tool.** Most real tools are a *closure* — a binary, its loader and
+the shared objects it resolves by absolute path — so celln lends them as a
+sealed filesystem built from a digest-pinned OCI image. `celln setup`
+materialises the defaults; pulling is its own step so starting a cell never
+waits on a registry.
 
 ```sh
-celln spec init > agent.toml
+$ celln image catalogue
+  ✔ python     /usr/bin/python /bin/sh      materialised
+  ✔ curl       /usr/bin/curl                materialised
+```
+
+**2. Write a spec** — what your agent may be lent, and what it intends to run.
+
+```sh
+celln image spec python > agent.toml     # or: celln spec init
 ```
 
 ```toml
 name = "code-reviewer"
 
 [cell]
-memory = "256MiB"
+memory = "512MiB"
 require_tier = "verified"
 
 [[tool]]
 alias = "/usr/bin/python"     # the name your agent uses
-path = "/usr/bin/python3"     # where the bytes come from
+image = "python"              # a catalogue name; a tag is refused
+exec  = "/usr/local/bin/python3.12"
 interpreter = true            # see below
 
 [run]
 exec = "/usr/bin/python"
-args = ["review.py"]
+args = ["-c", "print(1 + 1)"]
 input = "data"                # the agent wrote it
 ```
 
-**2. Check it** — validation, plus what the trust model will decide.
+A tool comes from exactly one of three places: `image` + `exec` for a closure,
+`path` for a single static binary already on this host, or `builtin = "fetch"`
+for the brokered HTTPS capability. A cell can declare several `[[run]]`
+invocations and mount several images at once.
+
+**3. Check it** — validation, plus what the trust model will decide.
 
 ```sh
 $ celln spec check agent.toml
-✔ code-reviewer  1 tool(s), 256MiB memory, require_tier=verified
+✔ code-reviewer  1 tool(s), 512MiB memory, require_tier=verified
 
 tools
-  /usr/bin/python          interpreter  /usr/bin/python3
+  /usr/bin/python          interpreter  python → /usr/local/bin/python3.12
 
 run
-  /usr/bin/python review.py
+  /usr/bin/python -c print(1 + 1)
   runs in the agent lane — demoted: an interpreter fed agent-authored input
 ```
 
@@ -105,20 +123,30 @@ run
 the agent lane — including the `python -c "…"` form that file-level taint
 tracking misses.
 
-**3. Run it.**
+**4. Run it.**
 
 ```sh
 $ celln run agent.toml
 ● sealing cell code-reviewer
   + /usr/bin/python        tier=verified cold — verified now, forged queued
-  · microVM sealed, phase=Materialise
-  · /usr/bin/python sealed read-only into the cell
-  · authority ratcheted to Work — no further tools can be lent
   ✔ /usr/bin/python permitted in the agent lane
+  · cell sealed, 1 tool(s) lent read-only
+  ✔ pilot: /usr/bin/python permitted:agent
+  · /usr/bin/python exit=0
+
+2
 ● cell dissolved
 ```
 
-**4. Verify the isolation.**
+The verdict appears twice on purpose: once on the host before the cell exists,
+and once from pilot inside it, after re-hashing the bytes it actually found.
+
+A [guided tutorial](https://sympozium-ai.github.io/celln/tutorial.html) works
+through three worked examples — an agent using python, a cell reaching a named
+host with no network stack of its own, and two independent toolchains in one
+cell.
+
+**5. Verify the isolation.**
 
 ```sh
 $ celln verify

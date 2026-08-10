@@ -842,9 +842,10 @@ impl Spec {
                         out.push(Problem {
                             field: format!("{at}.image"),
                             message: why,
-                            fix: "pin the digest: a tag can be moved, which \
-                                  would change what the cell is lent without \
-                                  the spec changing"
+                            fix: "pin it with `celln image add <name:tag>`, then \
+                                  use the catalogue name here; a tag can be \
+                                  moved, which would change what the cell is \
+                                  lent without the spec changing"
                                 .into(),
                         });
                     }
@@ -970,7 +971,9 @@ fn check_digest_pinned(reference: &str) -> Result<(), String> {
 }
 
 /// Names that are interpreters in practice. Used only to warn.
-fn looks_like_interpreter(alias: &str) -> bool {
+/// Names that are interpreters in practice. Used to warn, and to guess when
+/// adding a tool to the catalogue.
+pub fn looks_like_interpreter(alias: &str) -> bool {
     let base = alias.rsplit('/').next().unwrap_or(alias);
     let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     matches!(

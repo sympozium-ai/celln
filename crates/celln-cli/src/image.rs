@@ -49,6 +49,10 @@ pub struct Catalogue {
 #[derive(serde::Deserialize, Clone)]
 pub struct CatalogueImage {
     pub name: String,
+    /// Set when the entry came from the user's own catalogue rather than the
+    /// one compiled in. Never read from the file.
+    #[serde(skip)]
+    pub local: bool,
     /// The moving tag these pins were resolved from. Never used to pull.
     pub tag: String,
     pub ref_: String,
@@ -67,32 +71,68 @@ pub struct Provide {
     pub interpreter: bool,
 }
 
-pub fn catalogue() -> Catalogue {
+fn parse_catalogue(text: &str) -> Result<Catalogue> {
     // `ref` is a keyword, so the field is renamed on the way in.
-    let text = CATALOGUE.replace("\nref =", "\nref_ =");
-    toml::from_str(&text).expect("built-in tool catalogue parses")
+    Ok(toml::from_str(&text.replace("\nref =", "\nref_ ="))?)
+}
+
+/// Where a host's own catalogue additions live.
+pub fn user_catalogue_path(root: &Path) -> PathBuf {
+    root.join("tools.toml")
+}
+
+/// The shipped catalogue, with the host's own entries layered on top.
+///
+/// A local entry is no more trusted than the digest it names — a spec can
+/// already reference any digest directly — so this adds naming, not authority.
+/// Entries are still validated, and a local name shadows a shipped one.
+pub fn catalogue_in(root: &Path) -> Catalogue {
+    let mut cat = parse_catalogue(CATALOGUE).expect("built-in tool catalogue parses");
+    let path = user_catalogue_path(root);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return cat;
+    };
+    match parse_catalogue(&text) {
+        Ok(extra) => {
+            for mut image in extra.images {
+                image.local = true;
+                match cat.images.iter().position(|i| i.name == image.name) {
+                    Some(i) => cat.images[i] = image,
+                    None => cat.images.push(image),
+                }
+            }
+        }
+        Err(e) => eprintln!("warning: ignoring {}: {e}", path.display()),
+    }
+    cat
 }
 
 /// Resolve a catalogue name to its pinned reference, or pass a digest through.
-pub fn resolve_ref(reference: &str) -> Result<String> {
+pub fn resolve_ref(reference: &str, root: &Path) -> Result<String> {
     if reference.contains('@') {
         return Ok(reference.to_owned());
     }
-    let cat = catalogue();
-    cat.images
-        .iter()
-        .find(|i| i.name == reference)
-        .map(|i| i.ref_.clone())
-        .with_context(|| {
-            format!(
-                "{reference:?} is neither a digest-pinned reference nor a catalogue name ({})",
-                cat.images
-                    .iter()
-                    .map(|i| i.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
+    let cat = catalogue_in(root);
+    if let Some(i) = cat.images.iter().find(|i| i.name == reference) {
+        return Ok(i.ref_.clone());
+    }
+    // A tag is a reasonable thing to type; say which command takes one.
+    let r = reference.trim_start_matches("docker://");
+    if r.contains(':') || r.contains('/') {
+        bail!(
+            "{reference} is a tag, not something pinned. Resolve and add it in \
+             one step:\n  celln image add {r}"
+        );
+    }
+    bail!(
+        "no tool named {reference:?}. Available: {}.\n  \
+         Add one with: celln image add <image:tag>",
+        cat.images
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn require(tool: &str) -> Result<()> {
@@ -108,9 +148,9 @@ fn digest_of(reference: &str) -> Result<String> {
     let r = reference.trim_start_matches("docker://");
     let Some((_, digest)) = r.split_once('@') else {
         bail!(
-            "{reference} is not digest-pinned. Use name@sha256:<64 hex> — a tag \
-             is mutable and cannot carry tool-lane authority.\n  \
-             resolve it with: skopeo inspect --format '{{{{.Digest}}}}' docker://{r}"
+            "{reference} is a tag, and a tag is mutable — what a cell is lent \
+             must not change without the spec changing.\n  \
+             Pin it and add it in one step:  celln image add {r}"
         );
     };
     let Some(hex) = digest.strip_prefix("sha256:") else {
@@ -155,8 +195,18 @@ fn layer_digests(dir: &Path) -> Result<Vec<String>> {
         .collect()
 }
 
+/// Bytes an image rootfs actually occupies.
+///
+/// Counts each inode once. Hardlinks are everywhere in real images — busybox
+/// links ~400 applets to one binary — and summing directory entries instead
+/// inflated a 4 MiB rootfs to nearly 400 MiB, which then sized the filesystem
+/// (and the sealed page-set every cell shares) to match.
 fn dir_bytes(path: &Path) -> u64 {
+    use std::collections::HashSet;
+    use std::os::unix::fs::MetadataExt;
+
     let mut total = 0;
+    let mut seen: HashSet<(u64, u64)> = HashSet::new();
     let mut stack = vec![path.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
@@ -166,7 +216,7 @@ fn dir_bytes(path: &Path) -> u64 {
             let Ok(md) = e.metadata() else { continue };
             if md.is_dir() {
                 stack.push(e.path());
-            } else {
+            } else if md.nlink() <= 1 || seen.insert((md.dev(), md.ino())) {
                 total += md.len();
             }
         }
@@ -224,7 +274,7 @@ pub fn extract(image: &Path, inside: &str) -> Result<Vec<u8>> {
 /// Pull `reference`, flatten it, and admit the resulting filesystem image.
 pub fn pull(reference: &str, root: &Path, o: &Out) -> Result<u8> {
     require("skopeo")?;
-    let reference = &resolve_ref(reference)?;
+    let reference = &resolve_ref(reference, root)?;
     let digest = digest_of(reference)?;
     let name = reference.trim_start_matches("docker://");
 
@@ -355,7 +405,7 @@ mod catalogue {
 
     #[test]
     fn the_built_in_catalogue_is_pinned_and_consistent() {
-        let cat = super::catalogue();
+        let cat = parse_catalogue(CATALOGUE).expect("catalogue parses");
         assert!(!cat.images.is_empty());
         assert!(cat.images.iter().any(|i| i.default), "need a default set");
 
@@ -384,12 +434,65 @@ mod catalogue {
 
     #[test]
     fn a_catalogue_name_resolves_and_an_unknown_one_does_not() {
-        let r = resolve_ref("python").expect("python is in the catalogue");
+        let empty = tempfile::tempdir().unwrap();
+        let root = empty.path();
+        let r = resolve_ref("python", root).expect("python is in the catalogue");
         assert!(r.contains("@sha256:"));
         // A digest passes straight through, unchanged.
         let pinned = format!("x@sha256:{}", "a".repeat(64));
-        assert_eq!(resolve_ref(&pinned).unwrap(), pinned);
-        assert!(resolve_ref("not-a-tool").is_err());
+        assert_eq!(resolve_ref(&pinned, root).unwrap(), pinned);
+        assert!(resolve_ref("not-a-tool", root).is_err());
+    }
+
+    #[test]
+    fn a_host_can_add_and_shadow_catalogue_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mine = format!("sha256:{}", "b".repeat(64));
+        std::fs::write(
+            user_catalogue_path(root),
+            format!(
+                "[[image]]\nname = \"mytool\"\ntag = \"x:1\"\n\
+                 ref = \"reg.example/mytool@{mine}\"\nabout = \"local\"\n\
+                 provides = [{{ alias = \"/usr/bin/mytool\", exec = \"/bin/mytool\" }}]\n"
+            ),
+        )
+        .unwrap();
+
+        // A new name is added, resolvable, and marked local.
+        let r = resolve_ref("mytool", root).expect("local entry resolves");
+        assert!(r.ends_with(&mine));
+        let cat = catalogue_in(root);
+        assert!(cat.images.iter().any(|i| i.name == "mytool" && i.local));
+        // Shipped entries survive alongside it.
+        assert!(cat.images.iter().any(|i| i.name == "python" && !i.local));
+
+        // A local entry of the same name shadows the shipped one.
+        std::fs::write(
+            user_catalogue_path(root),
+            format!(
+                "[[image]]\nname = \"python\"\ntag = \"x:1\"\n\
+                 ref = \"reg.example/mine@{mine}\"\nabout = \"pinned by me\"\n\
+                 provides = [{{ alias = \"/usr/bin/python\", exec = \"/bin/py\" }}]\n"
+            ),
+        )
+        .unwrap();
+        assert!(resolve_ref("python", root).unwrap().ends_with(&mine));
+        assert_eq!(
+            catalogue_in(root)
+                .images
+                .iter()
+                .filter(|i| i.name == "python")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_broken_user_catalogue_does_not_take_the_shipped_one_down() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(user_catalogue_path(dir.path()), "this is not toml {{{").unwrap();
+        assert!(resolve_ref("python", dir.path()).is_ok());
     }
 }
 
@@ -658,7 +761,7 @@ mod tests {
 
 /// Materialise the catalogue images marked `default`, for `celln setup`.
 pub fn pull_defaults(root: &Path, only: Option<&str>, o: &Out) -> Result<usize> {
-    let cat = catalogue();
+    let cat = catalogue_in(root);
     let wanted: Vec<&CatalogueImage> = match only {
         Some(list) => {
             let names: Vec<&str> = list.split(',').map(str::trim).collect();
@@ -690,9 +793,228 @@ pub fn pull_defaults(root: &Path, only: Option<&str>, o: &Out) -> Result<usize> 
     Ok(done)
 }
 
+/// Ask the registry what a moving tag currently points at.
+fn resolve_digest(reference: &str) -> Result<String> {
+    let r = reference.trim_start_matches("docker://");
+    if r.contains('@') {
+        return Ok(r.to_owned());
+    }
+    let out = Command::new("skopeo")
+        .args([
+            "inspect",
+            "--format",
+            "{{.Digest}}",
+            &format!("docker://{r}"),
+        ])
+        .output()
+        .context("running skopeo")?;
+    if !out.status.success() {
+        bail!(
+            "cannot resolve {r}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let digest = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let name = r.split_once(':').map(|(n, _)| n).unwrap_or(r);
+    Ok(format!("{name}@{digest}"))
+}
+
+/// Executables an image carries, found without mounting it.
+fn executables(image: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    for dir in [
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/local/sbin",
+        "/sbin",
+    ] {
+        let Ok(out) = Command::new("debugfs")
+            .arg("-R")
+            .arg(format!("ls -l {dir}"))
+            .arg(image)
+            .output()
+        else {
+            continue;
+        };
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            // inode mode (type) uid gid size date time name
+            if f.len() < 9 {
+                continue;
+            }
+            let Ok(mode) = u32::from_str_radix(f[1], 8) else {
+                continue;
+            };
+            let name = f[f.len() - 1];
+            // regular file or symlink, with an execute bit somewhere
+            let kind = mode & 0o170000;
+            if (kind == 0o100000 || kind == 0o120000) && mode & 0o111 != 0 && name != "." {
+                found.push(format!("{dir}/{name}"));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Add an image to this host's catalogue, resolving and inspecting it so the
+/// user does not have to know its digest or its internal layout.
+pub fn add(
+    reference: &str,
+    name: Option<&str>,
+    tools: &[String],
+    make_default: bool,
+    root: &Path,
+    o: &Out,
+) -> Result<u8> {
+    require("skopeo")?;
+    let pinned = resolve_digest(reference)?;
+    let tag = reference.trim_start_matches("docker://").to_owned();
+    let short = tag
+        .rsplit('/')
+        .next()
+        .unwrap_or(&tag)
+        .split(&[':', '@'][..])
+        .next()
+        .unwrap_or(&tag)
+        .to_owned();
+    let name = name.unwrap_or(&short).to_owned();
+
+    o.event(
+        "image_resolving",
+        serde_json::json!({ "reference": tag, "pinned": pinned }),
+        format!("{} {} → {}", bold("●"), tag, dim(&pinned)),
+    );
+    pull(&pinned, root, o)?;
+
+    let digest = digest_of(&pinned)?;
+    let built = images_dir(root).join(format!("{}.ext2", digest.replace(':', "_")));
+
+    // Explicit --tool wins; otherwise take the binaries named after the image,
+    // which is what people mean by "add node".
+    let mut provides: Vec<(String, String)> = Vec::new();
+    for t in tools {
+        let (alias, exec) = t
+            .split_once('=')
+            .with_context(|| format!("--tool {t:?} should look like /usr/bin/x=/opt/x"))?;
+        provides.push((alias.to_owned(), exec.to_owned()));
+    }
+    let found = executables(&built);
+    if provides.is_empty() {
+        for path in found
+            .iter()
+            .filter(|p| p.rsplit('/').next().map(|b| b == name).unwrap_or(false))
+        {
+            provides.push((format!("/usr/bin/{name}"), path.clone()));
+        }
+    }
+    if provides.is_empty() {
+        let sample: Vec<&str> = found.iter().take(24).map(String::as_str).collect();
+        bail!(
+            "nothing in {tag} is named {name:?}, so there is no obvious tool to expose.\n               Name one with --tool /usr/bin/NAME=/path/in/image\n  Found: {}",
+            if sample.is_empty() {
+                "(no executables found)".to_string()
+            } else {
+                sample.join(", ")
+            }
+        );
+    }
+
+    let mut entry = format!(
+        "\n[[image]]\nname = \"{name}\"\ntag = \"{tag}\"\nref = \"{pinned}\"\n\
+         about = \"added with `celln image add`\"\ndefault = {make_default}\nprovides = [\n"
+    );
+    for (alias, exec) in &provides {
+        let interp = celln_spec::looks_like_interpreter(alias);
+        entry.push_str(&format!(
+            "  {{ alias = \"{alias}\", exec = \"{exec}\", interpreter = {interp} }},\n"
+        ));
+    }
+    entry.push_str("]\n");
+
+    let path = user_catalogue_path(root);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if catalogue_in(root)
+        .images
+        .iter()
+        .any(|i| i.name == name && i.local)
+    {
+        bail!("{name:?} is already in your catalogue; `celln image remove {name}` first");
+    }
+    let header = if existing.is_empty() {
+        "# Tool images added on this host. Every entry is digest-pinned.\n         # `celln image add` writes here; the shipped catalogue is unaffected.\n"
+    } else {
+        ""
+    };
+    std::fs::write(&path, format!("{existing}{header}{entry}"))
+        .with_context(|| format!("writing {}", path.display()))?;
+
+    o.event(
+        "image_added",
+        serde_json::json!({
+            "name": name, "ref": pinned, "catalogue": path.display().to_string(),
+            "provides": provides.iter().map(|(a, _)| a).collect::<Vec<_>>(),
+        }),
+        format!(
+            "  {} added {} to {}",
+            green("+"),
+            bold(&name),
+            dim(&path.display().to_string())
+        ),
+    );
+    for (alias, exec) in &provides {
+        o.note(format!("      {alias} → {exec}"));
+    }
+    o.note(format!(
+        "  {} use it with: celln image spec {name} > cell.toml",
+        dim("·")
+    ));
+    Ok(crate::exit::OK)
+}
+
+/// Drop a locally added catalogue entry.
+pub fn remove(name: &str, root: &Path, o: &Out) -> Result<u8> {
+    let path = user_catalogue_path(root);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let needle = format!("name = \"{name}\"");
+    if !text.contains(&needle) {
+        bail!("{name:?} is not in your catalogue at {}", path.display());
+    }
+    let mut kept = String::new();
+    let mut skipping = false;
+    for block in text.split_inclusive("[[image]]") {
+        if skipping {
+            skipping = false;
+            if let Some(i) = block.rfind("[[image]]") {
+                kept.push_str(&block[i..]);
+            }
+            continue;
+        }
+        if block.contains(&needle) {
+            // drop this block, but keep the trailing marker that starts the next
+            skipping = false;
+            if let Some(i) = block.rfind("[[image]]") {
+                kept.push_str(&block[i..]);
+            }
+            continue;
+        }
+        kept.push_str(block);
+    }
+    let kept = kept.trim_end().trim_end_matches("[[image]]").to_owned();
+    std::fs::write(&path, kept)?;
+    o.event(
+        "image_removed",
+        serde_json::json!({ "name": name }),
+        format!("  {} removed {name} from your catalogue", green("-")),
+    );
+    Ok(crate::exit::OK)
+}
+
 /// Emit a ready-to-run spec for a catalogue image.
-pub fn scaffold(name: &str, o: &Out) -> Result<u8> {
-    let cat = catalogue();
+pub fn scaffold(name: &str, root: &Path, o: &Out) -> Result<u8> {
+    let cat = catalogue_in(root);
     let image = cat
         .images
         .iter()
@@ -720,7 +1042,7 @@ pub fn scaffold(name: &str, o: &Out) -> Result<u8> {
 /// Show the catalogue and which entries are materialised on this host.
 pub fn catalogue_list(root: &Path, o: &Out) -> Result<u8> {
     let dir = images_dir(root);
-    for image in catalogue().images {
+    for image in catalogue_in(root).images {
         let digest = image.ref_.split_once('@').map(|(_, d)| d).unwrap_or("");
         let path = dir.join(format!("{}.ext2", digest.replace(':', "_")));
         let ready = path.exists();
@@ -729,6 +1051,7 @@ pub fn catalogue_list(root: &Path, o: &Out) -> Result<u8> {
             serde_json::json!({
                 "name": image.name, "ref": image.ref_, "tag": image.tag,
                 "about": image.about, "default": image.default, "ready": ready,
+                "local": image.local,
                 "provides": image.provides.iter().map(|p| p.alias.clone()).collect::<Vec<_>>(),
             }),
             format!(
@@ -741,7 +1064,12 @@ pub fn catalogue_list(root: &Path, o: &Out) -> Result<u8> {
                     .map(|p| p.alias.as_str())
                     .collect::<Vec<_>>()
                     .join(" "),
-                dim(if ready { "materialised" } else { "not pulled" })
+                dim(match (ready, image.local) {
+                    (true, true) => "materialised, local",
+                    (true, false) => "materialised",
+                    (false, true) => "not pulled, local",
+                    (false, false) => "not pulled",
+                })
             ),
         );
     }
