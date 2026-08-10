@@ -690,6 +690,33 @@ pub fn pull_defaults(root: &Path, only: Option<&str>, o: &Out) -> Result<usize> 
     Ok(done)
 }
 
+/// Emit a ready-to-run spec for a catalogue image.
+pub fn scaffold(name: &str, o: &Out) -> Result<u8> {
+    let cat = catalogue();
+    let image = cat
+        .images
+        .iter()
+        .find(|i| i.name == name)
+        .with_context(|| format!("no catalogue image named {name:?}"))?;
+
+    let mut s = format!("name = \"{name}\"\n\n[cell]\nmemory = \"512MiB\"\n",);
+    for p in &image.provides {
+        s.push_str(&format!(
+            "\n[[tool]]\nalias = \"{}\"\nimage = \"{}\"\nexec  = \"{}\"\n",
+            p.alias, image.name, p.exec
+        ));
+        if p.interpreter {
+            s.push_str("interpreter = true\n");
+        }
+    }
+    if let Some(first) = image.provides.first() {
+        s.push_str(&format!("\n[run]\nexec = \"{}\"\nargs = []\n", first.alias));
+    }
+    print!("{s}");
+    let _ = o;
+    Ok(crate::exit::OK)
+}
+
 /// Show the catalogue and which entries are materialised on this host.
 pub fn catalogue_list(root: &Path, o: &Out) -> Result<u8> {
     let dir = images_dir(root);

@@ -235,6 +235,11 @@ enum ImageCmd {
     List,
     /// Show the built-in catalogue and what is materialised.
     Catalogue,
+    /// Print a runnable spec for a catalogue image. Redirect it into a file.
+    Spec {
+        /// Catalogue image name, e.g. `python`.
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -359,6 +364,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
         Cmd::Image(ImageCmd::List) => image::list(&root, o),
         Cmd::Image(ImageCmd::Catalogue) => image::catalogue_list(&root, o),
+        Cmd::Image(ImageCmd::Spec { name }) => image::scaffold(name, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
         Cmd::Agent {
