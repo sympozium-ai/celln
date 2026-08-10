@@ -52,6 +52,12 @@ pub struct Cell {
 
     #[serde(default = "default_tier")]
     pub require_tier: Tier,
+
+    /// Exact DNS names the host will fetch on this cell's behalf. Empty means
+    /// the cell is hermetic. This is a host capability, not a network: the
+    /// guest has no stack, and every URL is validated host-side.
+    #[serde(default)]
+    pub allow_hosts: Vec<String>,
 }
 
 impl Default for Cell {
@@ -59,6 +65,7 @@ impl Default for Cell {
         Cell {
             memory: default_memory(),
             require_tier: default_tier(),
+            allow_hosts: Vec::new(),
         }
     }
 }
@@ -109,6 +116,11 @@ pub struct Tool {
     /// Path to execute *inside* `image`.
     #[serde(default)]
     pub exec: Option<String>,
+
+    /// A capability the host provides rather than bytes it lends. Only
+    /// `"fetch"` today: the bounded HTTPS fetch, which needs `allow_hosts`.
+    #[serde(default)]
+    pub builtin: Option<String>,
 
     /// True for interpreters (python, sh, node…). An interpreter fed input the
     /// agent wrote is moved to the agent lane *for that invocation* — the
@@ -772,6 +784,32 @@ impl Spec {
                     message: format!("{:?} is not an absolute path", tool.alias),
                     fix: "aliases look like paths, e.g. \"/usr/bin/python\"".into(),
                 });
+            }
+            if let Some(b) = &tool.builtin {
+                if b != "fetch" {
+                    out.push(Problem {
+                        field: format!("{at}.builtin"),
+                        message: format!("{b:?} is not a known capability"),
+                        fix: "the only builtin is \"fetch\"".into(),
+                    });
+                }
+                if tool.path.is_some() || tool.image.is_some() {
+                    out.push(Problem {
+                        field: at.clone(),
+                        message: "a builtin has no path or image".into(),
+                        fix: "remove path/image; a builtin is a host capability".into(),
+                    });
+                }
+                if self.cell.allow_hosts.is_empty() {
+                    out.push(Problem {
+                        field: "cell.allow_hosts".into(),
+                        message: "the fetch builtin needs at least one allowed host".into(),
+                        fix: "set allow_hosts = [\"example.com\"]; the cell is \
+                              hermetic until a host is named"
+                            .into(),
+                    });
+                }
+                continue;
             }
             match (&tool.path, &tool.image) {
                 (Some(_), Some(_)) => out.push(Problem {

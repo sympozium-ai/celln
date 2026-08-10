@@ -11,6 +11,9 @@ use std::path::Path;
 
 /// Where a tool's bytes come from, for display.
 fn source_of(t: &celln_spec::Tool) -> String {
+    if let Some(b) = &t.builtin {
+        return format!("host capability: {b}");
+    }
     match (&t.path, &t.image) {
         (Some(p), _) => p.display().to_string(),
         (_, Some(image)) => match &t.exec {
@@ -50,6 +53,20 @@ fn image_path(t: &celln_spec::Tool, root: &Path) -> Result<std::path::PathBuf> {
 /// itself: pilot re-hashes whatever it finds at that path in the cell, so the
 /// manifest has to carry the same thing.
 fn tool_bytes(t: &celln_spec::Tool, root: &Path) -> Result<Vec<u8>> {
+    if t.builtin.as_deref() == Some("fetch") {
+        // Same search order as mkinitramfs.sh: an installed runtime first,
+        // then a build tree, so this works from a checkout too.
+        let runtime = crate::agent::runtime_root()?;
+        for c in [
+            runtime.join("pilot/pilot-fetch"),
+            runtime.join("target/x86_64-unknown-linux-musl/release/pilot-fetch"),
+        ] {
+            if c.exists() {
+                return std::fs::read(&c).with_context(|| format!("reading {}", c.display()));
+            }
+        }
+        anyhow::bail!("pilot-fetch is not built; run `celln setup`");
+    }
     if let Some(p) = &t.path {
         return std::fs::read(p)
             .with_context(|| format!("reading tool {} from {}", t.alias, p.display()));
@@ -391,6 +408,7 @@ fn execute(
             continue;
         };
         let (path, root_dir) = match (&tool.image, &tool.exec) {
+            _ if tool.builtin.as_deref() == Some("fetch") => ("/pilot-fetch".to_string(), None),
             (Some(_), Some(exec)) => (exec.clone(), Some("/tools".to_string())),
             _ => (
                 format!(
@@ -476,6 +494,20 @@ fn execute(
         ),
     );
 
+    if !spec.cell.allow_hosts.is_empty() {
+        cell.enable_http_fetch(warden::egress::HttpPolicy::new(
+            spec.cell.allow_hosts.clone(),
+        ));
+        o.event(
+            "egress",
+            serde_json::json!({ "allow_hosts": spec.cell.allow_hosts }),
+            format!(
+                "  {} egress brokered by the host: {}",
+                dim("·"),
+                spec.cell.allow_hosts.join(", ")
+            ),
+        );
+    }
     let report = cell.run().context("running the cell")?;
     if !report.console.contains("CELLN:pilot=alive") {
         let tail: Vec<&str> = report.console.lines().rev().take(8).collect();
