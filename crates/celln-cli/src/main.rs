@@ -7,7 +7,9 @@ mod dispatch;
 mod dispatcher;
 mod host;
 mod node;
+mod oci_spike;
 mod out;
+mod prewarm;
 mod router;
 mod run;
 
@@ -196,11 +198,28 @@ enum Cmd {
     },
 
     /// Discover an agent CLI and save it as the default.
+    ///
+    /// Also prewarms the tool lane: the usual host tools (python, curl,
+    /// wget, go, node, rustc, cargo) are admitted into the manifest at
+    /// Verified, so the first `celln run` that references one resolves warm.
     Setup {
         /// Select this backend instead of auto-discovering one.
         #[arg(long, value_enum)]
         agent: Option<agent::Backend>,
+
+        /// Skip pre-admitting host tools into the manifest.
+        #[arg(long)]
+        no_prewarm: bool,
     },
+
+    /// Admit the usual host tools (python, curl, wget, go, node, rustc,
+    /// cargo) into the manifest at Verified, ahead of any spec needing them.
+    ///
+    /// Safe to rerun: an unchanged binary is a no-op; one that moved on since
+    /// the last prewarm has its stale hash revoked and the fresh bytes
+    /// admitted. This does not make a tool runnable inside a sealed cell —
+    /// only `celln spec`'s attestation bookkeeping is warmed, not execution.
+    Prewarm,
 
     /// Walk the five-beat proof loop. Works without KVM.
     Demo,
@@ -353,7 +372,14 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             timeout,
         } => agent::ask(&question.join(" "), *agent, model.as_deref(), *timeout, o),
         Cmd::Agents { set_default } => agent::agents(*set_default, o),
-        Cmd::Setup { agent: preferred } => agent::setup(*preferred, o),
+        Cmd::Setup {
+            agent: preferred,
+            no_prewarm,
+        } => agent::setup(*preferred, &root, *no_prewarm, o),
+        Cmd::Prewarm => {
+            prewarm::run(&root, o)?;
+            Ok(exit::OK)
+        }
     }
 }
 

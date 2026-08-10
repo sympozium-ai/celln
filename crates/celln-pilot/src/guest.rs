@@ -77,10 +77,41 @@ const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
     | LANDLOCK_ACCESS_FS_MAKE_SYM
     | LANDLOCK_ACCESS_FS_REFER;
 
+/// Enter a sealed image as the filesystem root, immediately before `execve`.
+///
+/// A single static binary can be exec'd straight off the sealed mount, but a
+/// real tool is a *closure* — the binary plus its loader plus every shared
+/// object it needs — and a dynamic loader resolves those by absolute path
+/// (`/lib64/ld-linux-x86-64.so.2`). Mounted at `/tools`, none of those paths
+/// exist. `chroot` makes the sealed image the root, so the closure resolves
+/// against itself and never against the host.
+///
+/// This runs in the child, after fork and before exec, so pilot itself keeps
+/// its own view of the filesystem — it still has to reach `/celln/manifest.json`
+/// for the next request.
+fn enter_root(root: &str) -> io::Result<()> {
+    let path = CString::new(root).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    unsafe {
+        if libc::chroot(path.as_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let slash = CString::new("/").expect("constant path");
+        if libc::chdir(slash.as_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
 /// Apply the agent lane immediately before `execve`. The parent stays pilot and
 /// retains its narrow supervisory authority; the child can read/execute tools,
 /// write only its workspace, and cannot create a network socket.
-fn enter_agent_lane() -> io::Result<()> {
+///
+/// `workspace` is the one writable path. Without a sealed image that is the
+/// initramfs scratch dir; inside one it is the tmpfs the caller mounted over
+/// the image's own `/tmp`, because the image itself is read-only by hardware
+/// and nothing in it can be written to.
+fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err(io::Error::last_os_error());
@@ -121,11 +152,16 @@ fn enter_agent_lane() -> io::Result<()> {
             }
             Ok(())
         };
-        // The generated executable is the only tool the agent lane receives.
+        // The executable being run is the only tool the agent lane receives.
         // Do not grant the `/tools` directory: that would let it discover and
         // read every future host-lent tool by name.
+        //
+        // Inside a chroot'ed sealed image this rule is already satisfied by
+        // construction — the root *is* the one image being lent, so the grant
+        // on "/" below is scoped to exactly that image and nothing else. A
+        // second image is a second mount the child never sees.
         add(
-            "/tools/program",
+            exec_path,
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
         )?;
         // pilot-fetch uses I/O ports to talk to the host broker, not sockets.
@@ -139,12 +175,13 @@ fn enter_agent_lane() -> io::Result<()> {
             "/",
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
         )?;
-        add(WORKSPACE, FS_ALL)?;
+        add(workspace, FS_ALL)?;
         if libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0) != 0 {
             return Err(io::Error::last_os_error());
         }
         libc::close(ruleset);
-        let work = CString::new(WORKSPACE).expect("constant path");
+        let work =
+            CString::new(workspace).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         if libc::chdir(work.as_ptr()) != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -248,6 +285,9 @@ const RUN_REQUEST: &str = "/celln/run.json";
 #[derive(Deserialize)]
 struct RunRequest {
     /// Where the bytes live in the cell — normally on the sealed DAX mount.
+    ///
+    /// When `root` is set this is relative to *that* root, not to pilot's own
+    /// filesystem, because the child is chroot'ed before it execs.
     path: String,
     /// What the agent calls it. Only used for reporting; authority comes from
     /// the hash, never from the name or the path.
@@ -257,6 +297,38 @@ struct RunRequest {
     /// Whether the input this invocation is being fed was written by the agent.
     #[serde(default)]
     agent_authored_input: bool,
+    /// A sealed image mount to enter as `/` before exec, for tools that are a
+    /// dependency closure rather than one static binary. Absent means the old
+    /// behaviour: exec `path` directly out of the sealed mount.
+    #[serde(default)]
+    root: Option<String>,
+}
+
+/// Mount a small writable tmpfs over `<root>/tmp`.
+///
+/// The sealed image is read-only *by hardware* — nothing in the guest can
+/// write it, which is the whole point — but real tools assume somewhere to
+/// scratch. This gives each cell its own private tmpfs at a path the image
+/// already provides, so the read-only image stays shareable across every cell
+/// while the writes stay per-cell.
+fn mount_scratch(root: &str) -> io::Result<()> {
+    let target = CString::new(format!("{root}/tmp"))
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let fstype = CString::new("tmpfs").expect("constant");
+    let source = CString::new("tmpfs").expect("constant");
+    unsafe {
+        if libc::mount(
+            source.as_ptr(),
+            target.as_ptr(),
+            fstype.as_ptr(),
+            0,
+            std::ptr::null(),
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 fn main() {
@@ -362,7 +434,15 @@ fn run_requested(manifest: &Manifest) {
         }
     };
 
-    let Ok(code) = std::fs::read(&req.path) else {
+    // Where pilot itself can read the bytes, which is not where the child will
+    // exec them from: the child is chroot'ed, so its `/usr/bin/x` is pilot's
+    // `/tools/usr/bin/x`. Hash the bytes here, before any chroot, so the
+    // exec-by-hash check is made against the file that will actually run.
+    let host_view = match &req.root {
+        Some(root) => format!("{root}{}", req.path),
+        None => req.path.clone(),
+    };
+    let Ok(code) = std::fs::read(&host_view) else {
         report(&format!("pilot_run_{}", req.alias), "absent");
         return;
     };
@@ -388,14 +468,44 @@ fn run_requested(manifest: &Manifest) {
                 &format!("permitted:{lane}"),
             );
 
+            // A sealed image needs one writable path before anyone enters it.
+            // Mounted here, in the parent, so the child never needs the mount
+            // capability the agent lane's seccomp filter denies it.
+            if let Some(root) = &req.root {
+                match mount_scratch(root) {
+                    Ok(()) => report(&format!("pilot_scratch_{}", req.alias), "tmpfs"),
+                    Err(e) => {
+                        report(&format!("pilot_scratch_{}", req.alias), "failed");
+                        eprintln!("pilot: tmpfs on {root}/tmp: {e}");
+                    }
+                }
+            }
+
             // Everything between these markers is the program's own output.
             // The host slices on them so a cell can be piped like any process.
             println!("CELLN:out-begin");
             let mut command = std::process::Command::new(&req.path);
             command.args(&req.args);
-            if lane != Lane::Tool {
+            let root = req.root.clone();
+            let exec_path = req.path.clone();
+            // Inside a sealed image the only writable place is the tmpfs just
+            // mounted; outside one it is the initramfs scratch dir.
+            let workspace = if root.is_some() { "/tmp" } else { WORKSPACE }.to_string();
+            let confine = lane != Lane::Tool;
+            if root.is_some() || confine {
                 unsafe {
-                    command.pre_exec(enter_agent_lane);
+                    command.pre_exec(move || {
+                        // Order matters: chroot first, so every Landlock rule
+                        // below is resolved inside the image rather than
+                        // against pilot's own filesystem.
+                        if let Some(r) = &root {
+                            enter_root(r)?;
+                        }
+                        if confine {
+                            enter_agent_lane(&workspace, &exec_path)?;
+                        }
+                        Ok(())
+                    });
                 }
             }
             let status = command.status();
