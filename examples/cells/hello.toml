@@ -1,0 +1,15 @@
+# The smallest useful cell: one attested tool, one invocation.
+name = "hello"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"                   # a catalogue name; celln resolves the pin
+exec  = "/usr/local/bin/python3.12"
+interpreter = true
+
+[run]
+exec = "/usr/bin/python"
+args = ["-c", "print('hello world')"]

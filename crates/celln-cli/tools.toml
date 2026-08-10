@@ -1,0 +1,29 @@
+# The tool catalogue: images celln knows how to lend, pinned by digest.
+#
+# Every entry is immutable. A tag would let what a cell is lent change without
+# celln changing, so refreshing these is a code change with a diff and a review,
+# not something that happens silently at pull time.
+#
+# `.github/workflows/tool-digests.yml` re-resolves each tag and opens a PR when
+# upstream moves, so the pins stay current without ever being implicit.
+
+[[image]]
+name = "python"
+tag = "docker.io/library/python:3.12-slim"
+ref = "docker.io/library/python@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36"
+about = "CPython 3.12 with its own OpenSSL, sqlite and glibc"
+default = true
+provides = [
+  { alias = "/usr/bin/python", exec = "/usr/local/bin/python3.12", interpreter = true },
+  { alias = "/bin/sh", exec = "/bin/dash", interpreter = true },
+]
+
+[[image]]
+name = "curl"
+tag = "docker.io/curlimages/curl:latest"
+ref = "docker.io/curlimages/curl@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
+about = "curl and its TLS stack, musl-linked"
+default = true
+provides = [
+  { alias = "/usr/bin/curl", exec = "/usr/bin/curl" },
+]

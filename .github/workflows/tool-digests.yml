@@ -1,0 +1,70 @@
+name: refresh tool digests
+
+# The catalogue pins every tool image by digest, so upstream moving a tag never
+# changes what a cell is lent. Keeping those pins current is therefore a code
+# change: this re-resolves each tag and opens a PR when one has moved, so the
+# update arrives with a diff and a review rather than silently at pull time.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Re-resolve each pinned tag
+        id: refresh
+        run: |
+          set -euo pipefail
+          f=crates/celln-cli/tools.toml
+          changed=0
+          # `tag` is the moving reference the pin was taken from; `ref` is the pin.
+          tags=$(grep -oP '^tag = "\K[^"]+' "$f")
+          for tag in $tags; do
+            digest=$(skopeo inspect --format '{{.Digest}}' "docker://$tag")
+            name=${tag%%:*}
+            old=$(grep -A1 "^tag = \"$tag\"$" "$f" | grep -oP '^ref = "\K[^"]+' || true)
+            new="$name@$digest"
+            if [ "$old" != "$new" ]; then
+              echo "  $tag: $old -> $new"
+              python3 - "$f" "$tag" "$new" <<'PY'
+          import sys, re
+          path, tag, new = sys.argv[1:4]
+          s = open(path).read()
+          s = re.sub(rf'(^tag = "{re.escape(tag)}"$\n)ref = "[^"]+"',
+                     rf'\g<1>ref = "{new}"', s, flags=re.M)
+          open(path, "w").write(s)
+          PY
+              changed=1
+            fi
+          done
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the catalogue still parses and the workspace builds
+        if: steps.refresh.outputs.changed == '1'
+        run: cargo test -p celln-cli --lib catalogue
+
+      - name: Open a pull request
+        if: steps.refresh.outputs.changed == '1'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: chore/tool-digests
+          title: "chore: refresh pinned tool image digests"
+          commit-message: "chore: refresh pinned tool image digests"
+          body: |
+            Upstream moved one or more of the tags the tool catalogue pins.
+
+            The pins are what a cell is actually lent, so this is a reviewable
+            change rather than something that happens at pull time. Check the
+            diff names images you expect before merging.

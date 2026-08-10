@@ -344,7 +344,13 @@ pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
     Ok(crate::exit::OK)
 }
 
-pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
+pub fn setup(
+    preferred: Option<Backend>,
+    root: &Path,
+    tools: Option<&str>,
+    no_tools: bool,
+    o: &Out,
+) -> Result<u8> {
     let backend = match preferred {
         Some(backend) if backend.available() => backend,
         Some(backend) => {
@@ -414,6 +420,20 @@ pub fn setup(preferred: Option<Backend>, o: &Out) -> Result<u8> {
         }
         Err(e) => {
             o.warn(format!("could not install runtime assets: {e:#}"));
+        }
+    }
+
+    if no_tools {
+        o.note(format!(
+            "  {} skipping tool images; `celln image catalogue` lists them",
+            dim("·")
+        ));
+    } else {
+        o.say("");
+        o.say(bold("tool images"));
+        match crate::image::pull_defaults(root, tools, o) {
+            Ok(n) => o.note(format!("  {} {n} image(s) ready", dim("·"))),
+            Err(e) => o.warn(format!("tool images: {e:#}")),
         }
     }
 

@@ -200,11 +200,20 @@ enum Cmd {
         set_default: Option<agent::Backend>,
     },
 
-    /// Discover an agent CLI and save it as the default.
+    /// Discover an agent CLI and materialise the default tool images.
     Setup {
         /// Select this backend instead of auto-discovering one.
         #[arg(long, value_enum)]
         agent: Option<agent::Backend>,
+
+        /// Only these catalogue images, comma-separated. Default: those the
+        /// catalogue marks as defaults.
+        #[arg(long)]
+        tools: Option<String>,
+
+        /// Skip materialising tool images.
+        #[arg(long)]
+        no_tools: bool,
     },
 
     /// Walk the five-beat proof loop. Works without KVM.
@@ -224,6 +233,8 @@ enum ImageCmd {
     },
     /// List materialised images.
     List,
+    /// Show the built-in catalogue and what is materialised.
+    Catalogue,
 }
 
 #[derive(Subcommand)]
@@ -347,6 +358,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Tools => run::tools(&root, o),
         Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
         Cmd::Image(ImageCmd::List) => image::list(&root, o),
+        Cmd::Image(ImageCmd::Catalogue) => image::catalogue_list(&root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
         Cmd::Agent {
@@ -375,7 +387,11 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             timeout,
         } => agent::ask(&question.join(" "), *agent, model.as_deref(), *timeout, o),
         Cmd::Agents { set_default } => agent::agents(*set_default, o),
-        Cmd::Setup { agent: preferred } => agent::setup(*preferred, o),
+        Cmd::Setup {
+            agent: preferred,
+            tools,
+            no_tools,
+        } => agent::setup(*preferred, &root, tools.as_deref(), *no_tools, o),
     }
 }
 

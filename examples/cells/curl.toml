@@ -1,0 +1,16 @@
+# curl in a cell. It runs, and it is hermetic: the cell has no network stack,
+# so curl can do everything except reach the network. Egress is a brokered
+# host capability, not a property of the binary.
+name = "curl"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/curl"
+image = "curl"
+exec  = "/usr/bin/curl"
+
+[run]
+exec = "/usr/bin/curl"
+args = ["--version"]

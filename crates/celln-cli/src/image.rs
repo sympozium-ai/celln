@@ -13,13 +13,20 @@ use celln_manifest::Hash;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Largest image a cell will accept. Beyond this the guest kernel panics in
+/// kernel_init rather than failing cleanly, and an image that big is a sign the
+/// wrong thing is being lent: a tool and its closure, not a distribution.
+pub const MAX_IMAGE_BYTES: u64 = 512 << 20;
+
 /// nd_pmem refuses a namespace whose length is not 2 MiB aligned.
 const PMEM_ALIGN: u64 = 2 << 20;
 /// ext2 block size; the block count must be a multiple of `PMEM_ALIGN`.
 const BLOCK: u64 = 4096;
-/// Headroom over the rootfs for inodes and metadata.
-const OVERHEAD_NUM: u64 = 6;
-const OVERHEAD_DEN: u64 = 5;
+/// Headroom over the rootfs for inodes and metadata. The sealed image is the
+/// thing shared across every cell that leases it, so slack here is not free.
+const OVERHEAD_NUM: u64 = 23;
+const OVERHEAD_DEN: u64 = 20;
+const OVERHEAD_FLOOR: u64 = 4 << 20;
 
 /// Fixed identity so the same rootfs always yields the same bytes, and
 /// therefore the same hash and one shared physical copy across cells.
@@ -27,6 +34,65 @@ const IMAGE_UUID: &str = "ce11ce11-0000-4000-8000-000000000001";
 
 pub fn images_dir(root: &Path) -> PathBuf {
     root.join("images")
+}
+
+/// The catalogue of images celln knows how to lend, compiled in so the pins
+/// travel with the binary rather than being fetched at run time.
+const CATALOGUE: &str = include_str!("../tools.toml");
+
+#[derive(serde::Deserialize)]
+pub struct Catalogue {
+    #[serde(default, rename = "image")]
+    pub images: Vec<CatalogueImage>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+pub struct CatalogueImage {
+    pub name: String,
+    /// The moving tag these pins were resolved from. Never used to pull.
+    pub tag: String,
+    pub ref_: String,
+    pub about: String,
+    #[serde(default)]
+    pub default: bool,
+    #[serde(default)]
+    pub provides: Vec<Provide>,
+}
+
+#[derive(serde::Deserialize, Clone)]
+pub struct Provide {
+    pub alias: String,
+    pub exec: String,
+    #[serde(default)]
+    pub interpreter: bool,
+}
+
+pub fn catalogue() -> Catalogue {
+    // `ref` is a keyword, so the field is renamed on the way in.
+    let text = CATALOGUE.replace("\nref =", "\nref_ =");
+    toml::from_str(&text).expect("built-in tool catalogue parses")
+}
+
+/// Resolve a catalogue name to its pinned reference, or pass a digest through.
+pub fn resolve_ref(reference: &str) -> Result<String> {
+    if reference.contains('@') {
+        return Ok(reference.to_owned());
+    }
+    let cat = catalogue();
+    cat.images
+        .iter()
+        .find(|i| i.name == reference)
+        .map(|i| i.ref_.clone())
+        .with_context(|| {
+            format!(
+                "{reference:?} is neither a digest-pinned reference nor a catalogue name ({})",
+                cat.images
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
 }
 
 fn require(tool: &str) -> Result<()> {
@@ -109,7 +175,7 @@ fn dir_bytes(path: &Path) -> u64 {
 }
 
 fn build_ext2(rootfs: &Path, out: &Path) -> Result<()> {
-    let want = dir_bytes(rootfs) * OVERHEAD_NUM / OVERHEAD_DEN + (16 << 20);
+    let want = dir_bytes(rootfs) * OVERHEAD_NUM / OVERHEAD_DEN + OVERHEAD_FLOOR;
     let blocks_per_align = PMEM_ALIGN / BLOCK;
     let blocks = want.div_ceil(BLOCK).div_ceil(blocks_per_align) * blocks_per_align;
 
@@ -158,6 +224,7 @@ pub fn extract(image: &Path, inside: &str) -> Result<Vec<u8>> {
 /// Pull `reference`, flatten it, and admit the resulting filesystem image.
 pub fn pull(reference: &str, root: &Path, o: &Out) -> Result<u8> {
     require("skopeo")?;
+    let reference = &resolve_ref(reference)?;
     let digest = digest_of(reference)?;
     let name = reference.trim_start_matches("docker://");
 
@@ -221,6 +288,16 @@ pub fn pull(reference: &str, root: &Path, o: &Out) -> Result<u8> {
 
     build_ext2(&rootfs, &image_path)?;
     let bytes = std::fs::read(&image_path)?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        let _ = std::fs::remove_file(&image_path);
+        bail!(
+            "{name} builds a {} MiB filesystem, over the {} MiB ceiling. Lend a \
+             tool and its dependencies, not a whole distribution — a slim or \
+             single-purpose image is what this is for.",
+            bytes.len() / (1 << 20),
+            MAX_IMAGE_BYTES / (1 << 20)
+        );
+    }
     let hash = Hash::of(&bytes);
     let mut assayer = assay::Assayer::open(root).context("opening the tool store")?;
     assayer
@@ -270,6 +347,50 @@ pub fn list(root: &Path, o: &Out) -> Result<u8> {
         );
     }
     Ok(crate::exit::OK)
+}
+
+#[cfg(test)]
+mod catalogue {
+    use super::*;
+
+    #[test]
+    fn the_built_in_catalogue_is_pinned_and_consistent() {
+        let cat = super::catalogue();
+        assert!(!cat.images.is_empty());
+        assert!(cat.images.iter().any(|i| i.default), "need a default set");
+
+        let mut names: Vec<&str> = cat.images.iter().map(|i| i.name.as_str()).collect();
+        names.sort_unstable();
+        let n = names.len();
+        names.dedup();
+        assert_eq!(names.len(), n, "catalogue names must be unique");
+
+        for i in &cat.images {
+            // The pin is what a cell is lent; a tag here would be a hole.
+            digest_of(&i.ref_).unwrap_or_else(|e| panic!("{} is not digest-pinned: {e}", i.name));
+            assert!(!i.provides.is_empty(), "{} provides nothing", i.name);
+            for p in &i.provides {
+                assert!(p.alias.starts_with('/'), "{} alias must be a path", i.name);
+                assert!(p.exec.starts_with('/'), "{} exec must be a path", i.name);
+            }
+            // The tag is recorded only so CI can re-resolve it.
+            assert!(
+                i.tag.contains(':'),
+                "{} needs the tag it was pinned from",
+                i.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_catalogue_name_resolves_and_an_unknown_one_does_not() {
+        let r = resolve_ref("python").expect("python is in the catalogue");
+        assert!(r.contains("@sha256:"));
+        // A digest passes straight through, unchanged.
+        let pinned = format!("x@sha256:{}", "a".repeat(64));
+        assert_eq!(resolve_ref(&pinned).unwrap(), pinned);
+        assert!(resolve_ref("not-a-tool").is_err());
+    }
 }
 
 #[cfg(test)]
@@ -533,4 +654,69 @@ mod tests {
         );
         eprintln!("join proven: revocation stopped a running dynamically linked program");
     }
+}
+
+/// Materialise the catalogue images marked `default`, for `celln setup`.
+pub fn pull_defaults(root: &Path, only: Option<&str>, o: &Out) -> Result<usize> {
+    let cat = catalogue();
+    let wanted: Vec<&CatalogueImage> = match only {
+        Some(list) => {
+            let names: Vec<&str> = list.split(',').map(str::trim).collect();
+            for n in &names {
+                if !cat.images.iter().any(|i| i.name == *n) {
+                    bail!("no catalogue image named {n:?}");
+                }
+            }
+            cat.images
+                .iter()
+                .filter(|i| names.contains(&i.name.as_str()))
+                .collect()
+        }
+        None => cat.images.iter().filter(|i| i.default).collect(),
+    };
+    let mut done = 0;
+    for image in wanted {
+        o.note(format!(
+            "  {} {} — {}",
+            dim("·"),
+            bold(&image.name),
+            dim(&image.about)
+        ));
+        match pull(&image.ref_, root, o) {
+            Ok(_) => done += 1,
+            Err(e) => o.warn(format!("{}: {e:#}", image.name)),
+        }
+    }
+    Ok(done)
+}
+
+/// Show the catalogue and which entries are materialised on this host.
+pub fn catalogue_list(root: &Path, o: &Out) -> Result<u8> {
+    let dir = images_dir(root);
+    for image in catalogue().images {
+        let digest = image.ref_.split_once('@').map(|(_, d)| d).unwrap_or("");
+        let path = dir.join(format!("{}.ext2", digest.replace(':', "_")));
+        let ready = path.exists();
+        o.event(
+            "catalogue",
+            serde_json::json!({
+                "name": image.name, "ref": image.ref_, "tag": image.tag,
+                "about": image.about, "default": image.default, "ready": ready,
+                "provides": image.provides.iter().map(|p| p.alias.clone()).collect::<Vec<_>>(),
+            }),
+            format!(
+                "  {} {:<10} {:<52} {}",
+                if ready { green("✔") } else { dim("·") },
+                image.name,
+                image
+                    .provides
+                    .iter()
+                    .map(|p| p.alias.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                dim(if ready { "materialised" } else { "not pulled" })
+            ),
+        );
+    }
+    Ok(crate::exit::OK)
 }

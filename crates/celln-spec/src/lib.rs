@@ -912,6 +912,10 @@ impl Spec {
 /// An image reference must name immutable bytes.
 fn check_digest_pinned(reference: &str) -> Result<(), String> {
     let r = reference.trim_start_matches("docker://");
+    // A bare word is a catalogue name, which celln resolves to a pin it ships.
+    if !r.contains('@') && !r.contains('/') && !r.contains(':') {
+        return Ok(());
+    }
     let Some((name, digest)) = r.split_once('@') else {
         return Err(format!("{reference:?} is a tag, not a digest"));
     };

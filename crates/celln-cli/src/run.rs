@@ -23,10 +23,12 @@ fn source_of(t: &celln_spec::Tool) -> String {
 
 /// The filesystem image backing an image tool.
 fn image_path(t: &celln_spec::Tool, root: &Path) -> Result<std::path::PathBuf> {
-    let image = t
+    let named = t
         .image
         .as_deref()
         .with_context(|| format!("tool {} has no path or image", t.alias))?;
+    let resolved = crate::image::resolve_ref(named)?;
+    let image = resolved.as_str();
     let digest = image
         .trim_start_matches("docker://")
         .split_once('@')
@@ -475,6 +477,14 @@ fn execute(
     );
 
     let report = cell.run().context("running the cell")?;
+    if !report.console.contains("CELLN:pilot=alive") {
+        let tail: Vec<&str> = report.console.lines().rev().take(8).collect();
+        anyhow::bail!(
+            "the cell booted but pilot never started, so nothing ran. \
+             Guest console tail: {}",
+            tail.into_iter().rev().collect::<Vec<_>>().join(" | ")
+        );
+    }
     let mut code = 0u8;
     for line in report.console.lines() {
         let Some(rest) = line.strip_prefix("CELLN:pilot_run_") else {
