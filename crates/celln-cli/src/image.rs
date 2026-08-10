@@ -130,6 +130,31 @@ fn build_ext2(rootfs: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Read one file out of a built image without mounting it.
+///
+/// Pilot re-hashes the bytes it finds at this path inside the cell, so the
+/// manifest has to carry that file's hash, not the whole image's.
+pub fn extract(image: &Path, inside: &str) -> Result<Vec<u8>> {
+    let work = tempfile::tempdir()?;
+    let out = work.path().join("f");
+    let status = Command::new("debugfs")
+        .arg("-R")
+        .arg(format!("dump {inside} {}", out.display()))
+        .arg(image)
+        .output()
+        .context("running debugfs (install e2fsprogs)")?;
+    let bytes = std::fs::read(&out).map_err(|_| {
+        anyhow::anyhow!(
+            "{inside} is not in the image: {}",
+            String::from_utf8_lossy(&status.stderr).trim()
+        )
+    })?;
+    if bytes.is_empty() {
+        bail!("{inside} is empty in the image");
+    }
+    Ok(bytes)
+}
+
 /// Pull `reference`, flatten it, and admit the resulting filesystem image.
 pub fn pull(reference: &str, root: &Path, o: &Out) -> Result<u8> {
     require("skopeo")?;

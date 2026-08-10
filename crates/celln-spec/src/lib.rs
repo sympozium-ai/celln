@@ -15,8 +15,33 @@ pub struct Spec {
     #[serde(default, rename = "tool")]
     pub tools: Vec<Tool>,
 
-    #[serde(default)]
-    pub run: Option<Run>,
+    #[serde(default, rename = "run")]
+    pub run: Option<Runs>,
+}
+
+/// A cell may run one tool or several. `[run]` is one, `[[run]]` is a list;
+/// each invocation is hash-checked and lane-resolved on its own.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Runs {
+    One(Box<Run>),
+    Many(Vec<Run>),
+}
+
+impl Runs {
+    pub fn as_slice(&self) -> Vec<&Run> {
+        match self {
+            Runs::One(r) => vec![r.as_ref()],
+            Runs::Many(v) => v.iter().collect(),
+        }
+    }
+}
+
+impl Spec {
+    /// Every declared invocation, in order.
+    pub fn run_list(&self) -> Vec<&Run> {
+        self.run.as_ref().map(Runs::as_slice).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -818,10 +843,10 @@ impl Spec {
             }
         }
 
-        if let Some(run) = &self.run {
+        for (i, run) in self.run_list().iter().enumerate() {
             if !aliases.contains(&run.exec.as_str()) {
                 out.push(Problem {
-                    field: "run.exec".into(),
+                    field: format!("run[{i}].exec"),
                     message: format!("{:?} is not one of the tools", run.exec),
                     fix: format!(
                         "add a [[tool]] with alias = {:?}, or point run.exec at one of: {}",
@@ -1014,7 +1039,7 @@ mod tests {
         assert_eq!(spec.name, "my-agent");
         assert_eq!(spec.tools.len(), 1);
         assert!(spec.tools[0].interpreter);
-        assert_eq!(spec.run.unwrap().input, Input::Data);
+        assert_eq!(spec.run_list()[0].input, Input::Data);
     }
 
     #[test]
@@ -1050,9 +1075,30 @@ mod tests {
     fn run_exec_must_name_a_declared_tool() {
         let spec = spec_from("name = \"x\"\n[run]\nexec = \"/usr/bin/ghost\"\n");
         let p = spec.problems();
-        assert!(p.iter().any(|p| p.field == "run.exec"), "{p:?}");
+        assert!(p.iter().any(|p| p.field == "run[0].exec"), "{p:?}");
         // and the fix lists what is actually available
         assert!(p.iter().any(|p| p.fix.contains("none declared")));
+    }
+
+    #[test]
+    fn a_cell_can_declare_several_runs() {
+        let one = spec_from("name = \"x\"\n[run]\nexec = \"/a\"\n");
+        assert_eq!(one.run_list().len(), 1);
+
+        let many = spec_from(
+            "name = \"x\"\n\
+             [[run]]\nexec = \"/a\"\nargs = [\"1\"]\n\
+             [[run]]\nexec = \"/b\"\ninput = \"data\"\n",
+        );
+        let runs = many.run_list();
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].exec, "/a");
+        assert_eq!(runs[0].args, ["1"]);
+        assert_eq!(runs[1].input, Input::Data);
+
+        // every invocation is checked, not just the first
+        let bad = spec_from("name = \"x\"\n[[run]]\nexec = \"/ok\"\n[[run]]\nexec = \"/ghost\"\n");
+        assert!(bad.problems().iter().any(|p| p.field == "run[1].exec"));
     }
 
     #[test]

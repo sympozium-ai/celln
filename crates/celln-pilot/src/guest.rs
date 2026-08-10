@@ -171,9 +171,14 @@ fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
         // requires READ_FILE for this static execve. The image is immutable;
         // write access remains limited to the workspace, and egress remains
         // host-authorised by the broker.
+        // READ_DIR as well as READ_FILE: a real tool resolves its own runtime
+        // by walking directories (python locates `encodings` before it can
+        // start), and without it the interpreter dies before running anything.
+        // It grants no reach a READ_FILE on this hierarchy did not already —
+        // inside a chroot the hierarchy is the one image being lent.
         add(
             "/",
-            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
         )?;
         add(workspace, FS_ALL)?;
         if libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0) != 0 {
@@ -304,6 +309,50 @@ struct RunRequest {
     root: Option<String>,
 }
 
+/// One cell can be asked to run several tools. Each invocation is hash-checked
+/// and lane-resolved on its own; sharing a cell grants nothing.
+#[derive(Deserialize)]
+struct RunFile {
+    #[serde(default)]
+    runs: Vec<RunRequest>,
+    #[serde(default)]
+    root: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    alias: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    agent_authored_input: bool,
+}
+
+impl RunFile {
+    fn invocations(self) -> Vec<RunRequest> {
+        if !self.runs.is_empty() {
+            let root = self.root;
+            return self
+                .runs
+                .into_iter()
+                .map(|mut r| {
+                    r.root = r.root.or_else(|| root.clone());
+                    r
+                })
+                .collect();
+        }
+        match (self.path, self.alias) {
+            (Some(path), Some(alias)) => vec![RunRequest {
+                path,
+                alias,
+                args: self.args,
+                agent_authored_input: self.agent_authored_input,
+                root: self.root,
+            }],
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// Mount a small writable tmpfs over `<root>/tmp`.
 ///
 /// The sealed image is read-only *by hardware* — nothing in the guest can
@@ -425,7 +474,7 @@ fn run_requested(manifest: &Manifest) {
     let Ok(bytes) = std::fs::read(RUN_REQUEST) else {
         return; // nothing asked of this cell
     };
-    let req: RunRequest = match serde_json::from_slice(&bytes) {
+    let file: RunFile = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
         Err(e) => {
             report("pilot_run", "unparseable");
@@ -434,6 +483,28 @@ fn run_requested(manifest: &Manifest) {
         }
     };
 
+    // Each sealed root needs its scratch mounted once, not once per tool.
+    let mut mounted: Vec<String> = Vec::new();
+    let invocations = file.invocations();
+    report("pilot_runs", &invocations.len().to_string());
+    for req in invocations {
+        if let Some(root) = req.root.clone() {
+            if !mounted.contains(&root) {
+                match mount_scratch(&root) {
+                    Ok(()) => report("pilot_scratch", "tmpfs"),
+                    Err(e) => {
+                        report("pilot_scratch", "failed");
+                        eprintln!("pilot: tmpfs on {root}/tmp: {e}");
+                    }
+                }
+                mounted.push(root);
+            }
+        }
+        run_one(manifest, &req);
+    }
+}
+
+fn run_one(manifest: &Manifest, req: &RunRequest) {
     // Where pilot itself can read the bytes, which is not where the child will
     // exec them from: the child is chroot'ed, so its `/usr/bin/x` is pilot's
     // `/tools/usr/bin/x`. Hash the bytes here, before any chroot, so the
@@ -467,19 +538,6 @@ fn run_requested(manifest: &Manifest) {
                 &format!("pilot_run_{}", req.alias),
                 &format!("permitted:{lane}"),
             );
-
-            // A sealed image needs one writable path before anyone enters it.
-            // Mounted here, in the parent, so the child never needs the mount
-            // capability the agent lane's seccomp filter denies it.
-            if let Some(root) = &req.root {
-                match mount_scratch(root) {
-                    Ok(()) => report(&format!("pilot_scratch_{}", req.alias), "tmpfs"),
-                    Err(e) => {
-                        report(&format!("pilot_scratch_{}", req.alias), "failed");
-                        eprintln!("pilot: tmpfs on {root}/tmp: {e}");
-                    }
-                }
-            }
 
             // Everything between these markers is the program's own output.
             // The host slices on them so a cell can be piped like any process.
