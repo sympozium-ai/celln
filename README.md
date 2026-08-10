@@ -72,15 +72,15 @@ Or skip the file entirely and let a model write the program, run against a
 lent interpreter:
 
 ```console
-$ celln agent --tool python "print the first 12 fibonacci numbers"
+$ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
   ✔ /usr/bin/python permitted in the agent lane
-0 1 1 2 3 5 8 13 21 34 55 89
+GIF image
 ```
 
-That says **agent** lane, not tool lane, and nobody asked for it. Model-written
-code is agent-authored input handed to an attested interpreter, so it is
-demoted automatically — python keeps its hash and loses its authority, for that
-invocation only.
+Code a model wrote, run on input you have no reason to trust, in a cell with no
+network and nothing writable but `/tmp`. It says **agent** lane, not tool lane,
+and nobody asked for it: model-written code handed to an attested interpreter is
+demoted for that invocation. python keeps its hash and loses its authority.
 
 ## How is this different?
 
@@ -235,13 +235,16 @@ A cell exists to contain code you would rather not run unsealed.
 model writes that tool's language.
 
 ```sh
-$ celln agent --tool python "print the first 12 fibonacci numbers"
+$ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
 ● asking openai for Python to run as /usr/bin/python
-  · replied in 7s, 10 lines
+  · replied in 6s, 8 lines
+  ≡ /usr/bin/python        tier=verified warm — page map, no build
   ✔ /usr/bin/python permitted in the agent lane
+  · cell sealed, 1 tool(s) lent read-only
   ✔ pilot: /usr/bin/python permitted:agent
+  · /usr/bin/python exit=0
 
-0 1 1 2 3 5 8 13 21 34 55 89
+GIF image
 ```
 
 Nobody asked for the **agent** lane there. The model's code is agent-authored
@@ -395,7 +398,6 @@ The full set is published at [sympozium-ai.github.io/celln](https://sympozium-ai
 | Agent lane | [Agent lane](https://sympozium-ai.github.io/celln/agent-lane.html) | `celln agent` walkthrough: forging, attestation, choosing a backend, brokered egress. |
 | Security boundary | [Security](https://sympozium-ai.github.io/celln/security.html) | What's hardware-enforced, what's brokered, and what Celln does not claim. |
 | Vocabulary reference | [docs/NAMES_AND_CONVENTIONS.md](docs/NAMES_AND_CONVENTIONS.md) | Every term (mote, cell, lane, tier, …) in one place. |
-| Dispatcher runtime | [Dispatcher](https://sympozium-ai.github.io/celln/dispatcher.html) | The `celln.dev/v1alpha1` contract a running dispatcher implements. Reference material, not part of the guided path. |
 | Run the hardware checks | `celln verify` and `make bench-kvm` | Reproduce the isolation proofs and spawn-latency measurements on your own KVM host. |
 | Working on Celln itself | [AGENTS.md](AGENTS.md), then `make help` | Contributor setup, the Makefile targets, what CI runs. |
 
