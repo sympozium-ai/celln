@@ -19,7 +19,7 @@ mock = []
 kvm = ["dep:kvm-ioctls", "dep:kvm-bindings", "dep:libc"]
 
 [dependencies]
-celln-manifest = { version = "0.4.0", path = "../celln-manifest" }
+celln-manifest = { version = "0.5.0", path = "../celln-manifest" }
 thiserror.workspace = true
 kvm-ioctls = { workspace = true, optional = true }
 kvm-bindings = { workspace = true, optional = true }
