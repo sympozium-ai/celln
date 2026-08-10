@@ -1,6 +1,44 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Celln concepts — mote, cell, tool lane, agent lane, and the security boundary."><title>Concepts — Celln</title><link rel="stylesheet" href="styles.css"></head><body><nav><div class="shell nav-inner"><a class="brand" href="index.html">cell<i>n</i></a><div class="links"><a href="start.html">Start here</a><a href="tutorial.html">Tutorial</a><a aria-current="page" href="concepts.html">Concepts</a><a href="cli.html">CLI</a><a href="https://github.com/sympozium-ai/celln">GitHub &#8599;</a></div></div></nav>
 <main class="shell"><section class="hero"><div class="eyebrow">Concepts</div><h1>Four ideas, in the order you'll need them.</h1><p class="lede">Celln has a small vocabulary and it means something specific every time. Start with the model, then the two lanes an executable can run in, then the boundary those lanes are enforced by.</p></section>
+<section class="callout"><strong>The really simple version, before any of the jargon:</strong> <strong>tool lane is borrowed, agent lane is born.</strong> A tool-lane program already existed on the host and someone checked it out before you got here — like borrowing a friend's car, you trust it because you know where it's been. An agent-lane program is code the AI just wrote, seconds ago, for this one task — like a stranger who just built a car in your driveway. It might be great. Nobody's checked. So it starts with almost no keys to anything, until it earns more.</section>
+<div class="diagram-wrap" role="img" aria-label="One cell's lifecycle: a mote is sealed into a cell, work runs in either the tool lane or agent lane, then the cell dissolves">
+<svg viewBox="0 0 1060 430" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="pa" markerWidth="9" markerHeight="9" refX="7" refY="3.5" orient="auto"><path d="M0 0L0 7L8 3.5z" fill="#8a9b90"/></marker></defs>
+<style>
+  .db{font-size:16px;font-weight:700;fill:#17221e}
+  .ds{font-size:11.5px;fill:#5c675f}
+  .dline{stroke:#8a9b90;stroke-width:1.6;fill:none;marker-end:url(#pa)}
+  .dbox{stroke-width:1.6;rx:10}
+</style>
+<rect x="20" y="170" width="150" height="90" rx="10" class="dbox" fill="#eef4f1" stroke="#9fb8ac"/>
+<text x="42" y="204" class="db">mote</text><text x="42" y="226" class="ds">warm, in the</text><text x="42" y="241" class="ds">snapshot forest</text>
+
+<rect x="220" y="170" width="170" height="90" rx="10" class="dbox" fill="#eef4f1" stroke="#9fb8ac"/>
+<text x="242" y="204" class="db">cell</text><text x="242" y="226" class="ds">Materialise &mdash;</text><text x="242" y="241" class="ds">CoW-forked, sealed</text>
+
+<rect x="450" y="45" width="230" height="95" rx="10" class="dbox" fill="#e3f7f0" stroke="#5fd0b5"/>
+<text x="472" y="80" class="db">tool lane</text><text x="472" y="102" class="ds">host-attested binary,</text><text x="472" y="117" class="ds">lent in read-only</text>
+
+<rect x="450" y="290" width="230" height="95" rx="10" class="dbox" fill="#fdf0e3" stroke="#e8a15f"/>
+<text x="472" y="325" class="db">agent lane</text><text x="472" y="347" class="ds">model-written code,</text><text x="472" y="362" class="ds">born here, narrow rights</text>
+
+<rect x="740" y="170" width="140" height="90" rx="10" class="dbox" fill="#eef4f1" stroke="#9fb8ac"/>
+<text x="760" y="204" class="db">Work</text><text x="760" y="226" class="ds">rights only</text><text x="760" y="241" class="ds">shrink from here</text>
+
+<rect x="920" y="170" width="120" height="90" rx="10" class="dbox" fill="#fdecea" stroke="#e06c5f"/>
+<text x="938" y="204" class="db">Dissolve</text><text x="938" y="226" class="ds">workspace</text><text x="938" y="241" class="ds">harvested, struck</text>
+
+<path d="M170,215 L216,215" class="dline"/>
+<text x="172" y="205" class="ds">seal, ~1ms</text>
+<path d="M390,205 L446,100" class="dline"/>
+<path d="M390,225 L446,330" class="dline"/>
+<path d="M680,95 L736,195" class="dline"/>
+<path d="M680,335 L736,235" class="dline"/>
+<path d="M880,215 L916,215" class="dline"/>
+</svg>
+</div>
+<p class="dcap">One cell can carry both lanes at once — an attested interpreter <em>and</em> the agent-written file it's fed — the lane is decided per invocation, not once for the whole cell. See <a href="tool-lane.html">the interpreter flag</a> for exactly when that split happens.</p>
 <section class="grid">
 <a class="card" href="model.html"><h2>1. The model &rarr;</h2><p>Mote, cell, assay, warden, pilot — the five terms and the one lifecycle they describe.</p></a>
 <a class="card" href="tool-lane.html"><h2>2. Tool lane &rarr;</h2><p>A host-verified tool &mdash; a digest-pinned image, a static binary, or a brokered capability &mdash; lent read-only into a cell. Where the trust comes from, and how <code>celln run</code> uses it.</p></a>
