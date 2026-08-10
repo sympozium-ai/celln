@@ -6,8 +6,8 @@ mod config;
 mod dispatch;
 mod dispatcher;
 mod host;
+mod image;
 mod node;
-mod oci_spike;
 mod out;
 mod router;
 mod run;
@@ -130,6 +130,10 @@ enum Cmd {
     /// List the tools this host has attested.
     Tools,
 
+    /// Materialise OCI images into sealed tool filesystems.
+    #[command(subcommand)]
+    Image(ImageCmd),
+
     /// Prove the isolation properties on this machine.
     Verify,
 
@@ -205,6 +209,21 @@ enum Cmd {
 
     /// Walk the five-beat proof loop. Works without KVM.
     Demo,
+}
+
+#[derive(Subcommand)]
+enum ImageCmd {
+    /// Pull a digest-pinned image and build its sealed filesystem.
+    ///
+    /// Done ahead of time on purpose: a cell maps bytes that already exist,
+    /// so nothing about spawning a cell waits on a registry.
+    Pull {
+        /// An immutable reference, for example
+        /// `python@sha256:229a2c…`. Tags are refused.
+        reference: String,
+    },
+    /// List materialised images.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -326,6 +345,8 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Run { spec, dry_run } => run::run(spec, &root, *dry_run, o),
         Cmd::Ps { all } => run::ps(&root, *all, o),
         Cmd::Tools => run::tools(&root, o),
+        Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
+        Cmd::Image(ImageCmd::List) => image::list(&root, o),
         Cmd::Verify => run::verify(o),
         Cmd::Demo => run::demo(o),
         Cmd::Agent {

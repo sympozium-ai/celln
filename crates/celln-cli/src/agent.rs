@@ -629,7 +629,7 @@ fn resolve_runtime_home() -> Result<PathBuf> {
     Ok(home.join(".celln/runtime"))
 }
 
-fn which(program: &str) -> Option<PathBuf> {
+pub(crate) fn which(program: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|d| d.join(program))
