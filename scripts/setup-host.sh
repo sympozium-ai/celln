@@ -121,15 +121,36 @@ if [ -z "$DETECTED" ]; then
     echo "    See: https://github.com/sympozium-ai/celln#agent-backends"
 fi
 
-# Run celln setup to save the default backend
+# Run celln setup to save the default backend and install runtime assets.
+#
+# In container mode this is split deliberately. Agent config and runtime assets
+# belong to the host, so setup runs in the host namespace — with --no-tools,
+# because pulling images needs skopeo and the host has no reason to carry one.
+# The images are then materialised from inside this container, which does have
+# skopeo, writing straight into the host's store over the /host mount. They are
+# only files; nothing on the host needs to have produced them.
 if $CONTAINER_MODE; then
-    nsenter --target 1 --mount -- /bin/sh -c "PATH=/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin /usr/local/bin/celln --root /var/lib/celln setup 2>&1" | while IFS= read -r line; do
+    nsenter --target 1 --mount -- /bin/sh -c "PATH=/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin /usr/local/bin/celln --root /var/lib/celln setup --no-tools 2>&1" | while IFS= read -r line; do
         echo "  $line"
+    done
+
+    echo "  · materialising default tool images into ${HOST}/var/lib/celln"
+    mkdir -p "${HOST}/var/lib/celln"
+    for tool in $(/usr/local/bin/celln --root "${HOST}/var/lib/celln" --json image catalogue 2>/dev/null \
+                  | python3 -c 'import sys,json
+for line in sys.stdin:
+    try: e = json.loads(line)
+    except ValueError: continue
+    if e.get("event") == "catalogue" and e.get("default"): print(e["name"])'); do
+        /usr/local/bin/celln --root "${HOST}/var/lib/celln" --no-json image pull "$tool" 2>&1 \
+            | while IFS= read -r line; do echo "    $line"; done
     done
 else
     PATH=/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin /usr/local/bin/celln --root /var/lib/celln setup 2>&1 | while IFS= read -r line; do
         echo "  $line"
     done
+    command -v skopeo >/dev/null 2>&1 || \
+        echo "  ! skopeo is not installed; tool images cannot be materialised on this host"
 fi
 # Celln supports multiple backends. Any of these env vars trigger
 # automatic key-file creation for the dispatcher.

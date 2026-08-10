@@ -18,6 +18,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates python3 \
     build-essential gcc cpio e2fsprogs xz-utils zstd \
+    skopeo \
     && rm -rf /var/lib/apt/lists/*
 
 # Rust toolchain (for forge compile step on the host)
