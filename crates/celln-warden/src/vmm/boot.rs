@@ -86,11 +86,28 @@ pub const EBDA_GPA: u64 = 0x9_fc00;
 /// rather than a silent pass.
 pub const TOOL_WINDOW_GPA: u64 = 0x600_0000; // 96 MiB
 /// Size of that hole. RAM resumes above it.
+///
+/// This 32 MiB cap is the ceiling on how large a sealed tool image can be, and
+/// it is why a cell cannot currently be lent a full dependency closure (a
+/// python OCI rootfs is ~138 MiB). Widening it in place is *not* the fix:
+/// because the window is a hole punched in low RAM, a larger window forces
+/// every cell's `mem_size` above the window end — measured, a 192 MiB window
+/// makes the stock 256 MiB cell fail to boot outright. Lifting this properly
+/// means relocating the window above RAM so its size stops constraining guest
+/// memory.
 pub const TOOL_WINDOW_SIZE: u64 = 32 << 20;
 
 /// Marker at the start of the probe tool, so the guest can tell "I mapped the
 /// sealed page-set" apart from "I mapped something plausible".
-pub const PROBE_MAGIC: &[u8] = b"CELLNTOOL";
+///
+/// Deliberately a fixed-size array rather than a slice. This was `&[u8; 8]`
+/// (`NOUSTOOL`) until the Celln rename made it one byte longer and relaxed the
+/// type to `&[u8]` — which silently turned two compile-checked lengths into
+/// runtime bugs: `probe_tool` panicked copying 9 bytes into 8, and the toolfs
+/// assertion scanned 8-byte windows for a 9-byte needle and never matched.
+/// Keeping the length in the type is what makes a future rename fail to build
+/// instead of failing on hardware.
+pub const PROBE_MAGIC: &[u8; 9] = b"CELLNTOOL";
 /// Offset of the callable function within the probe tool.
 pub const PROBE_FN_OFF: usize = 16;
 /// What that function returns.
@@ -102,7 +119,7 @@ pub const PROBE_FN_RETURNS: u8 = 0x5a;
 /// real process, not merely present.
 pub fn probe_tool() -> Vec<u8> {
     let mut t = vec![0u8; PAGE];
-    t[..8].copy_from_slice(PROBE_MAGIC);
+    t[..PROBE_MAGIC.len()].copy_from_slice(PROBE_MAGIC);
     t[PROBE_FN_OFF..PROBE_FN_OFF + 6].copy_from_slice(&[
         0xb8,
         PROBE_FN_RETURNS,
@@ -1792,7 +1809,7 @@ mod tests {
 
         let image = std::fs::read(&toolfs).unwrap();
         assert!(
-            image.windows(8).any(|w| w == PROBE_MAGIC),
+            image.windows(PROBE_MAGIC.len()).any(|w| w == PROBE_MAGIC),
             "tool filesystem image does not contain the probe magic"
         );
 
