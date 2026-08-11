@@ -11,7 +11,7 @@ description = "Content-addressed store: the on-disk half of assay's distro."
 name = "celln_store"
 
 [dependencies]
-celln-manifest = { version = "0.5.0", path = "../celln-manifest" }
+celln-manifest.workspace = true
 blake3.workspace = true
 thiserror.workspace = true
 

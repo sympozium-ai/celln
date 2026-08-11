@@ -20,6 +20,20 @@ repository = "https://github.com/sympozium-ai/celln"
 
 # Pinned to versions that build on Rust 1.75 (edition 2021).
 [workspace.dependencies]
+# Inter-crate versions track `workspace.package.version` exactly, and
+# `scripts/release.sh --bump` moves them together. A pin left behind at an
+# older version is not a stale nicety: publishing a crate whose sibling has not
+# been published yet then succeeds, and breaks for whoever runs `cargo install`,
+# because cargo resolves a requirement to the newest version satisfying it.
+# Requiring the current version turns that into a publish-time refusal.
+# `scripts/release.sh --check` fails if one of these drifts, and ci runs it.
+celln-manifest = { version = "0.5.4", path = "crates/celln-manifest" }
+celln-spec = { version = "0.5.4", path = "crates/celln-spec" }
+celln-store = { version = "0.5.4", path = "crates/celln-store" }
+celln-assay = { version = "0.5.4", path = "crates/celln-assay" }
+celln-forge = { version = "0.5.4", path = "crates/celln-forge" }
+celln-pilot = { version = "0.5.4", path = "crates/celln-pilot" }
+celln-warden = { version = "0.5.4", path = "crates/celln-warden" }
 blake3 = "=1.5.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

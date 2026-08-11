@@ -28,11 +28,56 @@ demotes the invocation. Authority is decided per call, not per binary.
        alt="Two digest-pinned tool images are lent into a hardware-isolated cell, each sealed read-only at its own mount. A model writes a program, an attested python is asked to run it and that call is demoted to the agent lane, it runs and returns its answer, and the lend is finally taken back as the cell dissolves.">
 </p>
 
+## How is this different?
+
+Most agent runtimes give an agent a machine. Celln gives it a temporary,
+read-only lease on the tools it needs.
+
+[Read the documentation →](https://sympozium-ai.github.io/celln/) ·
+[Guided tutorial →](https://sympozium-ai.github.io/celln/tutorial.html)
+
+> *Software is a service the host provides to the process, not property the
+> machine owns.*
+
+## Install
+
+```sh
+brew install sympozium-ai/celln/celln
+```
+
+Homebrew names the `sympozium-ai/homebrew-celln` repository as the
+`sympozium-ai/celln` tap. The tap and source repository are public. On Linux,
+the formula downloads the static release archive; it does not build Celln with
+Rust locally. Building from source needs the one static target that the local
+build plane uses for generated programs:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+```
+
+Release archives target Linux x86_64; Celln does not publish an ARM64 archive
+while its KVM backend is x86-specific.
+
+<details>
+<summary>or from source</summary>
+
+```sh
+git clone https://github.com/sympozium-ai/celln.git
+cd celln
+cargo build --release -p celln-cli
+./target/release/celln doctor
+```
+</details>
+
+Sealing cells needs Linux with `/dev/kvm`; generated-program cells additionally
+need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `celln` still validates
+specs and runs `celln demo`, and `celln doctor` says which you have.
+
 ## Declaring it instead
 
-That one-liner is the short path. For anything you'd repeat, a spec is the
-durable artifact — reviewable, checked in, and the thing that says what a cell
-may ever be lent. Two tools, from two separate images, in one cell:
+The one-liner at the top is the short path. For anything you'd repeat, a spec is
+the durable artifact — reviewable, checked in, and the thing that says what a
+cell may ever be lent. Two tools, from two separate images, in one cell:
 
 ```toml
 # cell.toml
@@ -89,51 +134,6 @@ $ celln image add node:22-slim
   + added node to ~/.celln/tools.toml
       /usr/bin/node → /usr/local/bin/node
 ```
-
-## How is this different?
-
-Most agent runtimes give an agent a machine. Celln gives it a temporary,
-read-only lease on the tools it needs.
-
-[Read the documentation →](https://sympozium-ai.github.io/celln/) ·
-[Guided tutorial →](https://sympozium-ai.github.io/celln/tutorial.html)
-
-> *Software is a service the host provides to the process, not property the
-> machine owns.*
-
-## Install
-
-```sh
-brew install sympozium-ai/celln/celln
-```
-
-Homebrew names the `sympozium-ai/homebrew-celln` repository as the
-`sympozium-ai/celln` tap. The tap and source repository are public. On Linux,
-the formula downloads the static release archive; it does not build Celln with
-Rust locally. Building from source needs the one static target that the local
-build plane uses for generated programs:
-
-```sh
-rustup target add x86_64-unknown-linux-musl
-```
-
-Release archives target Linux x86_64; Celln does not publish an ARM64 archive
-while its KVM backend is x86-specific.
-
-<details>
-<summary>or from source</summary>
-
-```sh
-git clone https://github.com/sympozium-ai/celln.git
-cd celln
-cargo build --release -p celln-cli
-./target/release/celln doctor
-```
-</details>
-
-Sealing cells needs Linux with `/dev/kvm`; generated-program cells additionally
-need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `celln` still validates
-specs and runs `celln demo`, and `celln doctor` says which you have.
 
 ## Use it
 

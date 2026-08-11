@@ -28,6 +28,10 @@ jobs:
       # this it would only ever be exercised in production. It stubs skopeo.
       - name: the tool-digest refresher still holds
         run: scripts/refresh-tool-digests.sh --self-test
+      # An inter-crate pin left behind at an older version publishes fine and
+      # breaks for whoever installs it, so it must not reach main.
+      - name: crate versions agree
+        run: scripts/release.sh --check
       # The CLI has to work on a machine with no hardware isolation, because
       # most people will meet it there first.
       - name: cli works without /dev/kvm
