@@ -86,7 +86,7 @@ echo "=== Warm-up (single agent) ==="
 WARMUP_START=$(date +%s%3N)
 set +e
 "$CELLN_BIN" agent "${TASKS[0]}" \
-  --agent deepseek \
+  --provider deepseek \
   --model "$MODEL" \
   --timeout "$TIMEOUT" \
   &> "$OUT_DIR/warmup.log"
@@ -112,7 +112,7 @@ for i in $(seq 1 $AGENTS); do
     AGENT_START=$(date +%s%3N)
     set +e
     "$CELLN_BIN" agent "$TASK" \
-      --agent deepseek \
+      --provider deepseek \
       --model "$MODEL" \
       --timeout "$TIMEOUT" \
       > "$LOG_FILE" 2>&1

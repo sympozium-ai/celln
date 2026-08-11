@@ -107,7 +107,7 @@ args = ["--version"]
 ```
 
 ```console
-$ celln setup                       # once: agent CLI + default tool images
+$ celln setup                       # once: provider CLI + default tool images
 $ celln run cell.toml
 ● sealing cell two-tools
   · cell sealed, 2 tool(s) lent read-only
@@ -302,27 +302,28 @@ Otherwise the artifact is `verified`. `assay` checks that a proof names the
 bytes being admitted. This establishes reproducibility on this machine and
 toolchain, not across every environment.
 
-Pick who writes it — `celln agents` shows what this host can use:
+Pick who writes it. A *provider* is an inference backend — who writes the
+program, not what runs in the cell:
 
 ```sh
-$ celln setup                         # finds an agent CLI and materialises the default tool images
-✔ default agent: openai (~/.config/celln/config.toml)
+$ celln setup                            # finds a provider CLI and materialises the default tool images
+✔ default provider: openai (~/.config/celln/config.toml)
 
-$ celln agents
+$ celln providers
   ✔ anthropic  claude-opus-5          claude
   ✔ openai     (cli default)          codex  default
   ✔ local      qwen2.5-coder          ollama
 
-$ celln agents --set-default anthropic # change the saved default
-$ celln agent --agent openai "…"       # override it for one invocation
-$ CELLN_AGENT=local celln agent "…"    # override it for one shell command
+$ celln providers --set-default anthropic # change the saved default
+$ celln agent --provider openai "…"       # override it for one invocation
+$ CELLN_PROVIDER=local celln agent "…"    # override it for one shell command
 ```
 
 The saved setting is credential-free:
 
 ```toml
 # ~/.config/celln/config.toml (or $XDG_CONFIG_HOME/celln/config.toml)
-[agent]
+[provider]
 default = "openai"
 ```
 

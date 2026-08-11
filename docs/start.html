@@ -4,7 +4,7 @@
 <article>
 <div class="eyebrow">Getting started</div>
 <h1>Five commands, about five minutes.</h1>
-<p>Celln drives an agent CLI you already trust — Codex, Claude, or Ollama. A KVM Linux host adds hardware-isolated cells for declared tools; generated programs use Celln's separate agent boundary. Each command below checks a specific property and explains the expected result.</p>
+<p>Celln drives a provider CLI you already trust — Codex, Claude, or Ollama. A KVM Linux host adds hardware-isolated cells for declared tools; generated programs use Celln's separate agent boundary. Each command below checks a specific property and explains the expected result.</p>
 
 <h2 id="install">Install</h2>
 <pre>brew install sympozium-ai/celln/celln
@@ -27,8 +27,8 @@ rustup target add x86_64-unknown-linux-musl</pre>
 
 <h2 id="setup">Connect an agent</h2>
 <pre>celln setup     # discovers logged-in codex, claude, or ollama
-celln agents    # shows available backends</pre>
-<p><code>celln setup</code> saves your preferred backend to a credential-free config file. Change it later with <code>celln agents --set-default anthropic</code>, or override a single request with <code>--agent</code> or <code>CELLN_AGENT</code>.</p>
+celln providers # shows available inference providers</pre>
+<p><code>celln setup</code> saves your preferred provider to a credential-free config file. Change it later with <code>celln providers --set-default anthropic</code>, or override a single request with <code>--provider</code> or <code>CELLN_PROVIDER</code>.</p>
 
 <h2 id="spec">Write and check a spec</h2>
 <p>A spec is what your agent may be lent, and what it intends to run. Nothing not listed here can execute inside the cell.</p>
@@ -142,7 +142,7 @@ task = "write a python program that prints a 5x5 multiplication table"</pre>
 <p>A cell has <strong>no network at all</strong>, so a task that genuinely needs one will build and then do nothing — <code>celln agent</code> warns up front when a task looks like that. Declare exactly where it may reach before the model is called:</p>
 <pre>celln agent --allow-host example.com "crawl https://example.com/&hellip;"</pre>
 <p>Pick who writes it, and see what this host can use:</p>
-<pre>celln agents
+<pre>celln providers
 celln agent --agent openai "&hellip;"        # or --agent local
 celln agent --show-source "&hellip;"         # print the program it wrote</pre>
 <p>Backends are subprocess adapters over CLIs you have already authenticated — <code>celln</code> never reads, stores, or forwards a key.</p>
@@ -158,7 +158,7 @@ celln spec check agent.toml | jq -e 'select(.event=="run_plan") | .lane=="data"'
 # just the proofs
 celln verify | jq -c 'select(.event=="proof")'</pre>
 <p>Diagnostics and warnings go to <strong>stderr</strong>, so <code>| jq</code> never chokes on prose. <code>--json</code> and <code>--no-json</code> force the mode when you want it explicit.</p>
-<p>Three more worth knowing: <code>celln demo</code> is the five-beat proof loop and runs anywhere — laptop, container, CI runner with no virtualization at all. <code>celln tools</code> lists what this host has attested so far. <code>celln agents</code> lists which model backends this host can use.</p>
+<p>Three more worth knowing: <code>celln demo</code> is the five-beat proof loop and runs anywhere — laptop, container, CI runner with no virtualization at all. <code>celln tools</code> lists what this host has attested so far. <code>celln providers</code> lists which model backends this host can use.</p>
 
 <h2 id="troubleshooting">When something says it cannot</h2>
 <table>
@@ -167,7 +167,7 @@ celln verify | jq -c 'select(.event=="proof")'</pre>
 <tr><td><code>/dev/kvm not present</code></td><td>Virtualization off in firmware, or a VM without nested virt</td></tr>
 <tr><td><code>/dev/kvm present but not readable</code></td><td><code>sudo usermod -aG kvm $USER</code>, then log out and in</td></tr>
 <tr><td><code>no readable /boot/vmlinuz-*</code></td><td>Only affects the boot-path demos, not <code>celln run</code></td></tr>
-<tr><td><code>anthropic needs `claude` on PATH</code></td><td><code>celln agent</code> drives a CLI you have already logged into — see <code>celln agents</code></td></tr>
+<tr><td><code>anthropic needs `claude` on PATH</code></td><td><code>celln agent</code> drives a CLI you have already logged into — see <code>celln providers</code></td></tr>
 <tr><td><code>reported error_during_execution</code></td><td>The model CLI failed, not Celln. Some prompts trigger it every time; rewording helps more than retrying</td></tr>
 </tbody>
 </table>

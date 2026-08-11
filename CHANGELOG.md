@@ -22,6 +22,23 @@
 
 ### Changed
 
+- **`celln agents` is now `celln providers`.** Those entries are inference
+  backends — who *writes* a program — while "agent" already names what runs
+  inside a cell and the lane it runs in. One word for both invited exactly the
+  wrong reading of `celln agents`, which lists neither agents nor anything to
+  do with the agent lane. `celln agent` is unchanged, and so is the `[agent]`
+  spec block.
+
+  Nothing breaks. `celln agents` still works as a hidden alias, `--agent`
+  remains an alias for `--provider`, and `CELLN_AGENT` is still read
+  (`CELLN_PROVIDER` takes precedence). The saved default moves from `[agent]`
+  to `[provider]` in `config.toml`; an existing file is still read, and is
+  rewritten to `[provider]` the next time the default is set.
+
+  `--json` event names are deliberately unchanged — they are a machine
+  contract, and renaming them belongs with a deliberate decision about
+  consumers rather than riding along with a wording fix.
+
 - The README's spec example moved below installation, so the page reads
   one-liner, what it is, install, then the durable form.
 

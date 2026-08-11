@@ -27,17 +27,17 @@
 
 <h2 id="backend">Choosing who writes it</h2>
 <p>Backends are subprocess adapters over CLIs you've already authenticated — <code>claude</code>, <code>codex</code>, <code>ollama</code> — or a plain API call for DeepSeek. Celln never reads, stores, or forwards a credential; it stays on the host, and cells have no ambient network, so it never enters the guest either.</p>
-<pre>$ celln setup                         # finds an agent CLI and materialises the default tool images
-&#10004; default agent: openai (~/.config/celln/config.toml)
+<pre>$ celln setup                         # finds a provider CLI and materialises the default tool images
+&#10004; default provider: openai (~/.config/celln/config.toml)
 
-$ celln agents
+$ celln providers
   &#10004; anthropic  claude-opus-5          claude
   &#10004; openai     (cli default)          codex  default
   &#10004; local      qwen2.5-coder          ollama
 
-$ celln agents --set-default anthropic # change the saved default
+$ celln providers --set-default anthropic # change the saved default
 $ celln agent --agent openai "&hellip;"       # override it for one invocation
-$ CELLN_AGENT=local celln agent "&hellip;"    # override it for one shell command</pre>
+$ CELLN_PROVIDER=local celln agent "&hellip;"    # override it for one shell command</pre>
 <p><code>celln agent "&hellip;"</code> is for work that generates code to run — that's the path Celln seals and governs. <code>--tool python</code> runs the model's program with a lent interpreter instead of forging a Rust binary.</p>
 
 <h2 id="egress">Network is brokered, never ambient</h2>

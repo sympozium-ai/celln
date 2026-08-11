@@ -283,13 +283,17 @@ impl Backend {
 
 /// List the built-in backends and whether this host can use them.
 /// Mirrors `celln tools`: the question is always "what is available here".
-pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
+pub fn providers(set_default: Option<Backend>, o: &Out) -> Result<u8> {
     if let Some(backend) = set_default {
         let path = crate::config::set_default_agent(backend.saved_name())?;
         o.event(
             "agent_default",
             serde_json::json!({"backend": backend.saved_name(), "config": path}),
-            format!("✔ default agent: {} ({})", backend.label(), path.display()),
+            format!(
+                "✔ default provider: {} ({})",
+                backend.label(),
+                path.display()
+            ),
         );
         match backend.validate() {
             Ok(()) => {
@@ -382,7 +386,7 @@ pub fn setup(
                         Some(backend)
                     }
                     None => {
-                        o.warn("no agent CLI found — install and authenticate codex, claude, deepseek, or ollama, then rerun `celln setup`");
+                        o.warn("no provider CLI found — install and authenticate codex, claude, deepseek, or ollama, then rerun `celln setup`");
                         None
                     }
                 }
@@ -395,7 +399,11 @@ pub fn setup(
         o.event(
             "agent_default",
             serde_json::json!({"backend": backend.saved_name(), "config": path}),
-            format!("✔ default agent: {} ({})", backend.label(), path.display()),
+            format!(
+                "✔ default provider: {} ({})",
+                backend.label(),
+                path.display()
+            ),
         );
 
         // Validate credentials so the user finds out now, not on first use.
@@ -464,7 +472,7 @@ fn interactive_backend_select(o: &Out) -> Result<Option<Backend>> {
     let available: Vec<Backend> = all.iter().copied().filter(|b| b.available()).collect();
 
     if available.is_empty() {
-        o.say("no agent CLI found on this host.");
+        o.say("no provider CLI found on this host.");
         o.say("");
         o.say("install one of these and rerun `celln setup`:");
         for b in &all {
@@ -488,7 +496,7 @@ fn interactive_backend_select(o: &Out) -> Result<Option<Backend>> {
         return Ok(Some(b));
     }
 
-    o.say("available agent backends:");
+    o.say("available providers:");
     o.say("");
     for (i, b) in available.iter().enumerate() {
         let model = b.default_model().unwrap_or("(cli default)");
@@ -505,7 +513,7 @@ fn interactive_backend_select(o: &Out) -> Result<Option<Backend>> {
     loop {
         // Print the prompt directly — no Out wrapper, because we need
         // the prompt to appear even when the terminal is being watched.
-        eprint!("select default agent [1-{}]: ", available.len());
+        eprint!("select default provider [1-{}]: ", available.len());
         let _ = std::io::stderr().flush();
 
         let mut input = String::new();
@@ -698,7 +706,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
     let model = model.or_else(|| backend.default_model());
     if !backend.available() {
         o.warn(format!(
-            "{} needs `{}` on PATH — see `celln agents`",
+            "{} needs `{}` on PATH — see `celln providers`",
             backend.label(),
             backend.program()
         ));
@@ -898,13 +906,18 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     if let Some(backend) = requested {
         return Ok(Some(backend));
     }
-    if let Some(name) = std::env::var_os("CELLN_AGENT").or_else(|| std::env::var_os("CELL_AGENT")) {
+    // `CELLN_AGENT` predates the name and still works; it selects a provider,
+    // which is who writes the program, not what runs in the cell.
+    let from_env = ["CELLN_PROVIDER", "CELLN_AGENT", "CELL_AGENT"]
+        .iter()
+        .find_map(|var| std::env::var_os(var).map(|value| (*var, value)));
+    if let Some((var, name)) = from_env {
         let name = name.to_string_lossy();
         return match Backend::from_saved_name(&name) {
             Some(backend) => Ok(Some(backend)),
             None => {
                 o.warn(format!(
-                    "CELLN_AGENT={name:?} is not one of: openai, anthropic, deepseek, local"
+                    "{var}={name:?} is not one of: openai, anthropic, deepseek, local"
                 ));
                 Ok(None)
             }
@@ -929,7 +942,7 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
             Ok(Some(backend))
         }
         None => {
-            o.warn("no agent CLI found — install and authenticate codex, claude, or ollama, then run `celln setup`");
+            o.warn("no provider CLI found — install and authenticate codex, claude, or ollama, then run `celln setup`");
             Ok(None)
         }
     }
@@ -1502,7 +1515,7 @@ pub(crate) fn write_program(
 
     let backend = match select_backend(None, o)? {
         Some(b) => b,
-        None => bail!("no agent CLI configured; run `celln setup`"),
+        None => bail!("no provider CLI configured; run `celln setup`"),
     };
     let model = backend.default_model();
     o.event(
