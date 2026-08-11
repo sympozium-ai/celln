@@ -16,9 +16,9 @@ name = "assay"
 path = "src/lib.rs"
 
 [dependencies]
-celln-manifest = { version = "0.5.0", path = "../celln-manifest" }
-celln-forge = { version = "0.5.0", path = "../celln-forge" }
-celln-store = { version = "0.5.0", path = "../celln-store" }
+celln-manifest.workspace = true
+celln-forge.workspace = true
+celln-store.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

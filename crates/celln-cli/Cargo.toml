@@ -13,13 +13,13 @@ name = "celln"
 path = "src/main.rs"
 
 [dependencies]
-celln-spec = { version = "0.5.0", path = "../celln-spec" }
-celln-manifest = { version = "0.5.0", path = "../celln-manifest" }
-celln-store = { version = "0.5.0", path = "../celln-store" }
-celln-assay = { version = "0.5.0", path = "../celln-assay" }
-celln-forge = { version = "0.5.0", path = "../celln-forge" }
-celln-pilot = { version = "0.5.0", path = "../celln-pilot" }
-celln-warden = { version = "0.5.0", path = "../celln-warden" }
+celln-spec.workspace = true
+celln-manifest.workspace = true
+celln-store.workspace = true
+celln-assay.workspace = true
+celln-forge.workspace = true
+celln-pilot.workspace = true
+celln-warden.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -38,4 +38,4 @@ libc.workspace = true
 # else `celln` still validates specs and runs the mock proof, and says so rather
 # than pretending.
 [target.'cfg(target_os = "linux")'.dependencies]
-celln-warden = { version = "0.5.0", path = "../celln-warden", features = ["kvm"] }
+celln-warden = { workspace = true, features = ["kvm"] }

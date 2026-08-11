@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Publishing a crate before a sibling it depends on silently shipped a
+  version that cannot be installed.** Cargo resolves a requirement to the
+  newest version satisfying it, so a dependent published ahead of its
+  dependency does not fail — it succeeds, and breaks for whoever runs
+  `cargo install`. Every inter-crate requirement was pinned at `0.5.0` while
+  the workspace was four releases past it, which made this reachable at any
+  time; 0.5.4 came within one command of it, with `celln-cli` calling a
+  `celln-spec` function that published `celln-spec` did not have.
+
+  Requirements now track the workspace version exactly, so a missing sibling
+  is a publish-time refusal instead. They live in `[workspace.dependencies]`
+  so there is one place to move them, `scripts/release.sh --bump` moves them
+  with the version, and `--check` fails if one drifts — which ci runs on
+  every PR. `--publish` derives its order from the dependency graph and waits
+  for each crate to reach the index before the next.
+
+### Changed
+
+- The README's spec example moved below installation, so the page reads
+  one-liner, what it is, install, then the durable form.
+
 ## 0.5.4
 
 ### Changed
