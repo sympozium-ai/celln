@@ -1013,31 +1013,40 @@ fn check_digest_pinned(reference: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Names that are interpreters in practice. Used only to warn.
+/// Interpreters in practice, and the flag each takes code on.
+///
+/// Being on this list is what makes a tool usable with `celln agent --tool`:
+/// a model writes a program, and it has to reach the interpreter somehow. A
+/// compiler is not here — `go` wants a file, not a flag — and neither is a
+/// language whose flag we have not confirmed.
+///
+/// This only ever guesses defaults. A catalogue entry that states its own
+/// `language` and `code_flag` is believed over anything here.
+pub fn interpreter_hint(alias: &str) -> Option<(&'static str, &'static str)> {
+    let base = alias.rsplit('/').next().unwrap_or(alias);
+    let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    Some(match base {
+        "python" | "python3" => ("Python", "-c"),
+        "sh" | "dash" => ("POSIX shell", "-c"),
+        "bash" => ("Bash", "-c"),
+        "zsh" => ("Zsh", "-c"),
+        "node" | "nodejs" => ("JavaScript", "-e"),
+        "deno" => ("TypeScript", "eval"),
+        "bun" => ("JavaScript", "-e"),
+        "ruby" => ("Ruby", "-e"),
+        "perl" => ("Perl", "-e"),
+        "php" => ("PHP", "-r"),
+        "lua" => ("Lua", "-e"),
+        "tclsh" => ("Tcl", "-c"),
+        "awk" => ("Awk", "--source"),
+        _ => return None,
+    })
+}
+
 /// Names that are interpreters in practice. Used to warn, and to guess when
 /// adding a tool to the catalogue.
 pub fn looks_like_interpreter(alias: &str) -> bool {
-    let base = alias.rsplit('/').next().unwrap_or(alias);
-    let base = base.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
-    matches!(
-        base,
-        "python"
-            | "python3"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "dash"
-            | "node"
-            | "nodejs"
-            | "ruby"
-            | "perl"
-            | "lua"
-            | "php"
-            | "deno"
-            | "bun"
-            | "awk"
-            | "tclsh"
-    )
+    interpreter_hint(alias).is_some()
 }
 
 /// `256MiB`, `1GiB`, `512M`, `1073741824`.
@@ -1121,6 +1130,27 @@ mod tests {
 
     fn spec_from(s: &str) -> Spec {
         toml::from_str(s).expect("parses")
+    }
+
+    #[test]
+    fn a_recognised_interpreter_says_how_it_takes_code() {
+        // `celln image add` writes these into a catalogue entry, and
+        // `agent --tool` refuses any entry missing them. A name on this list
+        // without a flag would add a tool that cannot then be used.
+        for alias in ["/usr/bin/python3.12", "/bin/sh", "/usr/local/bin/node"] {
+            let (language, flag) = interpreter_hint(alias).expect("recognised");
+            assert!(!language.is_empty() && !flag.is_empty(), "{alias}");
+            assert!(looks_like_interpreter(alias), "{alias}");
+        }
+    }
+
+    #[test]
+    fn a_compiler_is_not_an_interpreter() {
+        // A model's program reaches an interpreter on a flag; `go` and `gcc`
+        // want a file, so `--tool go` should fail rather than guess a flag.
+        for alias in ["/usr/bin/go", "/usr/bin/gcc", "/usr/bin/curl"] {
+            assert!(interpreter_hint(alias).is_none(), "{alias}");
+        }
     }
 
     #[test]

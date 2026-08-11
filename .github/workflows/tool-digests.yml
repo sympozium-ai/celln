@@ -23,37 +23,18 @@ jobs:
       - name: Install skopeo
         run: sudo apt-get update && sudo apt-get install -y skopeo
 
+      # The refresher is a script rather than a block of YAML so it can be run
+      # and tested off a registry; `--self-test` covers it on every PR in ci.
+      - name: Check the refresher itself
+        run: scripts/refresh-tool-digests.sh --self-test
+
       - name: Re-resolve each pinned tag
         id: refresh
-        run: |
-          set -euo pipefail
-          f=crates/celln-cli/tools.toml
-          changed=0
-          # `tag` is the moving reference the pin was taken from; `ref` is the pin.
-          tags=$(grep -oP '^tag = "\K[^"]+' "$f")
-          for tag in $tags; do
-            digest=$(skopeo inspect --format '{{.Digest}}' "docker://$tag")
-            name=${tag%%:*}
-            old=$(grep -A1 "^tag = \"$tag\"$" "$f" | grep -oP '^ref = "\K[^"]+' || true)
-            new="$name@$digest"
-            if [ "$old" != "$new" ]; then
-              echo "  $tag: $old -> $new"
-              python3 - "$f" "$tag" "$new" <<'PY'
-          import sys, re
-          path, tag, new = sys.argv[1:4]
-          s = open(path).read()
-          s = re.sub(rf'(^tag = "{re.escape(tag)}"$\n)ref = "[^"]+"',
-                     rf'\g<1>ref = "{new}"', s, flags=re.M)
-          open(path, "w").write(s)
-          PY
-              changed=1
-            fi
-          done
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+        run: scripts/refresh-tool-digests.sh
 
       - name: Verify the catalogue still parses and the workspace builds
         if: steps.refresh.outputs.changed == '1'
-        run: cargo test -p celln-cli --lib catalogue
+        run: cargo test -p celln-cli catalogue
 
       - name: Open a pull request
         if: steps.refresh.outputs.changed == '1'

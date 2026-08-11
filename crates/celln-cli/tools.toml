@@ -23,6 +23,11 @@
 #    is the pin that is actually pulled. `default = true` means `celln setup`
 #    materialises it, so reserve that for tools most people want.
 #
+#    A tool that can run a program a model wrote also declares `language` and
+#    `code_flag` — the flag it takes that program on. That is what makes it
+#    usable with `celln agent --tool NAME`; without both, that command refuses.
+#    A compiler has no such flag and should not claim one.
+#
 # 4. Find the exec paths *inside* the image, without mounting it:
 #
 #      celln image pull NAME@sha256:...

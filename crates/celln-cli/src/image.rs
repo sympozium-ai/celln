@@ -97,7 +97,14 @@ pub fn interpreter_for(name: &str, root: &Path) -> Result<(CatalogueImage, Provi
         .find(|i| i.name == name)
         .with_context(|| {
             format!(
-                "no tool named {name:?}. Available: {}",
+                "no tool named {name:?}. Available: {}\n\n  \
+                 Add it from an image that carries it:\n    \
+                 celln image add {name}:<tag>\n\n  \
+                 If it is published under a different name, map it:\n    \
+                 celln image add <image>:<tag> --name {name}\n\n  \
+                 The tag is resolved to a digest and pinned, so what a cell is \
+                 lent\n  cannot change afterwards. `celln image catalogue` \
+                 lists everything\n  this host knows how to lend.",
                 cat.images
                     .iter()
                     .map(|i| i.name.as_str())
@@ -111,9 +118,20 @@ pub fn interpreter_for(name: &str, root: &Path) -> Result<(CatalogueImage, Provi
         .find(|p| p.language.is_some() && p.code_flag.is_some())
         .cloned()
         .with_context(|| {
+            let aliases: Vec<&str> = image.provides.iter().map(|p| p.alias.as_str()).collect();
             format!(
-                "{name} cannot run model-written code: no entry declares a \
-                 language and code_flag. Add them to its catalogue entry."
+                "{name} is available, but nothing it provides ({}) can run \
+                 model-written code.\n\n  \
+                 `--tool` needs an interpreter that accepts a program on a \
+                 flag, because\n  that is how a model's code reaches it. Plenty \
+                 of useful tools do not: a\n  compiler wants a source file, \
+                 curl wants a URL. Lend those from a spec,\n  which says what \
+                 to run:\n    celln image spec {name} > cell.toml\n\n  \
+                 If {name} does take code on a flag, declare which in {}:\n    \
+                 {{ alias = \"…\", exec = \"…\", interpreter = true, language = \
+                 \"…\", code_flag = \"-c\" }}",
+                aliases.join(", "),
+                user_catalogue_path(root).display(),
             )
         })?;
     Ok((image.clone(), provide))
@@ -1065,11 +1083,18 @@ pub fn add(
         "\n[[image]]\nname = \"{name}\"\ntag = \"{tag}\"\nref = \"{pinned}\"\n\
          about = \"added with `celln image add`\"\ndefault = {make_default}\nprovides = [\n"
     );
+    // A recognised interpreter records how it takes code, so `agent --tool`
+    // works straight after adding it rather than failing on a missing field.
     for (alias, exec) in &provides {
-        let interp = celln_spec::looks_like_interpreter(alias);
-        entry.push_str(&format!(
-            "  {{ alias = \"{alias}\", exec = \"{exec}\", interpreter = {interp} }},\n"
-        ));
+        match celln_spec::interpreter_hint(alias) {
+            Some((language, code_flag)) => entry.push_str(&format!(
+                "  {{ alias = \"{alias}\", exec = \"{exec}\", interpreter = true, \
+                 language = \"{language}\", code_flag = \"{code_flag}\" }},\n"
+            )),
+            None => entry.push_str(&format!(
+                "  {{ alias = \"{alias}\", exec = \"{exec}\", interpreter = false }},\n"
+            )),
+        }
     }
     entry.push_str("]\n");
 

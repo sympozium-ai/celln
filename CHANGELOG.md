@@ -1,5 +1,49 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Naming a tool the host does not have now says how to get one.** `celln
+  agent --tool go` listed what was available and stopped there, which tells
+  you the command failed but not what to do about it. It now gives the
+  `celln image add` line, including the `--name` form for when a tool is
+  published under a different name than you call it — `go` lives in `golang`.
+
+- **Being told a tool cannot run model-written code now says why, and what
+  to use instead.** The old message named a missing `language` and
+  `code_flag` without explaining that `--tool` needs an interpreter taking a
+  program on a flag, which plenty of useful tools have no reason to do. It
+  now points at `celln image spec NAME`, which is how those are lent.
+
+### Fixed
+
+- **`celln image add` produced entries that `celln agent --tool` then
+  refused.** It wrote `interpreter` but never `language` or `code_flag`, so
+  adding an interpreter and immediately using it failed on a field the user
+  was never told to write. A recognised interpreter now records the flag it
+  takes code on, and adding one is enough to use it.
+
+- **The weekly digest refresh could not have worked.** It exists so a moved
+  upstream tag arrives as a reviewable PR rather than silently at pull time,
+  and it had never run its own body — it is gated on a digest having moved,
+  and none had. Three faults, which only made sense to fix together:
+
+  - Its one verification ran `cargo test -p celln-cli --lib catalogue`, and
+    `celln-cli` has no library target, so the command errors instead of
+    running the tests. That step failing is the only thing that would have
+    stopped the next two from reaching a pull request.
+  - A registry answering with something that is not a digest — an empty
+    string on a hiccup, `unauthorized` on a rate limit — was pinned verbatim,
+    producing `ref = "docker.io/library/python@"`. No pull can satisfy that.
+  - Stripping the tag off a reference ate the port of any registry that has
+    one, turning `reg:5000/team/tool:v1` into `reg`.
+
+  The refresher is now `scripts/refresh-tool-digests.sh` rather than a block
+  of YAML, so it can be run and tested without a registry. Its `--self-test`
+  stubs skopeo and covers all three, and runs in ci on every PR — the point
+  being that weekly-only code is otherwise tested exclusively in production.
+
 ## 0.5.3
 
 ### Fixed
