@@ -24,6 +24,10 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
+      # The digest refresher runs weekly against a live registry, so without
+      # this it would only ever be exercised in production. It stubs skopeo.
+      - name: the tool-digest refresher still holds
+        run: scripts/refresh-tool-digests.sh --self-test
       # The CLI has to work on a machine with no hardware isolation, because
       # most people will meet it there first.
       - name: cli works without /dev/kvm

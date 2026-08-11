@@ -24,12 +24,25 @@
   was never told to write. A recognised interpreter now records the flag it
   takes code on, and adding one is enough to use it.
 
-- **The weekly digest refresh would have failed before opening its PR.** Its
-  one verification step ran `cargo test -p celln-cli --lib catalogue`, and
-  `celln-cli` has no library target, so the command errors rather than
-  running the tests. It is scheduled weekly and had not yet found a moved
-  digest, so it had never run the step — the pins would simply have stopped
-  being refreshed, quietly, which is what the workflow exists to prevent.
+- **The weekly digest refresh could not have worked.** It exists so a moved
+  upstream tag arrives as a reviewable PR rather than silently at pull time,
+  and it had never run its own body — it is gated on a digest having moved,
+  and none had. Three faults, which only made sense to fix together:
+
+  - Its one verification ran `cargo test -p celln-cli --lib catalogue`, and
+    `celln-cli` has no library target, so the command errors instead of
+    running the tests. That step failing is the only thing that would have
+    stopped the next two from reaching a pull request.
+  - A registry answering with something that is not a digest — an empty
+    string on a hiccup, `unauthorized` on a rate limit — was pinned verbatim,
+    producing `ref = "docker.io/library/python@"`. No pull can satisfy that.
+  - Stripping the tag off a reference ate the port of any registry that has
+    one, turning `reg:5000/team/tool:v1` into `reg`.
+
+  The refresher is now `scripts/refresh-tool-digests.sh` rather than a block
+  of YAML, so it can be run and tested without a registry. Its `--self-test`
+  stubs skopeo and covers all three, and runs in ci on every PR — the point
+  being that weekly-only code is otherwise tested exclusively in production.
 
 ## 0.5.3
 
