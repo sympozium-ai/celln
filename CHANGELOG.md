@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Naming a tool the host does not have now says how to get one.** `celln
+  agent --tool go` listed what was available and stopped there, which tells
+  you the command failed but not what to do about it. It now gives the
+  `celln image add` line, including the `--name` form for when a tool is
+  published under a different name than you call it — `go` lives in `golang`.
+
+- **Being told a tool cannot run model-written code now says why, and what
+  to use instead.** The old message named a missing `language` and
+  `code_flag` without explaining that `--tool` needs an interpreter taking a
+  program on a flag, which plenty of useful tools have no reason to do. It
+  now points at `celln image spec NAME`, which is how those are lent.
+
+### Fixed
+
+- **`celln image add` produced entries that `celln agent --tool` then
+  refused.** It wrote `interpreter` but never `language` or `code_flag`, so
+  adding an interpreter and immediately using it failed on a field the user
+  was never told to write. A recognised interpreter now records the flag it
+  takes code on, and adding one is enough to use it.
+
+- **The weekly digest refresh would have failed before opening its PR.** Its
+  one verification step ran `cargo test -p celln-cli --lib catalogue`, and
+  `celln-cli` has no library target, so the command errors rather than
+  running the tests. It is scheduled weekly and had not yet found a moved
+  digest, so it had never run the step — the pins would simply have stopped
+  being refreshed, quietly, which is what the workflow exists to prevent.
+
 ## 0.5.3
 
 ### Fixed
