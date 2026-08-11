@@ -15,7 +15,7 @@ export PATH="$root/tests/fixtures:$PATH"
 export CELLN_CONFIG="$work/config.toml"
 export CELLN_ROOT="$work/state"
 
-"$bin" setup --agent openai --no-tools --no-json | grep -F 'default agent: openai'
+"$bin" setup --provider openai --no-tools --no-json | grep -F 'default provider: openai'
 "$bin" agent 'Print the acceptance marker.' --no-json | tee "$work/agent.out"
 grep -F 'pilot: /agent/program permitted:agent' "$work/agent.out"
 grep -F 'CELLN_ACCEPTANCE_OK' "$work/agent.out"

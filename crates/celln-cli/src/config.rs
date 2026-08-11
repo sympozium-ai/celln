@@ -1,18 +1,29 @@
-//! Small, user-owned configuration. Credentials stay with the agent CLI.
+//! Small, user-owned configuration. Credentials stay with the provider CLI.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Written as `[provider]`. `[agent]` is the name this had before providers
+/// were distinguished from the agent lane, and is still read so an existing
+/// config keeps working; whichever is present wins, `[provider]` first.
 #[derive(Default, Deserialize, Serialize)]
 struct Config {
     #[serde(default)]
-    agent: Agent,
+    provider: Provider,
+    #[serde(default, skip_serializing_if = "Provider::is_empty")]
+    agent: Provider,
 }
 
 #[derive(Default, Deserialize, Serialize)]
-struct Agent {
+struct Provider {
     default: Option<String>,
+}
+
+impl Provider {
+    fn is_empty(&self) -> bool {
+        self.default.is_none()
+    }
 }
 
 /// `CELLN_CONFIG` is useful for automation; otherwise follow XDG on every host.
@@ -53,7 +64,7 @@ pub fn default_agent() -> Result<Option<String>> {
         .with_context(|| format!("reading config {}", path.display()))?;
     let config: Config =
         toml::from_str(&source).with_context(|| format!("parsing config {}", path.display()))?;
-    Ok(config.agent.default)
+    Ok(config.provider.default.or(config.agent.default))
 }
 
 pub fn set_default_agent(agent: &str) -> Result<PathBuf> {
@@ -63,9 +74,10 @@ pub fn set_default_agent(agent: &str) -> Result<PathBuf> {
             .with_context(|| format!("creating config directory {}", parent.display()))?;
     }
     let config = Config {
-        agent: Agent {
+        provider: Provider {
             default: Some(agent.to_owned()),
         },
+        agent: Provider::default(),
     };
     let source = toml::to_string_pretty(&config).context("encoding celln config")?;
     std::fs::write(&path, source).with_context(|| format!("writing config {}", path.display()))?;
@@ -76,15 +88,39 @@ pub fn set_default_agent(agent: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
+    fn chosen(text: &str) -> Option<String> {
+        let config: Config = toml::from_str(text).unwrap();
+        config.provider.default.or(config.agent.default)
+    }
+
     #[test]
-    fn config_round_trip_preserves_the_agent_choice() {
+    fn config_round_trip_preserves_the_provider_choice() {
         let config = Config {
-            agent: Agent {
+            provider: Provider {
                 default: Some("openai".into()),
             },
+            agent: Provider::default(),
         };
         let text = toml::to_string_pretty(&config).unwrap();
-        let decoded: Config = toml::from_str(&text).unwrap();
-        assert_eq!(decoded.agent.default.as_deref(), Some("openai"));
+        assert!(text.contains("[provider]"), "{text}");
+        assert!(!text.contains("[agent]"), "{text}");
+        assert_eq!(chosen(&text).as_deref(), Some("openai"));
+    }
+
+    #[test]
+    fn a_config_written_before_the_rename_still_selects_its_provider() {
+        // Anyone who ran `celln setup` on 0.5.4 or earlier has this on disk.
+        assert_eq!(
+            chosen("[agent]\ndefault = \"anthropic\"\n").as_deref(),
+            Some("anthropic")
+        );
+    }
+
+    #[test]
+    fn provider_wins_when_a_config_carries_both() {
+        assert_eq!(
+            chosen("[provider]\ndefault = \"local\"\n[agent]\ndefault = \"openai\"\n").as_deref(),
+            Some("local")
+        );
     }
 }

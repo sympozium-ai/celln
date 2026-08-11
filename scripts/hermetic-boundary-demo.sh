@@ -62,7 +62,7 @@ for i in "${!TASKS[@]}"; do
   START=$(date +%s%3N)
   set +e
   "$CELLN_BIN" agent "$TASK" \
-    --agent deepseek \
+    --provider deepseek \
     --model "$MODEL" \
     --timeout "$TIMEOUT" \
     > "$LOG" 2>&1
