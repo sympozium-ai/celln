@@ -23,6 +23,7 @@
 use celln_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
 use pilot::{exec, ExecOutcome};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::io;
 use std::os::unix::process::CommandExt;
@@ -299,6 +300,11 @@ struct RunRequest {
     alias: String,
     #[serde(default)]
     args: Vec<String>,
+    /// The reviewed invocation environment. Pilot clears its own environment
+    /// before applying this map, so host-side ambient variables never leak
+    /// into a cell.
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     /// Whether the input this invocation is being fed was written by the agent.
     #[serde(default)]
     agent_authored_input: bool,
@@ -324,6 +330,8 @@ struct RunFile {
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
     agent_authored_input: bool,
 }
 
@@ -345,6 +353,7 @@ impl RunFile {
                 path,
                 alias,
                 args: self.args,
+                env: self.env,
                 agent_authored_input: self.agent_authored_input,
                 root: self.root,
             }],
@@ -543,6 +552,11 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
             // The host slices on them so a cell can be piped like any process.
             println!("CELLN:out-begin");
             let mut command = std::process::Command::new(&req.path);
+            // `init` gives pilot an empty environment today, but make the
+            // boundary explicit here: future pilot variables must not become
+            // implicit workload authority.
+            command.env_clear();
+            command.envs(&req.env);
             command.args(&req.args);
             let root = req.root.clone();
             let exec_path = req.path.clone();

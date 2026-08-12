@@ -1,6 +1,7 @@
 //! Strict TOML cell specifications.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// A cell specification.
@@ -35,6 +36,11 @@ pub struct AgentTask {
     pub prompt: Option<String>,
     /// Which declared tool receives the provider's program or arguments.
     pub exec: String,
+    /// Host-authored environment for the invocation. This is an explicit
+    /// capability in the reviewed spec; Celln never inherits the host's
+    /// ambient environment into a cell.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A cell may run one tool or several. `[run]` is one, `[[run]]` is a list;
@@ -161,6 +167,11 @@ pub struct Run {
     /// which demotes an interpreter.
     #[serde(default)]
     pub input: Input,
+    /// Host-authored environment for this invocation. It is passed exactly as
+    /// declared after the sealed image is entered; no host environment is
+    /// inherited.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Where the input to an exec came from.
@@ -901,6 +912,7 @@ impl Spec {
         }
 
         if let Some(a) = &self.agent {
+            validate_env("agent.env", &a.env, &mut out);
             // A non-interpreter exec is legal: the model is then asked for that
             // tool's *arguments* rather than a program, which is the only way a
             // tool like curl can be driven from a task description. The trust
@@ -926,6 +938,7 @@ impl Spec {
         }
 
         for (i, run) in self.run_list().iter().enumerate() {
+            validate_env(&format!("run[{i}].env"), &run.env, &mut out);
             if !aliases.contains(&run.exec.as_str()) {
                 out.push(Problem {
                     field: format!("run[{i}].exec"),
@@ -1011,6 +1024,27 @@ impl Spec {
     /// Guest memory in bytes.
     pub fn memory_bytes(&self) -> u64 {
         parse_size(&self.cell.memory).unwrap_or(256 << 20)
+    }
+}
+
+/// Environment entries become `execve` strings. Reject the characters that
+/// cannot be represented there while the spec is still reviewable TOML.
+fn validate_env(field: &str, env: &BTreeMap<String, String>, out: &mut Vec<Problem>) {
+    for (name, value) in env {
+        if name.is_empty() || name.contains('=') || name.contains('\0') {
+            out.push(Problem {
+                field: format!("{field}.{name}"),
+                message: "is not a valid environment variable name".into(),
+                fix: "use a non-empty name containing neither '=' nor a NUL byte".into(),
+            });
+        }
+        if value.contains('\0') {
+            out.push(Problem {
+                field: format!("{field}.{name}"),
+                message: "contains a NUL byte".into(),
+                fix: "environment values cannot contain NUL bytes".into(),
+            });
+        }
     }
 }
 
@@ -1291,6 +1325,24 @@ mod tests {
         // every invocation is checked, not just the first
         let bad = spec_from("name = \"x\"\n[[run]]\nexec = \"/ok\"\n[[run]]\nexec = \"/ghost\"\n");
         assert!(bad.problems().iter().any(|p| p.field == "run[1].exec"));
+    }
+
+    #[test]
+    fn invocation_environment_is_explicit_and_validated() {
+        let spec = spec_from(
+            "name = \"x\"\n[run]\nexec = \"/a\"\n[run.env]\nGOROOT = \"/usr/local/go\"\n",
+        );
+        assert_eq!(
+            spec.run_list()[0].env.get("GOROOT"),
+            Some(&"/usr/local/go".into())
+        );
+
+        let bad =
+            spec_from("name = \"x\"\n[run]\nexec = \"/a\"\n[run.env]\n\"BAD=NAME\" = \"x\"\n");
+        assert!(bad
+            .problems()
+            .iter()
+            .any(|p| p.field == "run[0].env.BAD=NAME"));
     }
 
     #[test]

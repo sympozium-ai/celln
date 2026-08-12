@@ -1755,6 +1755,7 @@ pub fn with_tool(
         agent: Some(celln_spec::AgentTask {
             prompt: Some(task.to_string()),
             exec: provide.alias.clone(),
+            env: Default::default(),
         }),
     };
     crate::run::run_spec(spec, root, Path::new("<agent --tool>"), false, None, o)

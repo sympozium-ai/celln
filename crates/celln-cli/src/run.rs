@@ -270,6 +270,7 @@ pub fn run_spec(
                 exec: agent.exec.clone(),
                 args: vec![source.flag, source.code],
                 input: celln_spec::Input::Data,
+                env: agent.env.clone(),
             }
         } else {
             let args = crate::agent::write_args(&agent.exec, &prompt, o)?;
@@ -277,6 +278,7 @@ pub fn run_spec(
                 exec: agent.exec.clone(),
                 args,
                 input: celln_spec::Input::Data,
+                env: agent.env.clone(),
             }
         })));
     } else if prompt.is_some() {
@@ -501,6 +503,7 @@ fn execute(
             "path": path,
             "alias": tool.alias,
             "args": r.args,
+            "env": r.env,
             "agent_authored_input": r.input == celln_spec::Input::Data,
             "root": root_dir,
         }));

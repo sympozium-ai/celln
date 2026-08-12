@@ -118,6 +118,11 @@ prompt = "write a python program that prints a 5x5 multiplication table"</pre>
  5 10 15 20 25</pre>
 <p><code>celln agent analyst.toml --prompt "&hellip;"</code> overrides the prompt in the file, so one reviewed spec can serve many jobs. You never had to ask for the agent lane there: model-written code is agent-authored input handed to a tool marked <code>interpreter = true</code>, so it is demoted for that invocation. python keeps its hash and loses its authority.</p>
 <p><code>agent.exec</code> has to name a declared tool. An interpreter receives provider-written code and is demoted to the agent lane; any other tool receives provider-written arguments and keeps its tool lane. A cell either declares runs or asks a provider for one &mdash; never both.</p>
+<p>Cells inherit no host environment. Set runtime variables explicitly with
+<code>[agent.env]</code>, or with <code>[run.env]</code> for a pinned invocation.
+For example, a trimmed Go image needs <code>GOROOT = "/usr/local/go"</code>.
+The declared map is the complete workload environment, so it is reviewable and
+cannot accidentally carry host credentials into the cell.</p>
 
 <h3>Without a file</h3>
 <pre>$ celln agent --tool python "print the first 12 fibonacci numbers"

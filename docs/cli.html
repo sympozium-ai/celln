@@ -30,12 +30,12 @@
 celln agent --tool python "write fizz buzz"
 celln agent agent.toml
 celln agent agent.toml --prompt "review this input"</pre>
-      <p>An inline prompt creates a policy in memory. A <code>.toml</code> argument uses the spec's declared tools, memory, and hosts; <code>--prompt</code> overrides <code>[agent].prompt</code>. The legacy spellings <code>--task</code> and <code>[agent].task</code> are still accepted.</p>
+      <p>An inline prompt creates a policy in memory. A <code>.toml</code> argument uses the spec's declared tools, memory, hosts, and optional <code>[agent.env]</code>; <code>--prompt</code> overrides <code>[agent].prompt</code>. The legacy spellings <code>--task</code> and <code>[agent].task</code> are still accepted.</p>
 
       <h2 id="cell">Run a pinned invocation</h2>
       <pre>celln image spec curl &gt; curl.toml
 celln run curl.toml</pre>
-      <p><code>celln run</code> is the model-free path for a reviewed <code>[run]</code> invocation with exact, declared arguments. A spec uses either <code>[run]</code> or <code>[agent]</code>, never both.</p>
+      <p><code>celln run</code> is the model-free path for a reviewed <code>[run]</code> invocation with exact, declared arguments and optional <code>[run.env]</code>. The declared environment is complete: Celln never inherits the host environment. A spec uses either <code>[run]</code> or <code>[agent]</code>, never both.</p>
 
       <h2 id="inspect">Inspect and reproduce</h2>
       <pre>celln verify          # guest attempts the hardware boundary checks

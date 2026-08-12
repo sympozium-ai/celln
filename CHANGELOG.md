@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.7
+
+### Added
+
+- **Runs can declare an explicit environment.** `[run.env]` and `[agent.env]`
+  pass a reviewed map to the workload after it enters its sealed image. The
+  map is the complete workload environment: Celln never inherits ambient host
+  variables into a cell.
+
+### Fixed
+
+- **OCI tools that require runtime environment variables can now run.** A
+  trimmed Go distribution, for example, can declare
+  `GOROOT = "/usr/local/go"` rather than failing because pilot previously
+  launched every workload with an empty environment.
+
 ## 0.5.6
 
 ### Added

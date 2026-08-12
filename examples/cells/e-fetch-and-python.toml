@@ -1,0 +1,33 @@
+# Two unlike tools in one cell: web access remains the narrow `fetch`
+# capability, while Python runs from its independently sealed image.
+#
+# The runs are ordered, but their stdout is deliberately not a data channel.
+# A future tool-call ABI must make any such hand-off explicit and tainted.
+
+name = "fetch-and-python"
+
+[cell]
+memory = "512MiB"
+allow_hosts = ["example.com"]
+
+[[tool]]
+alias = "/fetch"
+builtin = "fetch"
+
+[[tool]]
+alias = "/usr/bin/python"
+image = "python"
+exec = "/usr/local/bin/python3.12"
+interpreter = true
+
+[[run]]
+exec = "/fetch"
+args = ["https://example.com"]
+
+[[run]]
+exec = "/usr/bin/python"
+input = "data"
+args = ["-c", "import os; print('python environment:', os.environ['CELLN_EXPLICIT_ENV'])"]
+
+[run.env]
+CELLN_EXPLICIT_ENV = "sealed-and-declared"
