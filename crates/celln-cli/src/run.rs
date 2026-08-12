@@ -229,12 +229,12 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
 }
 
 /// `celln run` — seal a cell from a spec and drive its lifecycle.
-pub fn run(path: &Path, root: &Path, dry_run: bool, task: Option<&str>, o: &Out) -> Result<u8> {
+pub fn run(path: &Path, root: &Path, dry_run: bool, prompt: Option<&str>, o: &Out) -> Result<u8> {
     let spec = match load(path, o) {
         Ok(s) => s,
         Err(code) => return Ok(code),
     };
-    run_spec(spec, root, Path::new(path), dry_run, task, o)
+    run_spec(spec, root, Path::new(path), dry_run, prompt, o)
 }
 
 /// The body of a run, over a spec that may have been built rather than parsed.
@@ -247,15 +247,17 @@ pub fn run_spec(
     root: &Path,
     origin: &Path,
     dry_run: bool,
-    task: Option<&str>,
+    prompt: Option<&str>,
     o: &Out,
 ) -> Result<u8> {
     // A model fills in the code or arguments; the spec keeps the policy.
     if let Some(agent) = spec.agent.clone() {
-        let task = task
+        let prompt = prompt
             .map(str::to_owned)
-            .or_else(|| agent.task.clone())
-            .context("this cell asks a model for its program but no task was given; pass --task")?;
+            .or_else(|| agent.prompt.clone())
+            .context(
+                "this cell asks a provider what to run but no prompt was given; pass --prompt",
+            )?;
         let is_interpreter = spec
             .tools
             .iter()
@@ -263,20 +265,22 @@ pub fn run_spec(
             .map(|t| t.interpreter)
             .unwrap_or(false);
         spec.run = Some(celln_spec::Runs::One(Box::new(if is_interpreter {
-            let source = crate::agent::write_program(&spec, &agent.exec, &task, root, o)?;
+            let source = crate::agent::write_program(&spec, &agent.exec, &prompt, root, o)?;
             celln_spec::Run {
                 exec: agent.exec.clone(),
                 args: vec![source.flag, source.code],
                 input: celln_spec::Input::Data,
             }
         } else {
-            let args = crate::agent::write_args(&agent.exec, &task, o)?;
+            let args = crate::agent::write_args(&agent.exec, &prompt, o)?;
             celln_spec::Run {
                 exec: agent.exec.clone(),
                 args,
                 input: celln_spec::Input::Data,
             }
         })));
+    } else if prompt.is_some() {
+        anyhow::bail!("--prompt requires an [agent] block; [run] pins the invocation and does not use a provider")
     }
     for w in spec.warnings() {
         o.warn(format!("{}: {}", w.field, w.message));

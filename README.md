@@ -86,14 +86,14 @@ celln doctor
 celln setup
 celln image spec python > agent.toml
 celln spec check agent.toml
-celln run agent.toml
+celln agent agent.toml
 celln verify
 ```
 
-`celln image spec` creates the policy file; `celln run` seals and runs it.
-For a task-driven spec, put the provider prompt in `[agent].task` or pass it
-with `celln run agent.toml --task "…"`. Use `[run]` instead when you want to
-pin exact arguments with no provider involved.
+`celln image spec` creates the policy file; `celln agent agent.toml` seals and
+runs its provider-defined work. Put the provider prompt in `[agent].prompt`,
+or override it with `celln agent agent.toml --prompt "…"`. Use `celln run` and
+`[run]` when you want to pin exact arguments with no provider involved.
 
 The [tutorial](https://sympozium-ai.github.io/celln/tutorial.html) is the
 worked path. The [CLI reference](https://sympozium-ai.github.io/celln/cli.html)
@@ -121,7 +121,7 @@ warns when provider-authored arguments would retain that authority.
 > `allow_hosts` entry and use the brokered `builtin = "fetch"` capability instead.
 
 **For repeatable or reviewed runs, use a spec.** Scaffold one from the
-catalogue — it comes ready with an `[agent]` block, so the task is declared
+catalogue — it comes ready with an `[agent]` block, so the prompt is declared
 alongside the policy:
 
 ```sh
@@ -142,19 +142,19 @@ alias = "/usr/bin/curl"
 image = "curl"
 exec  = "/usr/bin/curl"
 
-# Let a model write what to run — fill in the task, then `celln run`.
+# Let a provider write what to run — fill in the prompt, then `celln agent cell.toml`.
 [agent]
 exec = "/usr/bin/curl"
-task = "print the installed curl and TLS versions"
+prompt = "print the installed curl and TLS versions"
 ```
 
 The scaffold is the same shape for every tool: `celln image spec python` also
 produces an `[agent]` block, differing only in which alias it names. The
-`task` is the agent prompt. It can live in the spec, as above, or be supplied
-per run — omit `task` from the file and use:
+`prompt` is the agent prompt. It can live in the spec, as above, or be supplied
+per run — omit `prompt` from the file and use:
 
 ```sh
-celln run cell.toml --task "print the installed curl and TLS versions"
+celln agent cell.toml --prompt "print the installed curl and TLS versions"
 ```
 
 `[run]` is the alternative for a pinned, model-free invocation; use it instead
@@ -190,7 +190,7 @@ Human-readable on a terminal, NDJSON the moment it is not. No flag needed,
 though `--json` and `--no-json` force it either way.
 
 ```sh
-celln run agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
+celln agent agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
 celln ps -a --json | jq -r "select(.status==\"failed\") | .id"
 celln doctor --json | jq -e '.can_seal_cells // empty' >/dev/null && echo "can seal"
 ```

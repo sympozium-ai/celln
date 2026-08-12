@@ -137,10 +137,10 @@ $ celln run cell.toml
   &middot; /usr/bin/busybox exit=0</pre>
 
 <h3>When the guess needs help</h3>
-<p>By default celln exposes binaries named after the image, which is what "add node" usually means. Name them yourself when it is not:</p>
-<pre>$ celln image add node:22-slim \
-    --tool /usr/bin/node=/usr/local/bin/node \
-    --tool /usr/bin/npm=/usr/local/bin/npm</pre>
+<p>By default celln exposes binaries named after the image. When that is not the binary you need, <code>--tool</code> takes <code>alias=path-in-image</code>: the left side is the stable name used in a spec; the right side is the executable inside the image. For Go:</p>
+<pre>$ celln image add golang:1.27rc2-alpine3.24 \
+    --tool /usr/bin/go=/usr/local/go/bin/go
+$ celln image spec golang &gt; go.toml</pre>
 <p>If nothing obvious matches, celln refuses and lists what it found rather than guessing. Anything whose name looks like an interpreter is marked as one, so the laundering ban applies to it — check that, because an unmarked interpreter keeps full tool-lane authority even when fed agent-written code.</p>
 <p><code>--default</code> makes <code>celln setup</code> materialise it too. <code>celln image remove &lt;name&gt;</code> drops it.</p>
 

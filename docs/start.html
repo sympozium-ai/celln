@@ -104,8 +104,8 @@ interpreter = true
 
 [agent]
 exec = "/usr/bin/python"       # which declared tool interprets the answer
-task = "write a python program that prints a 5x5 multiplication table"</pre>
-<pre>$ celln run analyst.toml
+prompt = "write a python program that prints a 5x5 multiplication table"</pre>
+<pre>$ celln agent analyst.toml
 &#9679; asking openai for Python to run as /usr/bin/python
   &middot; replied in 7s, 10 lines
   &#10004; /usr/bin/python permitted in the <b>agent</b> lane
@@ -116,8 +116,8 @@ task = "write a python program that prints a 5x5 multiplication table"</pre>
  3  6  9 12 15
  4  8 12 16 20
  5 10 15 20 25</pre>
-<p><code>--task "&hellip;"</code> overrides the task in the file, so one reviewed spec can serve many jobs. You never had to ask for the agent lane there: model-written code is agent-authored input handed to a tool marked <code>interpreter = true</code>, so it is demoted for that invocation. python keeps its hash and loses its authority.</p>
-<p><code>agent.exec</code> has to name a declared tool marked <code>interpreter = true</code>, and a cell either declares runs or asks for one &mdash; never both.</p>
+<p><code>celln agent analyst.toml --prompt "&hellip;"</code> overrides the prompt in the file, so one reviewed spec can serve many jobs. You never had to ask for the agent lane there: model-written code is agent-authored input handed to a tool marked <code>interpreter = true</code>, so it is demoted for that invocation. python keeps its hash and loses its authority.</p>
+<p><code>agent.exec</code> has to name a declared tool. An interpreter receives provider-written code and is demoted to the agent lane; any other tool receives provider-written arguments and keeps its tool lane. A cell either declares runs or asks a provider for one &mdash; never both.</p>
 
 <h3>Without a file</h3>
 <pre>$ celln agent --tool python "print the first 12 fibonacci numbers"

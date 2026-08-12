@@ -1753,7 +1753,7 @@ pub fn with_tool(
         }],
         run: None,
         agent: Some(celln_spec::AgentTask {
-            task: Some(task.to_string()),
+            prompt: Some(task.to_string()),
             exec: provide.alias.clone(),
         }),
     };

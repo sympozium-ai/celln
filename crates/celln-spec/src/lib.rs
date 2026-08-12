@@ -27,10 +27,13 @@ pub struct Spec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTask {
-    /// What the program should do. `--task` overrides it.
-    #[serde(default)]
-    pub task: Option<String>,
-    /// Which declared tool interprets the answer. Must be an interpreter.
+    /// What the provider should make the cell do. `--prompt` overrides it.
+    ///
+    /// `task` was the original spelling. Read it so existing reviewed specs
+    /// remain valid, but always emit and document the clearer `prompt` name.
+    #[serde(default, alias = "task")]
+    pub prompt: Option<String>,
+    /// Which declared tool receives the provider's program or arguments.
     pub exec: String,
 }
 
@@ -1134,10 +1137,10 @@ interpreter = true             # see below
 # launder agent-authored code into full authority. Mark interpreters as
 # interpreters.
 
-# Let a model write the program. `--task` on the command line overrides `task` here.
+# Let a provider write what to run. `--prompt` overrides `prompt` here.
 [agent]
 exec = "/usr/bin/python"
-task = "<describe what you want it to do>"
+prompt = "<describe what you want it to do>"
 "#;
 
 #[cfg(test)]
@@ -1175,14 +1178,28 @@ mod tests {
         assert_eq!(spec.name, "my-agent");
         assert_eq!(spec.tools.len(), 1);
         assert!(spec.tools[0].interpreter);
-        // The starter spec asks a model for what to run rather than hard-coding
-        // an invocation, so the task is the one blank a newcomer fills in.
+        // The starter spec asks a provider for what to run rather than hard-coding
+        // an invocation, so the prompt is the one blank a newcomer fills in.
         let agent = spec.agent.as_ref().expect("template declares [agent]");
         assert_eq!(agent.exec, spec.tools[0].alias);
-        assert!(agent.task.is_some());
+        assert!(agent.prompt.is_some());
         assert!(
             spec.run_list().is_empty(),
             "the model supplies the run; a static one would shadow it"
+        );
+    }
+
+    #[test]
+    fn a_legacy_agent_task_is_read_as_a_prompt() {
+        let spec = spec_from(
+            "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
+             interpreter = true\n[agent]\nexec = \"/p\"\ntask = \"hello\"\n",
+        );
+        assert_eq!(
+            spec.agent
+                .as_ref()
+                .and_then(|agent| agent.prompt.as_deref()),
+            Some("hello")
         );
     }
 

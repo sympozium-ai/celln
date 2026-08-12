@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.6
+
+### Added
+
+- **`celln agent` now runs a declared agent spec directly.**
+  `celln agent cell.toml --prompt "…"` keeps the spec's policy and overrides
+  its prompt, while `celln agent "…"` remains the inline form. This makes the
+  agent entry point consistent whether policy lives in a file or in memory.
+
+### Changed
+
+- **Provider input is now called a prompt.** New specs use `[agent].prompt`
+  and the CLI uses `--prompt`, which says what the value is instead of calling
+  the same thing a task in the cell. Existing `[agent].task` and `--task`
+  spellings remain accepted for compatibility.
+
+### Fixed
+
+- **A provider prompt could be silently ignored for a static spec.** Passing
+  `--task` to a `[run]` spec used to execute its pinned empty or static argv;
+  it now refuses and explains that a prompt requires `[agent]`.
+
 ## 0.5.5
 
 ### Added
