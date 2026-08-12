@@ -22,7 +22,7 @@ rustup target add x86_64-unknown-linux-musl</pre>
   &#10004; cargo          /home/you/.cargo/bin/cargo
 
 &#10004; this machine can seal real, hardware-isolated cells.</pre>
-<p>Every failed check prints what to do about it. Sealing cells needs Linux with <code>/dev/kvm</code>; generated-program cells additionally need <code>gcc</code>, <code>cpio</code>, and <code>e2fsprogs</code>. Everywhere else <code>celln</code> still validates specs and runs <code>celln demo</code>. Exit code <code>3</code> means "cannot seal cells," so a script can branch without parsing text:</p>
+<p>Every failed check prints what to do about it. Sealing cells needs Linux with <code>/dev/kvm</code>; generated-program cells additionally need <code>gcc</code>, <code>cpio</code>, and <code>e2fsprogs</code>. Everywhere else <code>celln</code> still validates specs. Exit code <code>3</code> means "cannot seal cells," so a script can branch without parsing text:</p>
 <pre>celln doctor -q || echo "no hardware isolation here"</pre>
 
 <h2 id="setup">Connect an agent</h2>
@@ -61,7 +61,7 @@ run
 <p>A typo is an error, not a shrug — <code>teir = "forged"</code> is rejected rather than ignored, because a silently-dropped tier means a cell quietly running at the wrong trust level.</p>
 
 <h2 id="run">Seal a cell</h2>
-<pre>$ celln run agent.toml
+<pre>$ celln agent agent.toml
 &#9679; sealing cell code-reviewer
   + /usr/bin/python        tier=verified cold &mdash; verified now, forged queued
   &middot; microVM sealed, phase=Materialise
@@ -155,7 +155,7 @@ celln agent --show-source "&hellip;"         # print the program it wrote</pre>
 <h2 id="piping">Piping</h2>
 <p>Human on a terminal, NDJSON when not. No flag required:</p>
 <pre># which tools went cold?
-celln run agent.toml | jq -r 'select(.event=="tool_resolved" and .warm==false) | .alias'
+celln agent agent.toml | jq -r 'select(.event=="tool_resolved" and .warm==false) | .alias'
 
 # fail a build if a spec would run something in the tool lane
 celln spec check agent.toml | jq -e 'select(.event=="run_plan") | .lane=="data"'
@@ -163,7 +163,7 @@ celln spec check agent.toml | jq -e 'select(.event=="run_plan") | .lane=="data"'
 # just the proofs
 celln verify | jq -c 'select(.event=="proof")'</pre>
 <p>Diagnostics and warnings go to <strong>stderr</strong>, so <code>| jq</code> never chokes on prose. <code>--json</code> and <code>--no-json</code> force the mode when you want it explicit.</p>
-<p>Three more worth knowing: <code>celln demo</code> is the five-beat proof loop and runs anywhere — laptop, container, CI runner with no virtualization at all. <code>celln tools</code> lists what this host has attested so far. <code>celln agents</code> lists which model backends this host can use.</p>
+<p>Two more worth knowing: <code>celln image catalogue</code> lists available tools and whether their sealed images are materialised. <code>celln agents</code> lists which model backends this host can use.</p>
 
 <h2 id="troubleshooting">When something says it cannot</h2>
 <table>

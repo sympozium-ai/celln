@@ -1240,7 +1240,7 @@ pub fn scaffold(name: &str, root: &Path, o: &Out) -> Result<u8> {
         .or_else(|| image.provides.first());
     if let Some(p) = agent_exec {
         s.push_str(&format!(
-            "\n# Let a model write what to run — fill in the task, then `celln run`.\n\
+            "\n# Let a model write what to run — fill in the task, then `celln agent`.\n\
              [agent]\nexec = \"{}\"\ntask = \"<describe what you want it to do>\"\n",
             p.alias
         ));

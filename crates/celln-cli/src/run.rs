@@ -228,13 +228,34 @@ pub fn check(path: &Path, o: &Out) -> Result<u8> {
     Ok(exit::OK)
 }
 
-/// `celln run` — seal a cell from a spec and drive its lifecycle.
-pub fn run(path: &Path, root: &Path, dry_run: bool, prompt: Option<&str>, o: &Out) -> Result<u8> {
+/// `celln run` — seal a reviewed, model-free invocation from a spec.
+pub fn run(path: &Path, root: &Path, dry_run: bool, o: &Out) -> Result<u8> {
     let spec = match load(path, o) {
         Ok(s) => s,
         Err(code) => return Ok(code),
     };
-    run_spec(spec, root, Path::new(path), dry_run, prompt, o)
+    if spec.agent.is_some() {
+        anyhow::bail!(
+            "this spec has an [agent] block; use `celln agent {}`",
+            path.display()
+        );
+    }
+    run_spec(spec, root, Path::new(path), dry_run, None, o)
+}
+
+/// `celln agent SPEC` — have a provider fill the spec's declared policy.
+pub fn agent(path: &Path, root: &Path, prompt: Option<&str>, o: &Out) -> Result<u8> {
+    let spec = match load(path, o) {
+        Ok(s) => s,
+        Err(code) => return Ok(code),
+    };
+    if spec.agent.is_none() {
+        anyhow::bail!(
+            "this spec has a [run] block; use `celln run {}`",
+            path.display()
+        );
+    }
+    run_spec(spec, root, Path::new(path), false, prompt, o)
 }
 
 /// The body of a run, over a spec that may have been built rather than parsed.
@@ -801,68 +822,6 @@ fn ellipsis(s: &str, max: usize) -> String {
     format!("{}…", &s[..end])
 }
 
-/// `celln tools` — what this host has attested.
-pub fn tools(root: &Path, o: &Out) -> Result<u8> {
-    let assayer =
-        Assayer::open(root).with_context(|| format!("opening store {}", root.display()))?;
-    let m = assayer.manifest();
-    if m.is_empty() {
-        o.note(dim(
-            "no tools attested yet — `celln run` admits them as it resolves, \
-             or `celln prewarm` admits the usual suspects up front",
-        ));
-        return Ok(exit::OK);
-    }
-    o.event(
-        "store",
-        serde_json::json!({"root": root, "entries": m.len(), "signed": m.verify_standin()}),
-        format!(
-            "{} {} tool(s) in {}  {}",
-            bold("store"),
-            m.len(),
-            root.display(),
-            dim(if m.verify_standin() {
-                "manifest signed"
-            } else {
-                "manifest UNSIGNED"
-            })
-        ),
-    );
-
-    let mut entries: Vec<_> = m.entries().collect();
-    entries.sort_by(|a, b| a.alias.cmp(&b.alias));
-    for e in entries {
-        let revoked = m.is_revoked(&e.hash);
-        o.event(
-            "tool_entry",
-            serde_json::json!({
-                "alias": e.alias,
-                "hash": e.hash.to_string(),
-                "tier": e.tier.to_string(),
-                "interpreter": e.interpreter,
-                "author": e.author.to_string(),
-                "revoked": revoked,
-            }),
-            format!(
-                "  {} {:<32} tier={:<8} {}{}",
-                if revoked { red("✘") } else { green("✔") },
-                e.alias,
-                e.tier.to_string(),
-                dim(&format!(
-                    "author={} interpreter={}",
-                    e.author, e.interpreter
-                )),
-                if revoked {
-                    format!("  {}", red("REVOKED"))
-                } else {
-                    String::new()
-                }
-            ),
-        );
-    }
-    Ok(exit::OK)
-}
-
 /// `celln verify` — prove the isolation on this machine, right now.
 #[cfg(target_os = "linux")]
 pub fn verify(o: &Out) -> Result<u8> {
@@ -968,90 +927,4 @@ pub fn verify(o: &Out) -> Result<u8> {
 pub fn verify(o: &Out) -> Result<u8> {
     o.note("hardware isolation needs Linux with /dev/kvm");
     Ok(exit::HOST_INCAPABLE)
-}
-
-/// `celln demo` — the five-beat loop, no hardware required.
-pub fn demo(o: &Out) -> Result<u8> {
-    let tmp = std::env::temp_dir().join(format!("celln-demo-{}", std::process::id()));
-    let mut assayer = Assayer::open(&tmp)?;
-    let py = assayer.admit_verified("/usr/bin/python", b"cpython-bytes", true)?;
-
-    let beat = |n: u8, title: &str| {
-        o.event(
-            "beat",
-            serde_json::json!({"n": n, "title": title}),
-            format!("\n{} {}", green(&format!("● beat {n}")), bold(title)),
-        )
-    };
-
-    beat(1, "seal from intent — a cell, not a container");
-    o.event(
-        "sealed",
-        serde_json::json!({"cell": "cell-001"}),
-        "   cell-001 sealed",
-    );
-
-    beat(
-        2,
-        "loan a warm tool — install is a page map, not a download",
-    );
-    let r = assayer.resolve("/usr/bin/python", b"cpython-bytes", true)?;
-    o.event(
-        "resolved",
-        serde_json::json!({"alias": "/usr/bin/python", "tier": r.tier.to_string(), "warm": r.warm}),
-        format!("   python → tier={} warm={}", r.tier, r.warm),
-    );
-
-    beat(
-        3,
-        "cold tool, still fast — verified in seconds, forged behind it",
-    );
-    let r = assayer.resolve("/usr/lib/leftpad", b"leftpad-bytes", false)?;
-    o.event(
-        "resolved",
-        serde_json::json!({"alias": "/usr/lib/leftpad", "tier": r.tier.to_string(), "warm": r.warm, "upgrade_queued": r.upgrade_queued}),
-        format!("   leftpad → tier={} upgrade_queued={}", r.tier, r.upgrade_queued),
-    );
-    assayer.run_one_rebuild();
-
-    beat(4, "demote on exec — the laundering ban");
-    for (what, input) in [
-        ("python evil.py", Input::File(Lane::Data)),
-        (
-            r#"python -c "<agent-authored>""#,
-            Input::ArgString(Lane::Data),
-        ),
-    ] {
-        if let pilot::ExecOutcome::Run { lane, .. } = pilot::exec(assayer.manifest(), &py, input) {
-            o.event(
-                "lane",
-                serde_json::json!({"exec": what, "lane": lane.to_string()}),
-                format!("   {what} → runs in the {lane} lane"),
-            );
-        }
-    }
-
-    beat(5, "kill fleet-wide — revoke, and it stops everywhere");
-    assayer.revoke(&py);
-    if let pilot::ExecOutcome::Denied(e) = pilot::exec(assayer.manifest(), &py, Input::None) {
-        o.event(
-            "denied",
-            serde_json::to_value(&e).unwrap_or_default(),
-            format!("   {}\n   {}", e.reason, dim(&e.instead)),
-        );
-    }
-
-    let _ = std::fs::remove_dir_all(&tmp);
-    o.say("");
-    let h = Host::probe();
-    if h.can_seal() {
-        o.say(dim(
-            "that was the control flow. `celln verify` proves it in hardware.",
-        ));
-    } else {
-        o.say(dim(
-            "that was the control flow, in software. Hardware isolation needs /dev/kvm.",
-        ));
-    }
-    Ok(exit::OK)
 }

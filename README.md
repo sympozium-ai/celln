@@ -76,8 +76,8 @@ cargo build --release -p celln-cli
 </details>
 
 Running cells needs Linux with `/dev/kvm`, `gcc`, `cpio`, and `e2fsprogs`.
-Everywhere else `celln` still validates specs and runs `celln demo`, and
-`celln doctor` reports each prerequisite and its remedy.
+Everywhere else `celln` still validates specs, and `celln doctor` reports each
+prerequisite and its remedy.
 
 ## Use it
 

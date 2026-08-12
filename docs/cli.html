@@ -21,7 +21,7 @@
         <tr><td><code>celln setup</code></td><td>Discover provider CLIs, save a default, and materialise default tool images.</td></tr>
         <tr><td><code>celln image add &lt;image:tag&gt;</code></td><td>Pin and materialise an image. <code>--tool alias=path-in-image</code> names what to expose.</td></tr>
         <tr><td><code>celln image spec &lt;name&gt;</code></td><td>Scaffold a policy spec for a catalogue image.</td></tr>
-        <tr><td><code>celln tools</code></td><td>List attested tools, their tiers, and revocation state.</td></tr>
+        <tr><td><code>celln image catalogue</code></td><td>List catalogue tools and whether their sealed images are materialised.</td></tr>
         <tr><td><code>celln ps -a</code></td><td>Show recent cells and their outcome.</td></tr>
       </tbody></table>
 
@@ -33,8 +33,7 @@ celln agent agent.toml --prompt "review this input"</pre>
       <p>An inline prompt creates a policy in memory. A <code>.toml</code> argument uses the spec's declared tools, memory, hosts, and optional <code>[agent.env]</code>; <code>--prompt</code> overrides <code>[agent].prompt</code>. The legacy spellings <code>--task</code> and <code>[agent].task</code> are still accepted.</p>
 
       <h2 id="cell">Run a pinned invocation</h2>
-      <pre>celln image spec curl &gt; curl.toml
-celln run curl.toml</pre>
+      <pre>celln run reviewed.toml</pre>
       <p><code>celln run</code> is the model-free path for a reviewed <code>[run]</code> invocation with exact, declared arguments and optional <code>[run.env]</code>. The declared environment is complete: Celln never inherits the host environment. A spec uses either <code>[run]</code> or <code>[agent]</code>, never both.</p>
 
       <h2 id="inspect">Inspect and reproduce</h2>

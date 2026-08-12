@@ -111,17 +111,13 @@ enum Cmd {
     #[command(subcommand)]
     Spec(SpecCmd),
 
-    /// Seal a cell from a spec and run its lifecycle.
+    /// Seal a cell from a reviewed, model-free [run] spec.
     Run {
         /// Path to a cell spec.
         spec: PathBuf,
         /// Seal the cell but stop before running it.
         #[arg(long)]
         dry_run: bool,
-        /// What the provider should write, for a spec with an [agent] block.
-        /// Overrides `prompt` in the file. `--task` remains a legacy alias.
-        #[arg(long, alias = "task")]
-        prompt: Option<String>,
     },
 
     /// List cells, like `docker ps`. Recent runs need `-a`.
@@ -130,9 +126,6 @@ enum Cmd {
         #[arg(short, long)]
         all: bool,
     },
-
-    /// List the tools this host has attested.
-    Tools,
 
     /// Materialise OCI images into sealed tool filesystems.
     #[command(subcommand)]
@@ -215,9 +208,6 @@ enum Cmd {
         #[arg(long)]
         no_tools: bool,
     },
-
-    /// Walk the five-beat proof loop. Works without KVM.
-    Demo,
 }
 
 #[derive(Subcommand)]
@@ -379,13 +369,8 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             Ok(exit::OK)
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),
-        Cmd::Run {
-            spec,
-            dry_run,
-            prompt,
-        } => run::run(spec, &root, *dry_run, prompt.as_deref(), o),
+        Cmd::Run { spec, dry_run } => run::run(spec, &root, *dry_run, o),
         Cmd::Ps { all } => run::ps(&root, *all, o),
-        Cmd::Tools => run::tools(&root, o),
         Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
         Cmd::Image(ImageCmd::List) => image::list(&root, o),
         Cmd::Image(ImageCmd::Add {
@@ -398,7 +383,6 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Image(ImageCmd::Catalogue) => image::catalogue_list(&root, o),
         Cmd::Image(ImageCmd::Spec { name }) => image::scaffold(name, &root, o),
         Cmd::Verify => run::verify(o),
-        Cmd::Demo => run::demo(o),
         Cmd::Agent {
             input,
             prompt,
@@ -422,7 +406,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
                         "a spec already declares its tools and policy; use only `celln agent SPEC [--prompt …]`"
                     );
                 }
-                return run::run(&spec, &root, false, prompt.as_deref(), o);
+                return run::agent(&spec, &root, prompt.as_deref(), o);
             }
             if prompt.is_some() && !input.is_empty() {
                 anyhow::bail!("pass the prompt either positionally or with --prompt, not both");
@@ -504,7 +488,7 @@ fn doctor(o: &Out) -> u8 {
             }
         } else {
             o.say(format!(
-                "{} no hardware isolation here — `celln demo` and `celln spec check` still work.",
+                "{} no hardware isolation here — `celln spec check` still works.",
                 red("✘")
             ));
         }
@@ -533,6 +517,13 @@ mod cli_tests {
                 }
                 _ => panic!("expected agent command"),
             }
+        }
+    }
+
+    #[test]
+    fn pruned_commands_are_not_parsed() {
+        for command in ["demo", "tools"] {
+            assert!(Cli::try_parse_from(["celln", command]).is_err());
         }
     }
 }

@@ -282,7 +282,7 @@ impl Backend {
 }
 
 /// List the built-in backends and whether this host can use them.
-/// Mirrors `celln tools`: the question is always "what is available here".
+/// Mirrors `celln image catalogue`: the question is always "what is available here".
 pub fn agents(set_default: Option<Backend>, o: &Out) -> Result<u8> {
     if let Some(backend) = set_default {
         let path = crate::config::set_default_agent(backend.saved_name())?;
