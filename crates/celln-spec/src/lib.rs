@@ -898,23 +898,20 @@ impl Spec {
         }
 
         if let Some(a) = &self.agent {
-            match self.tools.iter().find(|t| t.alias == a.exec) {
-                None => out.push(Problem {
+            // A non-interpreter exec is legal: the model is then asked for that
+            // tool's *arguments* rather than a program, which is the only way a
+            // tool like curl can be driven from a task description. The trust
+            // consequence is real but belongs in `warnings()`, because refusing
+            // outright leaves every such tool undrivable.
+            if !self.tools.iter().any(|t| t.alias == a.exec) {
+                out.push(Problem {
                     field: "agent.exec".into(),
                     message: format!("{:?} is not one of the tools", a.exec),
-                    fix: "point agent.exec at a declared [[tool]] that can \
-                          interpret what the model writes"
+                    fix: "point agent.exec at a declared [[tool]] — an interpreter \
+                          to have the model write a program, or any other tool to \
+                          have it write that tool's arguments"
                         .into(),
-                }),
-                Some(t) if !t.interpreter => out.push(Problem {
-                    field: "agent.exec".into(),
-                    message: format!("{:?} is not marked as an interpreter", a.exec),
-                    fix: "model-written code is agent-authored input, so the \
-                          tool running it has to be an interpreter — set \
-                          interpreter = true"
-                        .into(),
-                }),
-                Some(_) => {}
+                });
             }
             if self.run.is_some() {
                 out.push(Problem {
@@ -962,6 +959,29 @@ impl Spec {
                               including code the agent wrote. Set interpreter = true \
                               unless you mean that."
                         .into(),
+                });
+            }
+        }
+
+        // Asking a model for a non-interpreter's arguments is supported, but the
+        // laundering ban keys off `interpreter`, so those arguments do not demote
+        // the invocation the way model-written code would. Say so: the argv is
+        // still agent-authored, and it runs with full tool-lane authority.
+        if let Some(a) = &self.agent {
+            if self
+                .tools
+                .iter()
+                .any(|t| t.alias == a.exec && !t.interpreter)
+            {
+                out.push(Warning {
+                    field: "agent.exec".into(),
+                    message: format!(
+                        "{:?} is not an interpreter, so the model writes its arguments \
+                         rather than a program. Those arguments are agent-authored but \
+                         do not demote the call — it runs in the tool lane. Use [run] to \
+                         pin the argv yourself if that authority matters here.",
+                        a.exec
+                    ),
                 });
             }
         }
@@ -1114,14 +1134,10 @@ interpreter = true             # see below
 # launder agent-authored code into full authority. Mark interpreters as
 # interpreters.
 
-[run]
+# Let a model write the program. `--task` on the command line overrides `task` here.
+[agent]
 exec = "/usr/bin/python"
-args = ["-c", "print('hello from a sealed cell')"]
-# Where the input came from:
-#   none — nothing interpreted
-#   tool — came in through the attestation gate
-#   data — the agent wrote it  (demotes an interpreter)
-input = "data"
+task = "<describe what you want it to do>"
 "#;
 
 #[cfg(test)]
@@ -1159,7 +1175,15 @@ mod tests {
         assert_eq!(spec.name, "my-agent");
         assert_eq!(spec.tools.len(), 1);
         assert!(spec.tools[0].interpreter);
-        assert_eq!(spec.run_list()[0].input, Input::Data);
+        // The starter spec asks a model for what to run rather than hard-coding
+        // an invocation, so the task is the one blank a newcomer fills in.
+        let agent = spec.agent.as_ref().expect("template declares [agent]");
+        assert_eq!(agent.exec, spec.tools[0].alias);
+        assert!(agent.task.is_some());
+        assert!(
+            spec.run_list().is_empty(),
+            "the model supplies the run; a static one would shadow it"
+        );
     }
 
     #[test]
@@ -1206,15 +1230,20 @@ mod tests {
         // not a declared tool
         let s = spec_from(&format!("{base}[agent]\nexec = \"/ghost\"\n"));
         assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
-        // declared, but not an interpreter
+        // Declared but not an interpreter is legal: the model writes that tool's
+        // arguments instead of a program, which is the only way a tool like curl
+        // can be driven from a task. It warns, because the argv is agent-authored
+        // yet the call keeps tool-lane authority.
         let s = spec_from(&format!("{base}[agent]\nexec = \"/p\"\n"));
-        assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
-        // an interpreter is fine
+        assert!(!s.problems().iter().any(|p| p.field == "agent.exec"));
+        assert!(s.warnings().iter().any(|w| w.field == "agent.exec"));
+        // an interpreter is fine, and says nothing
         let ok = spec_from(
             "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
              interpreter = true\n[agent]\nexec = \"/p\"\n",
         );
         assert!(!ok.problems().iter().any(|p| p.field.starts_with("agent")));
+        assert!(!ok.warnings().iter().any(|w| w.field.starts_with("agent")));
     }
 
     #[test]

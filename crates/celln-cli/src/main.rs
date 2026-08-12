@@ -457,9 +457,19 @@ fn doctor(o: &Out) -> u8 {
                 "{} this machine can seal real, hardware-isolated cells.",
                 green("✔")
             ));
-            o.say(dim(
-                "  try: celln spec init > agent.toml && celln run agent.toml",
-            ));
+            // Sealing a cell and running something in it are different claims.
+            // Suggesting `celln run` without pilot sends people at a command
+            // that boots a cell and executes nothing.
+            if h.get("guest-pilot") {
+                o.say(dim(
+                    "  try: celln spec init > agent.toml && celln run agent.toml",
+                ));
+            } else {
+                o.say(format!(
+                    "{} but nothing can run inside one until pilot is available — see guest-pilot above.",
+                    red("✘")
+                ));
+            }
         } else {
             o.say(format!(
                 "{} no hardware isolation here — `celln demo` and `celln spec check` still work.",

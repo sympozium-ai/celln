@@ -250,17 +250,32 @@ pub fn run_spec(
     task: Option<&str>,
     o: &Out,
 ) -> Result<u8> {
-    // A model fills in the code; the spec keeps the policy.
+    // A model fills in the code or arguments; the spec keeps the policy.
     if let Some(agent) = spec.agent.clone() {
         let task = task
             .map(str::to_owned)
             .or_else(|| agent.task.clone())
             .context("this cell asks a model for its program but no task was given; pass --task")?;
-        let source = crate::agent::write_program(&spec, &agent.exec, &task, root, o)?;
-        spec.run = Some(celln_spec::Runs::One(Box::new(celln_spec::Run {
-            exec: agent.exec.clone(),
-            args: vec![source.flag, source.code],
-            input: celln_spec::Input::Data,
+        let is_interpreter = spec
+            .tools
+            .iter()
+            .find(|t| t.alias == agent.exec)
+            .map(|t| t.interpreter)
+            .unwrap_or(false);
+        spec.run = Some(celln_spec::Runs::One(Box::new(if is_interpreter {
+            let source = crate::agent::write_program(&spec, &agent.exec, &task, root, o)?;
+            celln_spec::Run {
+                exec: agent.exec.clone(),
+                args: vec![source.flag, source.code],
+                input: celln_spec::Input::Data,
+            }
+        } else {
+            let args = crate::agent::write_args(&agent.exec, &task, o)?;
+            celln_spec::Run {
+                exec: agent.exec.clone(),
+                args,
+                input: celln_spec::Input::Data,
+            }
         })));
     }
     for w in spec.warnings() {
@@ -415,6 +430,16 @@ fn execute(
 
     if !Path::new("/dev/kvm").exists() {
         anyhow::bail!("no /dev/kvm on this host");
+    }
+    // Checked before anything is built: without pilot the cell boots, executes
+    // nothing, and the reason only reaches the user as `pilot=absent` buried in
+    // a guest console tail. Refusing here costs a boot and names the fix.
+    if let Err(why) = crate::agent::pilot_source() {
+        anyhow::bail!(
+            "the guest supervisor (pilot) cannot be built, so a cell would boot \
+             and run nothing.\n  {why}.\n  Install the guest target and retry:\n    \
+             rustup target add x86_64-unknown-linux-musl"
+        );
     }
     let runtime = crate::agent::runtime_root()?;
     let work = crate::agent::tempdir()?;

@@ -120,13 +120,13 @@ pub fn interpreter_for(name: &str, root: &Path) -> Result<(CatalogueImage, Provi
         .with_context(|| {
             let aliases: Vec<&str> = image.provides.iter().map(|p| p.alias.as_str()).collect();
             format!(
-                "{name} is available, but nothing it provides ({}) can run \
-                 model-written code.\n\n  \
-                 `--tool` needs an interpreter that accepts a program on a \
-                 flag, because\n  that is how a model's code reaches it. Plenty \
-                 of useful tools do not: a\n  compiler wants a source file, \
-                 curl wants a URL. Lend those from a spec,\n  which says what \
-                 to run:\n    celln image spec {name} > cell.toml\n\n  \
+                "{name} is marked `interpreter = true`, but nothing it provides \
+                 ({}) can run model-written code.\n\n  \
+                 An interpreter has to accept a program on a flag, because that \
+                 is how a\n  model's code reaches it. Plenty of useful tools do \
+                 not: a compiler wants a\n  source file, curl wants a URL. Drop \
+                 `interpreter = true` and the model will\n  write this tool's \
+                 arguments instead of a program.\n\n  \
                  If {name} does take code on a flag, declare which in {}:\n    \
                  {{ alias = \"…\", exec = \"…\", interpreter = true, language = \
                  \"…\", code_flag = \"-c\" }}",
@@ -134,6 +134,43 @@ pub fn interpreter_for(name: &str, root: &Path) -> Result<(CatalogueImage, Provi
                 user_catalogue_path(root).display(),
             )
         })?;
+    Ok((image.clone(), provide))
+}
+
+/// Find a catalogue entry for any tool — interpreter or not.
+///
+/// Prefers an interpreter provide (so python still gets python, not sh) but
+/// falls back to the first entry, which is how non-interpreter tools like curl
+/// become usable with `celln agent --tool`.
+pub fn catalogue_entry_for(name: &str, root: &Path) -> Result<(CatalogueImage, Provide)> {
+    let cat = catalogue_in(root);
+    let image = cat
+        .images
+        .iter()
+        .find(|i| i.name == name)
+        .with_context(|| {
+            format!(
+                "no tool named {name:?}. Available: {}\n\n  \
+                 Add it from an image that carries it:\n    \
+                 celln image add {name}:<tag>\n\n  \
+                 If it is published under a different name, map it:\n    \
+                 celln image add <image>:<tag> --name {name}\n\n  \
+                 The tag is resolved to a digest and pinned. `celln image catalogue` \
+                 lists everything this host knows how to lend.",
+                cat.images
+                    .iter()
+                    .map(|i| i.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+    let provide = image
+        .provides
+        .iter()
+        .find(|p| p.language.is_some() && p.code_flag.is_some())
+        .or_else(|| image.provides.first())
+        .cloned()
+        .with_context(|| format!("{name} has no provides entries in the catalogue"))?;
     Ok((image.clone(), provide))
 }
 
@@ -1195,8 +1232,18 @@ pub fn scaffold(name: &str, root: &Path, o: &Out) -> Result<u8> {
             s.push_str("interpreter = true\n");
         }
     }
-    if let Some(first) = image.provides.first() {
-        s.push_str(&format!("\n[run]\nexec = \"{}\"\nargs = []\n", first.alias));
+    // Prefer the interpreter entry for the [agent] exec; fall back to the first.
+    let agent_exec = image
+        .provides
+        .iter()
+        .find(|p| p.language.is_some() && p.code_flag.is_some())
+        .or_else(|| image.provides.first());
+    if let Some(p) = agent_exec {
+        s.push_str(&format!(
+            "\n# Let a model write what to run — fill in the task, then `celln run`.\n\
+             [agent]\nexec = \"{}\"\ntask = \"<describe what you want it to do>\"\n",
+            p.alias
+        ));
     }
     print!("{s}");
     let _ = o;

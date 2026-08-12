@@ -1,8 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.5.5
+
+### Added
+
+- **A spec can now ask a provider to supply arguments for any declared tool.**
+  `[agent]` no longer requires an interpreter: when its `exec` names one, the
+  provider writes a program as before; otherwise it writes a JSON argv for the
+  named tool. This makes a declared non-interpreter such as `curl` usable from
+  a reviewed task spec. The CLI warns that model-authored argv retains the
+  tool lane; use `[run]` to pin an invocation without a provider.
 
 ### Fixed
+
+- **A cell could boot without `pilot` and then execute nothing.**
+  `mkinitramfs.sh` previously printed that the guest supervisor was skipped
+  yet returned success, leaving the useful cause buried behind a later
+  `pilot=absent` guest report. Launch now checks that static guest assets can
+  be packaged or the musl target can build them; the initramfs builder fails
+  directly otherwise. Runtime setup also refuses to package a host-native
+  `pilot`, since the stripped guest has no host dynamic loader.
 
 - **Publishing a crate before a sibling it depends on silently shipped a
   version that cannot be installed.** Cargo resolves a requirement to the

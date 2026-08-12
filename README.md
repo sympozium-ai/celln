@@ -48,8 +48,19 @@ brew install sympozium-ai/celln/celln
 Homebrew names the `sympozium-ai/homebrew-celln` repository as the
 `sympozium-ai/celln` tap. The tap and source repository are public. On Linux,
 the formula downloads the static release archive; it does not build Celln with
-Rust locally. Building from source needs the one static target that the local
-build plane uses for generated programs:
+Rust locally.
+
+To run cells on Linux, install the guest-image tools first:
+
+```sh
+# Fedora/RHEL
+sudo dnf install gcc cpio e2fsprogs
+
+# Debian/Ubuntu
+sudo apt install build-essential cpio e2fsprogs
+```
+
+Source builds also need the static guest-pilot target:
 
 ```sh
 rustup target add x86_64-unknown-linux-musl
@@ -69,9 +80,9 @@ cargo build --release -p celln-cli
 ```
 </details>
 
-Sealing cells needs Linux with `/dev/kvm`; generated-program cells additionally
-need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `celln` still validates
-specs and runs `celln demo`, and `celln doctor` says which you have.
+Running cells needs Linux with `/dev/kvm`, `gcc`, `cpio`, and `e2fsprogs`.
+Everywhere else `celln` still validates specs and runs `celln demo`, and
+`celln doctor` reports each prerequisite and its remedy.
 
 ## Declaring it instead
 
@@ -253,6 +264,82 @@ GIF image
 You never had to ask for the **agent** lane there. The model's code is
 agent-authored input handed to a tool marked `interpreter = true`, so it is
 demoted for that invocation — python keeps its hash and loses its authority.
+
+**`--tool` works with any catalogue tool**, interpreter or not. The difference
+is only what the model is asked for: an interpreter gets a *program*, anything
+else gets its *arguments*. Either way the tool is lent read-only into the cell
+and you describe the job in prose.
+
+```sh
+$ celln agent --tool curl "print the installed curl and TLS versions"
+● asking openai for arguments to run as /usr/bin/curl
+  · replied in 3s
+  ≡ /usr/bin/curl        tier=verified warm — page map, no build
+  ✔ /usr/bin/curl permitted in the tool lane
+  · cell sealed, 1 tool(s) lent read-only
+  ✔ pilot: /usr/bin/curl permitted:tool   exit=0
+
+curl 8.21.0 (x86_64-pc-linux-musl) libcurl/8.21.0 OpenSSL/3.5.7 …
+● cell dissolved
+```
+
+> **A cell has no network stack, so curl cannot fetch a URL.** The guest gets
+> no packet interface and no socket API — `allow_hosts` opens a four-port
+> channel to the host's fetch broker, and only the `builtin = "fetch"`
+> capability speaks it. Brokering a *validated URL* is what preserves DNS
+> pinning, redirect re-authorisation and the protocol allowlist; handing curl
+> its own argv would discard all three. For an HTTPS fetch, leave `--tool` off
+> and let the model write Rust against the broker:
+>
+> ```sh
+> celln agent --allow-host google.com "fetch https://google.com and print the response"
+> ```
+
+**For repeatable or reviewed runs, use a spec.** Scaffold one from the
+catalogue — it comes ready with an `[agent]` block, so the task is declared
+alongside the policy:
+
+```sh
+$ celln image add curlimages/curl:8.21.0   # once; skip if already materialised
+$ celln image spec curl > cell.toml
+```
+
+`cell.toml` arrives like this; fill in the task and run it:
+
+```toml
+name = "curl"
+
+[cell]
+memory = "512MiB"
+
+[[tool]]
+alias = "/usr/bin/curl"
+image = "curl"
+exec  = "/usr/bin/curl"
+
+# Let a model write what to run — fill in the task, then `celln run`.
+[agent]
+exec = "/usr/bin/curl"
+task = "print the installed curl and TLS versions"
+```
+
+The scaffold is the same shape for every tool: `celln image spec python` also
+produces an `[agent]` block, differing only in which alias it names. The
+`task` is the agent prompt. It can live in the spec, as above, or be supplied
+per run — omit `task` from the file and use:
+
+```sh
+celln run cell.toml --task "print the installed curl and TLS versions"
+```
+
+`[run]` is the alternative for a pinned, model-free invocation; use it instead
+of `[agent]`, never alongside it:
+
+```toml
+[run]
+exec = "/usr/bin/curl"
+args = ["--version"]
+```
 
 **Or forged from source.** Without `--tool`, the model writes Rust and Celln
 compiles it, which is where the more interesting claim lives:
