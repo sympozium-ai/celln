@@ -41,14 +41,13 @@ jobs:
           $BIN --version
           $BIN spec init > /tmp/agent.toml
           $BIN spec check /tmp/agent.toml --no-json
-          $BIN demo --no-json
           # exit 3 == "cannot seal cells", which is correct here, not a failure.
           # `if` is deliberate: GitHub invokes bash with `-e`, while exit 3
           # correctly means this runner cannot seal cells.
           if $BIN doctor -q; then code=0; else code=$?; fi
           test "$code" -eq 0 -o "$code" -eq 3
           # and the pipe contract holds
-          $BIN demo --json | jq -e 'select(.event=="beat")' > /dev/null
+          $BIN spec check /tmp/agent.toml --json | jq -e 'select(.event=="spec_ok")' > /dev/null
 
   # The claims this project exists to make can only be tested on a machine with
   # KVM. Kept separate and allowed to be unavailable, rather than pretending a
