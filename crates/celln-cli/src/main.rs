@@ -165,8 +165,14 @@ enum Cmd {
         #[arg(long, default_value = "90")]
         timeout: u64,
 
-        /// Which model writes it. Overrides CELLN_AGENT and the saved default.
-        #[arg(long, value_enum)]
+        /// Which provider writes it. Overrides CELLN_PROVIDER and the saved
+        /// default.
+        #[arg(
+            long = "provider",
+            alias = "agent",
+            value_enum,
+            value_name = "PROVIDER"
+        )]
         agent: Option<agent::Backend>,
 
         /// Override the backend's default model.
@@ -186,17 +192,27 @@ enum Cmd {
         tool: Option<String>,
     },
 
-    /// Find agent CLIs and manage the saved default.
-    Agents {
-        /// Save the backend `celln agent` uses unless overridden.
-        #[arg(long, value_enum)]
+    /// Find inference providers and manage the saved default.
+    ///
+    /// These are the model backends celln can ask to write a program. They are
+    /// not agents, and not the agent lane: `celln agent` names what runs in a
+    /// cell, while a provider is only who writes it.
+    #[command(alias = "agents")]
+    Providers {
+        /// Save the provider `celln agent` uses unless overridden.
+        #[arg(long, value_enum, value_name = "PROVIDER")]
         set_default: Option<agent::Backend>,
     },
 
     /// Discover an agent CLI and materialise the default tool images.
     Setup {
-        /// Select this backend instead of auto-discovering one.
-        #[arg(long, value_enum)]
+        /// Select this provider instead of auto-discovering one.
+        #[arg(
+            long = "provider",
+            alias = "agent",
+            value_enum,
+            value_name = "PROVIDER"
+        )]
         agent: Option<agent::Backend>,
 
         /// Only these catalogue images, comma-separated. Default: those the
@@ -433,7 +449,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
                 )
             }
         }
-        Cmd::Agents { set_default } => agent::agents(*set_default, o),
+        Cmd::Providers { set_default } => agent::providers(*set_default, o),
         Cmd::Setup {
             agent: preferred,
             tools,

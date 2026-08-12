@@ -697,7 +697,7 @@ mod tests {
         }
         if !crate::agent::Backend::Anthropic.available() {
             eprintln!(
-                "skipping: `claude` not available/authenticated on this host — see `celln agents`"
+                "skipping: `claude` not available/authenticated on this host — see `celln providers`"
             );
             return;
         }
