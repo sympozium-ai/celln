@@ -282,7 +282,7 @@ impl Backend {
 }
 
 /// List the built-in backends and whether this host can use them.
-/// Mirrors `celln tools`: the question is always "what is available here".
+/// Mirrors `celln image catalogue`: the question is always "what is available here".
 pub fn providers(set_default: Option<Backend>, o: &Out) -> Result<u8> {
     if let Some(backend) = set_default {
         let path = crate::config::set_default_agent(backend.saved_name())?;
@@ -604,13 +604,11 @@ fn bootstrap_runtime() -> Result<PathBuf> {
     }
 
     // ── pilot binaries ─────────────────────────────────────────────
-    // Try the musl target (as the initramfs script does), then the
-    // host target as a fallback.
-    let pilot_dirs = [
-        workspace.join("target/x86_64-unknown-linux-musl/release"),
-        workspace.join("target/release"),
-        workspace.join("target/debug"),
-    ];
+    // Only the musl target can run in the bare guest. A host-target binary may
+    // look executable on assay but needs the host's dynamic loader, which the
+    // initramfs deliberately does not carry. Do not turn such a binary into a
+    // delayed `pilot=absent` at cell launch.
+    let pilot_dirs = [workspace.join("target/x86_64-unknown-linux-musl/release")];
     let mut found = false;
     for dir in &pilot_dirs {
         let pilot = dir.join("celln-pilot");
@@ -906,8 +904,6 @@ fn select_backend(requested: Option<Backend>, o: &Out) -> Result<Option<Backend>
     if let Some(backend) = requested {
         return Ok(Some(backend));
     }
-    // `CELLN_AGENT` predates the name and still works; it selects a provider,
-    // which is who writes the program, not what runs in the cell.
     let from_env = ["CELLN_PROVIDER", "CELLN_AGENT", "CELL_AGENT"]
         .iter()
         .find_map(|var| std::env::var_os(var).map(|value| (*var, value)));
@@ -1266,6 +1262,62 @@ pub(crate) fn ask_model(
     })
 }
 
+/// Cut a string to `max` characters, saying how much was dropped.
+///
+/// Counts characters rather than bytes: agent CLIs emit UTF-8, and slicing one
+/// mid-codepoint would panic on the error path, turning a bad config into a
+/// crash.
+fn truncate_chars(s: &str, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    format!("{head}… (+{} more chars)", total - max)
+}
+
+/// Reduce an agent CLI's stderr to the part a human needs.
+///
+/// These CLIs wrap the one sentence that says what broke in hundreds of lines
+/// of banners, telemetry and model catalogues — `codex` reports an unusable
+/// model as a `detail` field after logging its entire model list. Printing all
+/// of it renders a one-line config mistake as a screenful, so prefer a
+/// structured error field, fall back to the tail, and cap the length either way.
+fn distill_stderr(stderr: &str) -> String {
+    const MAX_CHARS: usize = 300;
+    const KEEP_LINES: usize = 3;
+
+    // Search from the end: the fatal error is the last thing said, and earlier
+    // lines are usually warnings the CLI survived.
+    for line in stderr.lines().rev() {
+        let (Some(start), Some(end)) = (line.find('{'), line.rfind('}')) else {
+            continue;
+        };
+        if start >= end {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line[start..=end]) else {
+            continue;
+        };
+        if let Some(msg) = ["detail", "message", "error"]
+            .iter()
+            .find_map(|k| v.get(k).and_then(serde_json::Value::as_str))
+        {
+            return truncate_chars(msg.trim(), MAX_CHARS);
+        }
+    }
+
+    let tail: Vec<String> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .rev()
+        .take(KEEP_LINES)
+        .map(|l| truncate_chars(l, MAX_CHARS))
+        .collect();
+    tail.into_iter().rev().collect::<Vec<_>>().join("\n")
+}
+
 fn ask_model_text(
     backend: Backend,
     model: Option<&str>,
@@ -1320,7 +1372,7 @@ fn ask_model_text(
                 bail!(
                     "{program} exited {}: {}",
                     out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
+                    distill_stderr(&String::from_utf8_lossy(&out.stderr))
                 );
             }
             stdout
@@ -1361,6 +1413,63 @@ pub(crate) fn extract_program(reply: &str) -> Result<GeneratedProgram> {
         Runtime::Rust => extract_rust(reply).context("missing ```rust source block")?,
     };
     Ok(GeneratedProgram { runtime, source })
+}
+
+/// Whether the guest supervisor can be produced, and from where.
+///
+/// `mkinitramfs.sh` makes exactly this decision — prebuilt assets first, then a
+/// musl cross-build — but it reports a miss on stdout and still exits 0. The
+/// cell then boots fine, runs nothing, and says `pilot=absent` on a console
+/// tail printed long after the useful message scrolled past. Mirroring the
+/// script's own order here lets the failure name its fix instead.
+pub(crate) fn pilot_source() -> Result<String, String> {
+    let runtime = runtime_root().map_err(|e| e.to_string())?;
+    let dir = runtime.join("pilot");
+    if guest_pilot_binaries_present(&dir) {
+        return Ok(format!("prebuilt guest binaries in {}", dir.display()));
+    }
+    if musl_target_installed() {
+        return Ok("built from source for x86_64-unknown-linux-musl".into());
+    }
+    Err(format!(
+        "no prebuilt guest binaries under {}, and the \
+         x86_64-unknown-linux-musl target is not installed",
+        dir.display()
+    ))
+}
+
+/// Match the initramfs builder's asset check. On Unix a regular but
+/// non-executable file is not a usable prebuilt pilot.
+fn guest_pilot_binaries_present(dir: &Path) -> bool {
+    let present = |name: &str| {
+        let path = dir.join(name);
+        if !path.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    };
+    present("celln-pilot") && present("pilot-fetch")
+}
+
+/// Ask rustup, the same way `mkinitramfs.sh` does, so the two cannot disagree.
+fn musl_target_installed() -> bool {
+    Command::new("rustup")
+        .args(["target", "list", "--installed"])
+        .output()
+        .is_ok_and(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout)
+                    .lines()
+                    .any(|l| l.trim() == "x86_64-unknown-linux-musl")
+        })
 }
 
 pub(crate) fn sh(root: &Path, script: &str, args: &[String]) -> Result<()> {
@@ -1545,10 +1654,72 @@ pub(crate) fn write_program(
     Ok(WrittenProgram { flag, code })
 }
 
+const ARGS_BRIEF: &str = "\
+Generate the command-line arguments for `%EXEC%` to accomplish this:
+
+%TASK%
+
+The cell is sealed: there is no network stack, no socket API, and nothing is \
+writable except /tmp. Arguments that try to open a connection will fail.
+
+Reply with a JSON array of strings and nothing else. \
+Example: [\"--version\"]
+";
+
+/// Ask the configured model for the arguments to pass to a non-interpreter tool.
+///
+/// Unlike the interpreter path there is no egress hint: `allow_hosts` opens the
+/// host fetch broker, and only the `builtin = "fetch"` capability speaks that
+/// channel — a lent binary never can. Telling the model otherwise would invite
+/// argv that cannot possibly connect.
+pub(crate) fn write_args(exec_alias: &str, task: &str, o: &Out) -> Result<Vec<String>> {
+    let brief = ARGS_BRIEF
+        .replace("%EXEC%", exec_alias)
+        .replace("%TASK%", task);
+
+    let backend = match select_backend(None, o)? {
+        Some(b) => b,
+        None => bail!("no provider CLI configured; run `celln setup`"),
+    };
+    let model = backend.default_model();
+    o.event(
+        "agent_brief",
+        serde_json::json!({ "task": task, "exec": exec_alias, "backend": backend.label() }),
+        format!(
+            "{} asking {} for arguments to run as {}",
+            bold("●"),
+            backend.label(),
+            exec_alias
+        ),
+    );
+    let started = Instant::now();
+    let reply = ask_model_text(backend, model, &brief, 60)?;
+    o.note(format!(
+        "  {} replied in {:.0}s",
+        dim("·"),
+        started.elapsed().as_secs_f32(),
+    ));
+
+    let reply = reply.trim();
+    // Accept a bare JSON array or one embedded in prose/markdown.
+    let args: Vec<String> = serde_json::from_str(reply).or_else(|_| {
+        let start = reply
+            .find('[')
+            .context("model did not return a JSON array")?;
+        let end = reply
+            .rfind(']')
+            .context("model did not return a JSON array")?;
+        serde_json::from_str(&reply[start..=end]).context("parsing model-generated arguments")
+    })?;
+    Ok(args)
+}
+
 /// `celln agent --tool <name> "<task>"` — no spec file.
 ///
 /// Builds the cell a spec would have described and runs it through the same
 /// path, so an ad-hoc run reaches the same trust decisions as a declared one.
+/// Works for both interpreter tools (model writes code) and non-interpreter
+/// tools like curl (model writes the arguments).
 pub fn with_tool(
     task: &str,
     tool: &str,
@@ -1556,7 +1727,17 @@ pub fn with_tool(
     root: &Path,
     o: &Out,
 ) -> Result<u8> {
-    let (image, provide) = crate::image::interpreter_for(tool, root)?;
+    let (image, provide) = crate::image::catalogue_entry_for(tool, root)?;
+    // `allow_hosts` opens the host fetch broker, which only `builtin = "fetch"`
+    // speaks. A lent binary has no socket API, so saying otherwise here would
+    // let someone believe curl is about to reach the network.
+    if !allow_hosts.is_empty() && !provide.interpreter {
+        o.warn(format!(
+            "--allow-host does not give {tool} network access: a cell has no socket \
+             API, and the fetch broker is only reachable through `builtin = \"fetch\"`. \
+             For an HTTPS fetch, drop --tool and let the model write Rust against the broker."
+        ));
+    }
     if crate::image::image_is_materialised(&image, root) {
         // nothing to do
     } else {
@@ -1579,12 +1760,13 @@ pub fn with_tool(
             image: Some(image.name.clone()),
             exec: Some(provide.exec.clone()),
             builtin: None,
-            interpreter: true,
+            interpreter: provide.interpreter,
         }],
         run: None,
         agent: Some(celln_spec::AgentTask {
-            task: Some(task.to_string()),
+            prompt: Some(task.to_string()),
             exec: provide.alias.clone(),
+            env: Default::default(),
         }),
     };
     crate::run::run_spec(spec, root, Path::new("<agent --tool>"), false, None, o)
@@ -1593,6 +1775,43 @@ pub fn with_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cli_failure_reports_the_reason_not_its_whole_catalogue() {
+        // The shape codex actually produces: a huge non-fatal warning carrying
+        // an entire model list, then the one line that says why it exited.
+        let noise = format!(
+            "ERROR codex_core: failed to refresh available models: unknown \
+             variant `max`; body: {{\"models\":[{}]}}",
+            "\"padding\",".repeat(500)
+        );
+        let stderr = format!(
+            "{noise}\nOpenAI Codex v0.106.0\nmodel: gpt-5.3-codex\nmcp startup: no servers\n\
+             ERROR: {{\"detail\":\"The 'gpt-5.3-codex' model is not supported when using \
+             Codex with a ChatGPT account.\"}}"
+        );
+        let got = distill_stderr(&stderr);
+        assert_eq!(
+            got,
+            "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account."
+        );
+        assert!(!got.contains("padding"), "the catalogue must not survive");
+    }
+
+    #[test]
+    fn stderr_without_a_structured_error_keeps_the_tail() {
+        let stderr = "line one\nline two\n\nline three\nline four\nline five\n";
+        assert_eq!(distill_stderr(stderr), "line three\nline four\nline five");
+    }
+
+    #[test]
+    fn a_long_line_is_cut_on_a_character_boundary() {
+        // Multibyte input on the error path: slicing by byte would panic here.
+        let s = "é".repeat(400);
+        let got = truncate_chars(&s, 300);
+        assert!(got.starts_with(&"é".repeat(300)));
+        assert!(got.ends_with("(+100 more chars)"));
+    }
 
     #[test]
     fn saved_cli_login_is_accepted_without_an_api_key() {

@@ -12,7 +12,7 @@ mod out;
 mod router;
 mod run;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use out::{bold, dim, green, red, Out};
 use std::path::PathBuf;
@@ -111,17 +111,13 @@ enum Cmd {
     #[command(subcommand)]
     Spec(SpecCmd),
 
-    /// Seal a cell from a spec and run its lifecycle.
+    /// Seal a cell from a reviewed, model-free [run] spec.
     Run {
         /// Path to a cell spec.
         spec: PathBuf,
         /// Seal the cell but stop before running it.
         #[arg(long)]
         dry_run: bool,
-        /// What the model should write, for a spec with an [agent] block.
-        /// Overrides the task in the file.
-        #[arg(long)]
-        task: Option<String>,
     },
 
     /// List cells, like `docker ps`. Recent runs need `-a`.
@@ -131,9 +127,6 @@ enum Cmd {
         all: bool,
     },
 
-    /// List the tools this host has attested.
-    Tools,
-
     /// Materialise OCI images into sealed tool filesystems.
     #[command(subcommand)]
     Image(ImageCmd),
@@ -141,17 +134,25 @@ enum Cmd {
     /// Prove the isolation properties on this machine.
     Verify,
 
-    /// Have a model write a program, then run it sealed in a cell.
+    /// Have a provider write a program, then run it sealed in a cell.
     ///
-    /// This is for computations, not questions. It asks a model for a
-    /// single-file Rust program, attests the binary, and runs it in a cell —
-    /// so it is worth doing when there is code you would rather not run
-    /// unsealed. For "what is the capital of France", ask the model directly;
-    /// a cell has nothing to protect you from when no code runs.
+    /// Use an inline prompt, or name a .toml spec that supplies the policy.
+    /// Without `--tool`, the provider writes a single-file Rust program;
+    /// with one, it writes that tool's program or arguments. For a question
+    /// that runs no code, ask the provider directly rather than creating a cell.
     Agent {
-        /// What the program should DO — a computation, not a question.
-        #[arg(required = true, num_args = 1..)]
-        task: Vec<String>,
+        /// A prompt, or one .toml agent spec to run.
+        ///
+        /// With a spec, use `--prompt` to override `[agent].prompt`:
+        /// `celln agent cell.toml --prompt "…"`.
+        #[arg(num_args = 0..)]
+        input: Vec<String>,
+
+        /// What the provider should make the cell do. When a .toml spec is
+        /// supplied this overrides `[agent].prompt`; otherwise it is the
+        /// inline prompt. `--task` remains a legacy alias.
+        #[arg(long, alias = "task")]
+        prompt: Option<String>,
 
         /// Print the source the model wrote.
         #[arg(long)]
@@ -223,9 +224,6 @@ enum Cmd {
         #[arg(long)]
         no_tools: bool,
     },
-
-    /// Walk the five-beat proof loop. Works without KVM.
-    Demo,
 }
 
 #[derive(Subcommand)]
@@ -387,13 +385,8 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             Ok(exit::OK)
         }
         Cmd::Spec(SpecCmd::Check { spec }) => run::check(spec, o),
-        Cmd::Run {
-            spec,
-            dry_run,
-            task,
-        } => run::run(spec, &root, *dry_run, task.as_deref(), o),
+        Cmd::Run { spec, dry_run } => run::run(spec, &root, *dry_run, o),
         Cmd::Ps { all } => run::ps(&root, *all, o),
-        Cmd::Tools => run::tools(&root, o),
         Cmd::Image(ImageCmd::Pull { reference }) => image::pull(reference, &root, o),
         Cmd::Image(ImageCmd::List) => image::list(&root, o),
         Cmd::Image(ImageCmd::Add {
@@ -406,9 +399,9 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Image(ImageCmd::Catalogue) => image::catalogue_list(&root, o),
         Cmd::Image(ImageCmd::Spec { name }) => image::scaffold(name, &root, o),
         Cmd::Verify => run::verify(o),
-        Cmd::Demo => run::demo(o),
         Cmd::Agent {
-            task,
+            input,
+            prompt,
             agent,
             model,
             show_source,
@@ -416,12 +409,35 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             allow_hosts,
             tool,
         } => {
+            let spec =
+                (input.len() == 1 && input[0].ends_with(".toml")).then(|| PathBuf::from(&input[0]));
+            if let Some(spec) = spec {
+                if tool.is_some()
+                    || !allow_hosts.is_empty()
+                    || *show_source
+                    || agent.is_some()
+                    || model.is_some()
+                {
+                    anyhow::bail!(
+                        "a spec already declares its tools and policy; use only `celln agent SPEC [--prompt …]`"
+                    );
+                }
+                return run::agent(&spec, &root, prompt.as_deref(), o);
+            }
+            if prompt.is_some() && !input.is_empty() {
+                anyhow::bail!("pass the prompt either positionally or with --prompt, not both");
+            }
+            let inline_prompt = (!input.is_empty()).then(|| input.join(" "));
+            let prompt = prompt
+                .as_deref()
+                .or(inline_prompt.as_deref())
+                .context("an agent needs a prompt, or a .toml spec")?;
             if let Some(tool) = tool {
-                agent::with_tool(&task.join(" "), tool, allow_hosts, &root, o)
+                agent::with_tool(prompt, tool, allow_hosts, &root, o)
             } else {
                 agent::agent(
                     agent::AgentRequest {
-                        task: &task.join(" "),
+                        task: prompt,
                         state_root: &root,
                         requested_backend: *agent,
                         model: model.as_deref(),
@@ -473,12 +489,22 @@ fn doctor(o: &Out) -> u8 {
                 "{} this machine can seal real, hardware-isolated cells.",
                 green("✔")
             ));
-            o.say(dim(
-                "  try: celln spec init > agent.toml && celln run agent.toml",
-            ));
+            // Sealing a cell and running something in it are different claims.
+            // Suggesting `celln run` without pilot sends people at a command
+            // that boots a cell and executes nothing.
+            if h.get("guest-pilot") {
+                o.say(dim(
+                    "  try: celln spec init > agent.toml && celln run agent.toml",
+                ));
+            } else {
+                o.say(format!(
+                    "{} but nothing can run inside one until pilot is available — see guest-pilot above.",
+                    red("✘")
+                ));
+            }
         } else {
             o.say(format!(
-                "{} no hardware isolation here — `celln demo` and `celln spec check` still work.",
+                "{} no hardware isolation here — `celln spec check` still works.",
                 red("✘")
             ));
         }
@@ -488,5 +514,32 @@ fn doctor(o: &Out) -> u8 {
         exit::OK
     } else {
         exit::HOST_INCAPABLE
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_spec_accepts_prompt_and_legacy_task() {
+        for flag in ["--prompt", "--task"] {
+            let cli = Cli::try_parse_from(["celln", "agent", "cell.toml", flag, "fizz buzz"])
+                .expect("agent spec parses");
+            match cli.cmd {
+                Cmd::Agent { input, prompt, .. } => {
+                    assert_eq!(input, ["cell.toml"]);
+                    assert_eq!(prompt.as_deref(), Some("fizz buzz"));
+                }
+                _ => panic!("expected agent command"),
+            }
+        }
+    }
+
+    #[test]
+    fn pruned_commands_are_not_parsed() {
+        for command in ["demo", "tools"] {
+            assert!(Cli::try_parse_from(["celln", command]).is_err());
+        }
     }
 }

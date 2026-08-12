@@ -71,7 +71,7 @@ cargo build --release -p celln-cli
 
 Sealing cells needs Linux with `/dev/kvm`; generated-program cells additionally
 need `gcc`, `cpio`, and `e2fsprogs`. Everywhere else `celln` still validates
-specs and runs `celln demo`, and `celln doctor` says which you have.
+specs, and `celln doctor` says which prerequisites you have.
 
 ## Declaring it instead
 

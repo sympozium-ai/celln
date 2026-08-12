@@ -1,8 +1,63 @@
 # Changelog
 
-## Unreleased
+## 0.5.7
+
+### Added
+
+- **Runs can declare an explicit environment.** `[run.env]` and `[agent.env]`
+  pass a reviewed map to the workload after it enters its sealed image. The
+  map is the complete workload environment: Celln never inherits ambient host
+  variables into a cell.
 
 ### Fixed
+
+- **OCI tools that require runtime environment variables can now run.** A
+  trimmed Go distribution, for example, can declare
+  `GOROOT = "/usr/local/go"` rather than failing because pilot previously
+  launched every workload with an empty environment.
+
+## 0.5.6
+
+### Added
+
+- **`celln agent` now runs a declared agent spec directly.**
+  `celln agent cell.toml --prompt "…"` keeps the spec's policy and overrides
+  its prompt, while `celln agent "…"` remains the inline form. This makes the
+  agent entry point consistent whether policy lives in a file or in memory.
+
+### Changed
+
+- **Provider input is now called a prompt.** New specs use `[agent].prompt`
+  and the CLI uses `--prompt`, which says what the value is instead of calling
+  the same thing a task in the cell. Existing `[agent].task` and `--task`
+  spellings remain accepted for compatibility.
+
+### Fixed
+
+- **A provider prompt could be silently ignored for a static spec.** Passing
+  `--task` to a `[run]` spec used to execute its pinned empty or static argv;
+  it now refuses and explains that a prompt requires `[agent]`.
+
+## 0.5.5
+
+### Added
+
+- **A spec can now ask a provider to supply arguments for any declared tool.**
+  `[agent]` no longer requires an interpreter: when its `exec` names one, the
+  provider writes a program as before; otherwise it writes a JSON argv for the
+  named tool. This makes a declared non-interpreter such as `curl` usable from
+  a reviewed task spec. The CLI warns that model-authored argv retains the
+  tool lane; use `[run]` to pin an invocation without a provider.
+
+### Fixed
+
+- **A cell could boot without `pilot` and then execute nothing.**
+  `mkinitramfs.sh` previously printed that the guest supervisor was skipped
+  yet returned success, leaving the useful cause buried behind a later
+  `pilot=absent` guest report. Launch now checks that static guest assets can
+  be packaged or the musl target can build them; the initramfs builder fails
+  directly otherwise. Runtime setup also refuses to package a host-native
+  `pilot`, since the stripped guest has no host dynamic loader.
 
 - **Publishing a crate before a sibling it depends on silently shipped a
   version that cannot be installed.** Cargo resolves a requirement to the

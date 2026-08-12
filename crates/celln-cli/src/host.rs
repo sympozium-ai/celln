@@ -90,6 +90,40 @@ impl Host {
             "only needed to build from source",
         ));
 
+        // These build the controlled guest initramfs and, for host-path tools,
+        // its sealed ext2 filesystem. Check them here rather than letting a
+        // launch fail halfway through either script.
+        for (name, binary, package) in [
+            ("guest-c-compiler", "gcc", "gcc or build-essential"),
+            ("initramfs-packer", "cpio", "cpio"),
+            ("toolfs-builder", "mke2fs", "e2fsprogs"),
+        ] {
+            let found = which(binary);
+            caps.push(cap(
+                name,
+                found.is_some(),
+                found
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| format!("{binary} not found")),
+                format!("install {package}"),
+            ));
+        }
+
+        // The hardware checks above say a cell can be *sealed*. They say nothing
+        // about whether anything can run inside it: that needs pilot, and a host
+        // with perfect virtualisation support but no musl target boots a cell
+        // that does nothing at all.
+        let pilot = crate::agent::pilot_source();
+        caps.push(cap(
+            "guest-pilot",
+            pilot.is_ok(),
+            match &pilot {
+                Ok(from) => from.clone(),
+                Err(why) => why.clone(),
+            },
+            "rustup target add x86_64-unknown-linux-musl",
+        ));
+
         Host { caps }
     }
 

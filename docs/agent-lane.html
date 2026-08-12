@@ -36,7 +36,7 @@ $ celln providers
   &#10004; local      qwen2.5-coder          ollama
 
 $ celln providers --set-default anthropic # change the saved default
-$ celln agent --agent openai "&hellip;"       # override it for one invocation
+$ celln agent --provider openai "&hellip;"    # override it for one invocation
 $ CELLN_PROVIDER=local celln agent "&hellip;"    # override it for one shell command</pre>
 <p><code>celln agent "&hellip;"</code> is for work that generates code to run — that's the path Celln seals and governs. <code>--tool python</code> runs the model's program with a lent interpreter instead of forging a Rust binary.</p>
 

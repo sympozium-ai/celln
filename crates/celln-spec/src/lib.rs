@@ -1,6 +1,7 @@
 //! Strict TOML cell specifications.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// A cell specification.
@@ -27,11 +28,19 @@ pub struct Spec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentTask {
-    /// What the program should do. `--task` overrides it.
-    #[serde(default)]
-    pub task: Option<String>,
-    /// Which declared tool interprets the answer. Must be an interpreter.
+    /// What the provider should make the cell do. `--prompt` overrides it.
+    ///
+    /// `task` was the original spelling. Read it so existing reviewed specs
+    /// remain valid, but always emit and document the clearer `prompt` name.
+    #[serde(default, alias = "task")]
+    pub prompt: Option<String>,
+    /// Which declared tool receives the provider's program or arguments.
     pub exec: String,
+    /// Host-authored environment for the invocation. This is an explicit
+    /// capability in the reviewed spec; Celln never inherits the host's
+    /// ambient environment into a cell.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A cell may run one tool or several. `[run]` is one, `[[run]]` is a list;
@@ -158,6 +167,11 @@ pub struct Run {
     /// which demotes an interpreter.
     #[serde(default)]
     pub input: Input,
+    /// Host-authored environment for this invocation. It is passed exactly as
+    /// declared after the sealed image is entered; no host environment is
+    /// inherited.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Where the input to an exec came from.
@@ -898,23 +912,21 @@ impl Spec {
         }
 
         if let Some(a) = &self.agent {
-            match self.tools.iter().find(|t| t.alias == a.exec) {
-                None => out.push(Problem {
+            validate_env("agent.env", &a.env, &mut out);
+            // A non-interpreter exec is legal: the model is then asked for that
+            // tool's *arguments* rather than a program, which is the only way a
+            // tool like curl can be driven from a task description. The trust
+            // consequence is real but belongs in `warnings()`, because refusing
+            // outright leaves every such tool undrivable.
+            if !self.tools.iter().any(|t| t.alias == a.exec) {
+                out.push(Problem {
                     field: "agent.exec".into(),
                     message: format!("{:?} is not one of the tools", a.exec),
-                    fix: "point agent.exec at a declared [[tool]] that can \
-                          interpret what the model writes"
+                    fix: "point agent.exec at a declared [[tool]] — an interpreter \
+                          to have the model write a program, or any other tool to \
+                          have it write that tool's arguments"
                         .into(),
-                }),
-                Some(t) if !t.interpreter => out.push(Problem {
-                    field: "agent.exec".into(),
-                    message: format!("{:?} is not marked as an interpreter", a.exec),
-                    fix: "model-written code is agent-authored input, so the \
-                          tool running it has to be an interpreter — set \
-                          interpreter = true"
-                        .into(),
-                }),
-                Some(_) => {}
+                });
             }
             if self.run.is_some() {
                 out.push(Problem {
@@ -926,6 +938,7 @@ impl Spec {
         }
 
         for (i, run) in self.run_list().iter().enumerate() {
+            validate_env(&format!("run[{i}].env"), &run.env, &mut out);
             if !aliases.contains(&run.exec.as_str()) {
                 out.push(Problem {
                     field: format!("run[{i}].exec"),
@@ -966,6 +979,29 @@ impl Spec {
             }
         }
 
+        // Asking a model for a non-interpreter's arguments is supported, but the
+        // laundering ban keys off `interpreter`, so those arguments do not demote
+        // the invocation the way model-written code would. Say so: the argv is
+        // still agent-authored, and it runs with full tool-lane authority.
+        if let Some(a) = &self.agent {
+            if self
+                .tools
+                .iter()
+                .any(|t| t.alias == a.exec && !t.interpreter)
+            {
+                out.push(Warning {
+                    field: "agent.exec".into(),
+                    message: format!(
+                        "{:?} is not an interpreter, so the model writes its arguments \
+                         rather than a program. Those arguments are agent-authored but \
+                         do not demote the call — it runs in the tool lane. Use [run] to \
+                         pin the argv yourself if that authority matters here.",
+                        a.exec
+                    ),
+                });
+            }
+        }
+
         if self.tools.is_empty() {
             out.push(Warning {
                 field: "tool".into(),
@@ -988,6 +1024,27 @@ impl Spec {
     /// Guest memory in bytes.
     pub fn memory_bytes(&self) -> u64 {
         parse_size(&self.cell.memory).unwrap_or(256 << 20)
+    }
+}
+
+/// Environment entries become `execve` strings. Reject the characters that
+/// cannot be represented there while the spec is still reviewable TOML.
+fn validate_env(field: &str, env: &BTreeMap<String, String>, out: &mut Vec<Problem>) {
+    for (name, value) in env {
+        if name.is_empty() || name.contains('=') || name.contains('\0') {
+            out.push(Problem {
+                field: format!("{field}.{name}"),
+                message: "is not a valid environment variable name".into(),
+                fix: "use a non-empty name containing neither '=' nor a NUL byte".into(),
+            });
+        }
+        if value.contains('\0') {
+            out.push(Problem {
+                field: format!("{field}.{name}"),
+                message: "contains a NUL byte".into(),
+                fix: "environment values cannot contain NUL bytes".into(),
+            });
+        }
     }
 }
 
@@ -1114,14 +1171,10 @@ interpreter = true             # see below
 # launder agent-authored code into full authority. Mark interpreters as
 # interpreters.
 
-[run]
+# Let a provider write what to run. `--prompt` overrides `prompt` here.
+[agent]
 exec = "/usr/bin/python"
-args = ["-c", "print('hello from a sealed cell')"]
-# Where the input came from:
-#   none — nothing interpreted
-#   tool — came in through the attestation gate
-#   data — the agent wrote it  (demotes an interpreter)
-input = "data"
+prompt = "<describe what you want it to do>"
 "#;
 
 #[cfg(test)]
@@ -1159,7 +1212,29 @@ mod tests {
         assert_eq!(spec.name, "my-agent");
         assert_eq!(spec.tools.len(), 1);
         assert!(spec.tools[0].interpreter);
-        assert_eq!(spec.run_list()[0].input, Input::Data);
+        // The starter spec asks a provider for what to run rather than hard-coding
+        // an invocation, so the prompt is the one blank a newcomer fills in.
+        let agent = spec.agent.as_ref().expect("template declares [agent]");
+        assert_eq!(agent.exec, spec.tools[0].alias);
+        assert!(agent.prompt.is_some());
+        assert!(
+            spec.run_list().is_empty(),
+            "the model supplies the run; a static one would shadow it"
+        );
+    }
+
+    #[test]
+    fn a_legacy_agent_task_is_read_as_a_prompt() {
+        let spec = spec_from(
+            "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
+             interpreter = true\n[agent]\nexec = \"/p\"\ntask = \"hello\"\n",
+        );
+        assert_eq!(
+            spec.agent
+                .as_ref()
+                .and_then(|agent| agent.prompt.as_deref()),
+            Some("hello")
+        );
     }
 
     #[test]
@@ -1206,15 +1281,20 @@ mod tests {
         // not a declared tool
         let s = spec_from(&format!("{base}[agent]\nexec = \"/ghost\"\n"));
         assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
-        // declared, but not an interpreter
+        // Declared but not an interpreter is legal: the model writes that tool's
+        // arguments instead of a program, which is the only way a tool like curl
+        // can be driven from a task. It warns, because the argv is agent-authored
+        // yet the call keeps tool-lane authority.
         let s = spec_from(&format!("{base}[agent]\nexec = \"/p\"\n"));
-        assert!(s.problems().iter().any(|p| p.field == "agent.exec"));
-        // an interpreter is fine
+        assert!(!s.problems().iter().any(|p| p.field == "agent.exec"));
+        assert!(s.warnings().iter().any(|w| w.field == "agent.exec"));
+        // an interpreter is fine, and says nothing
         let ok = spec_from(
             "name = \"x\"\n[[tool]]\nalias = \"/p\"\npath = \"/bin/sh\"\n\
              interpreter = true\n[agent]\nexec = \"/p\"\n",
         );
         assert!(!ok.problems().iter().any(|p| p.field.starts_with("agent")));
+        assert!(!ok.warnings().iter().any(|w| w.field.starts_with("agent")));
     }
 
     #[test]
@@ -1245,6 +1325,24 @@ mod tests {
         // every invocation is checked, not just the first
         let bad = spec_from("name = \"x\"\n[[run]]\nexec = \"/ok\"\n[[run]]\nexec = \"/ghost\"\n");
         assert!(bad.problems().iter().any(|p| p.field == "run[1].exec"));
+    }
+
+    #[test]
+    fn invocation_environment_is_explicit_and_validated() {
+        let spec = spec_from(
+            "name = \"x\"\n[run]\nexec = \"/a\"\n[run.env]\nGOROOT = \"/usr/local/go\"\n",
+        );
+        assert_eq!(
+            spec.run_list()[0].env.get("GOROOT"),
+            Some(&"/usr/local/go".into())
+        );
+
+        let bad =
+            spec_from("name = \"x\"\n[run]\nexec = \"/a\"\n[run.env]\n\"BAD=NAME\" = \"x\"\n");
+        assert!(bad
+            .problems()
+            .iter()
+            .any(|p| p.field == "run[0].env.BAD=NAME"));
     }
 
     #[test]

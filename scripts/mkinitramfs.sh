@@ -63,7 +63,8 @@ elif rustup target list --installed 2>/dev/null | grep -q x86_64-unknown-linux-m
   cp "$root/target/x86_64-unknown-linux-musl/release/celln-pilot" "$work/pilot"
   cp "$root/target/x86_64-unknown-linux-musl/release/pilot-fetch" "$work/pilot-fetch"
 else
-  printf 'pilot:    skipped (install a distribution with guest assets, or run rustup target add x86_64-unknown-linux-musl)\n'
+  echo 'pilot missing — install a distribution with guest assets, or run: rustup target add x86_64-unknown-linux-musl' >&2
+  exit 1
 fi
 
 if [ -x "$work/pilot" ]; then
