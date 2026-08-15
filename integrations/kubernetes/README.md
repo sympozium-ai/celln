@@ -23,23 +23,17 @@ the host root filesystem, or an ambient network capability into a cell.
 ./integrations/kubernetes/prove.sh
 ```
 
-The script builds and loads the local image, deploys the DaemonSet, and writes the
-real node report and admission verdict below `target/kubernetes-proof/`. The current
-kind node exposes `/dev/kvm`, so an unavailable KVM boundary would be reported as
-`unsupported`, never silently downgraded. It does not contain a prepared Celln mote
-or tool store, so this fresh cluster truthfully returns `no_eligible_node`. Populate
-signed mote and tool stores on the node before a node is eligible; do not create
-placeholder files just to make the report pass.
+The preflight requires Cargo, Docker, Kind, kubectl, and jq on an x86-64 host.
+The script builds the static Celln CLI, packages it as `celln-node:dev`, loads it
+into an ephemeral Kind cluster, and writes evidence below
+`target/kubernetes-proof/`. Its first conformance case deliberately gives the pod
+no `/dev/kvm`: an execution request requiring hardware isolation must exit `5`
+and return `verdict: refused` with `reason: unsupported`, never silently
+downgrade or pretend the request ran.
 
-The command emits JSON only. `verdict: accepted` means the node admitted the intent;
-it does not claim the request's workload was run. An accepted node now also requires
-a bootable guest kernel: KVM visibility and non-empty directories are not a truthful
-execution capability. The versioned terminal result contract is
-[`examples/execution/succeeded-receipt.json`](../../examples/execution/succeeded-receipt.json);
-it binds a request, node, cell, resolved authority, and optional output to immutable
-BLAKE3 references. It is a contract for the dispatcher, not evidence that a dispatcher
-exists yet. Executing a workload through the node agent and writing that receipt back
-to Sympozium remains the next slice.
+This is an admission preflight, not an isolation proof. It does not accept or run
+the workload, and it makes no claim about guest enforcement. The cluster is
+deleted after the run; set `KEEP_CLUSTER=1` to retain it for inspection.
 
 ## Exercise actual Celln cells on the KVM host
 
@@ -60,9 +54,3 @@ latter; it stores raw hardware measurements in `target/celln-bench/`.
 
 Open `docs/kubernetes.html` locally for the full-stack SVG and two animated
 walkthroughs, including the recorded 10- and 20-run measurements.
-
-Clean up with:
-
-```sh
-kubectl delete -f integrations/kubernetes/node-probe.yaml
-```
