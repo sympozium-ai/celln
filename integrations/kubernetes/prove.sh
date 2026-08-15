@@ -15,7 +15,7 @@ cluster_created=false
 cleanup() {
   rm -rf "$image_context"
   if [[ "$cluster_created" == true && "${KEEP_CLUSTER:-0}" != 1 ]]; then
-    kind delete cluster --name "$cluster" >/dev/null
+    kind delete cluster --name "$cluster" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -61,8 +61,8 @@ cp "$binary" "$image_context/celln"
 
 echo "building and loading $image"
 docker build --tag "$image" --file "$root/integrations/kubernetes/Dockerfile" "$image_context"
-kind create cluster --name "$cluster" --wait 120s
 cluster_created=true
+kind create cluster --name "$cluster" --wait 120s
 kind load docker-image "$image" --name "$cluster"
 
 echo "running unsupported-hardware conformance case"
