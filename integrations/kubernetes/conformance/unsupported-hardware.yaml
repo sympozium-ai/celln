@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: celln-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: celln-conformance-unsupported-request
+  namespace: celln-system
+data:
+  request.json: |
+    {
+      "apiVersion": "celln.dev/v1alpha1",
+      "id": "celln-conformance-unsupported",
+      "workload": {
+        "id": "conformance-unsupported",
+        "caller": "celln:conformance"
+      },
+      "mote": {
+        "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "tools": [],
+      "capabilities": {
+        "workspace": "none",
+        "egress": [],
+        "timeoutMs": 30000,
+        "memoryBytes": 268435456,
+        "outputBytes": 65536
+      },
+      "execution": {
+        "lane": "agent",
+        "requireHardwareIsolation": true
+      }
+    }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: celln-conformance-unsupported
+  namespace: celln-system
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: celln-conformance
+        celln.dev/conformance-case: unsupported-hardware
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      containers:
+      - name: conformance
+        image: celln-node:dev
+        imagePullPolicy: Never
+        command: ["/bin/sh", "-ec"]
+        args:
+        - |
+          set +e
+          output="$(celln node admit /requests/request.json \
+            --node-name="$NODE_NAME" \
+            --mote-store=/var/lib/celln/motes \
+            --tool-store=/var/lib/celln/tools \
+            --max-cells=1 \
+            --memory-bytes=268435456 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [ "$status" -ne 5 ]; then
+            echo "expected celln node admit to exit 5, got $status" >&2
+            exit 1
+          fi
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: request
+          mountPath: /requests
+          readOnly: true
+      volumes:
+      - name: request
+        configMap:
+          name: celln-conformance-unsupported-request
