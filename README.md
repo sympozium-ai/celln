@@ -14,14 +14,15 @@ $ celln agent --tool python "decode this base64 and name the file type: R0lGODlh
 GIF image
 ```
 
-A model wrote that code. An attested python ran it, on input you have no reason
-to trust, in a cell with no network and nothing writable but `/tmp` — then the
-cell dissolved.
+Behind that command, a model wrote a short Python program. An attested Python
+interpreter ran it against untrusted input, inside a cell with no network and
+nothing writable but `/tmp`. Then the cell dissolved.
 
-Read the second line again. It says **agent** lane, and you never had to ask
-for it. python is fully attested and keeps its hash, but code a model wrote is
-agent-authored input, and handing that to a tool marked `interpreter = true`
-demotes the invocation. Authority is decided per call, not per binary.
+Notice the permission line: `/usr/bin/python permitted in the agent lane`.
+Celln selected that lane automatically. The Python binary remains attested and
+its hash does not change, but the model-written program is agent-authored input.
+Handing that input to a tool marked `interpreter = true` demotes this call to
+the agent lane. Authority is decided per call, not per binary.
 
 <p align="center">
   <img src="docs/assets/stack.gif" width="940"
@@ -120,10 +121,11 @@ curl 8.21.0 (x86_64-pc-linux-musl) libcurl/8.21.0 OpenSSL/3.5.7 …
 ● cell dissolved
 ```
 
-Look at the two OpenSSL versions. python came from a glibc image, curl from
-a musl one — two libcs and two TLS stacks in the same cell, each its own sealed
-namespace, neither aware of the other. Nothing was installed, and nothing
-persists: the tools are read-only memory the host lent and can revoke.
+Look at the two OpenSSL versions. Python came from a glibc image and curl from
+a musl image: two C libraries and two TLS stacks in the same cell. Each tool has
+its own sealed namespace, and neither is aware of the other. Nothing was
+installed, and nothing persists; the host lends the tool memory read-only and
+can revoke it.
 
 Need a tool that isn't shipped? One command — give it a tag, celln pins the
 digest:
@@ -149,7 +151,7 @@ $ celln image catalogue
   ✔ curl       /usr/bin/curl                materialised
 ```
 
-**2. Write a spec** — what your agent may be lent, and what it intends to run.
+**2. Write a spec** — what the cell may be lent, and what it intends to run.
 
 ```sh
 celln image spec python > agent.toml     # or: celln spec init
@@ -173,6 +175,10 @@ exec = "/usr/bin/python"
 args = ["-c", "print(1 + 1)"]
 input = "data"                # the agent wrote it
 ```
+
+`input = "data"` declares that the invocation consumes agent-authored input.
+Together with `interpreter = true`, it lets Celln predict the agent-lane verdict
+before the cell is created; pilot enforces the same decision inside the cell.
 
 A tool comes from exactly one of three places: `image` + `exec` for a closure,
 `path` for a single static binary already on this host, or `builtin = "fetch"`
@@ -250,9 +256,10 @@ $ celln agent --tool python "decode this base64 and name the file type: R0lGODlh
 GIF image
 ```
 
-You never had to ask for the **agent** lane there. The model's code is
-agent-authored input handed to a tool marked `interpreter = true`, so it is
-demoted for that invocation — python keeps its hash and loses its authority.
+Celln selected the **agent** lane automatically. The model's code is
+agent-authored input handed to a tool marked `interpreter = true`, so that
+invocation is demoted. The Python binary keeps its attested identity; only the
+authority of this call changes.
 
 **Or forged from source.** Without `--tool`, the model writes Rust and Celln
 compiles it, which is where the more interesting claim lives:
@@ -270,12 +277,12 @@ $ celln agent "print the first 100 primes, space separated"
 2 3 5 7 11 13 17 19 23 29 31 ...
 ```
 
-The program ran in the **agent lane**. The
-program was graded `forged` — we compiled it ourselves from source we hold. It
-is still `author=agent`, and agent-authored code never carries tool-lane
-authority at any tier. Pilot gives it only its own executable plus a writable
-workspace; Landlock rejects other filesystem access and seccomp rejects network
-and privileged syscalls.
+The program ran in the **agent lane**. It was graded `forged` because Celln
+compiled it from source it holds and reproduced the same binary. It is still
+`author=agent`, and agent-authored code never carries tool-lane authority at any
+tier. Pilot gives it only its own executable plus a writable workspace;
+Landlock rejects other filesystem access, and seccomp rejects network and
+privileged syscalls.
 
 Compiling is not a way around that. `rustc` fed model-written source is
 `python` fed model-written source with the interpretation moved earlier; if the
@@ -283,19 +290,22 @@ laundering ban stops one it has to stop both.
 
 ## Execution lanes
 
-- **Tool lane**: host-provided, attested tools use only the authority the cell loans them.
-- **Agent lane**: agent-authored code gets only explicitly loaned capabilities: its executable and workspace by default, with no network.
-- **Data**: bytes the agent produced or fetched. Data never gains authority by being handed to an attested tool.
+- **Tool lane**: host-provided, attested tools use only the authority the cell
+  loans them.
+- **Agent lane**: agent-authored code gets only explicitly loaned capabilities:
+  its executable and workspace by default, with no network.
+- **Data**: bytes the agent produced or fetched. Data never gains authority by
+  being handed to an attested tool.
 
 An attested interpreter fed an agent-written script runs in the **agent lane**;
 it does not inherit tool-lane authority.
 
-The model writes the program **on the host**; `forge` compiles it **twice, in
-different directories**, and compares the bytes; `assay` grades on what that
-rebuild reported and records who wrote it; the binary is sealed into the cell as
-read-only memory; and pilot re-hashes it in the guest and decides for itself.
-Under DAX there is no page-cache copy, so the instructions the guest executes
-*are* the host's pages.
+For the compiled Rust path shown above, the model writes the program **on the
+host**. `forge` compiles it **twice, in different directories**, and compares
+the bytes. `assay` grades what that rebuild reported and records who wrote it.
+The binary is sealed into the cell as read-only memory, and pilot re-hashes it
+inside the guest before allowing it to run. Under DAX (direct access), there is
+no page-cache copy: the guest executes the pages supplied by the host.
 
 A `forged` tier requires a matching rebuild and records the reproduced recipe.
 Otherwise the artifact is `verified`. `assay` checks that a proof names the
@@ -330,9 +340,9 @@ default = "openai"
 `celln agent "…"` is for work that generates code to run; that path is where
 Celln seals and governs the resulting program. Without `--tool` the model
 writes Rust, which is forged into a static binary and attested. With
-`--tool python` it writes that tool's language instead, and the program is
-interpreted by a lent, attested interpreter — which makes it agent-authored
-input, and so agent-lane, automatically.
+`--tool python` it writes that tool's language instead. The resulting program
+is agent-authored input to a lent, attested interpreter, so Celln uses the agent
+lane automatically for that call.
 
 Network-shaped work must declare exactly where it may reach before a model is
 called:
@@ -358,8 +368,9 @@ ambient NIC.
 
 ## Output
 
-Human-readable on a terminal, NDJSON the moment it is not. No flag needed,
-though `--json` and `--no-json` force it either way.
+Output is human-readable when stdout is a terminal and NDJSON when it is piped
+or redirected. No flag is needed, though `--json` and `--no-json` override the
+automatic choice.
 
 ```sh
 celln run agent.toml | jq -r 'select(.event=="tool_resolved") | "\(.alias) \(.tier)"'
@@ -393,7 +404,7 @@ The full set is published at [sympozium-ai.github.io/celln](https://sympozium-ai
 
 | Topic | Where | Covers |
 |---|---|---|
-| Start here | [Start here](https://sympozium-ai.github.io/celln/start.html) | Five commands, about five minutes: install, connect an agent, then `doctor` / `spec` / `run` / `verify` / `agent` in order. |
+| Start here | [Start here](https://sympozium-ai.github.io/celln/start.html) | Five commands, about five minutes: install, configure a model provider, then `doctor` / `spec` / `run` / `verify` / `agent` in order. |
 | Command reference | [CLI](https://sympozium-ai.github.io/celln/cli.html) | The commands most people need, grouped: daily use, asking an agent, running declared tools, inspecting a run. |
 | Tutorial | [Tutorial](https://sympozium-ai.github.io/celln/tutorial.html) | Three worked cells, each teaching one idea; plus adding your own tool. |
 | Concepts hub | [Concepts](https://sympozium-ai.github.io/celln/concepts.html) | The four-page series below, as one entry point. |
