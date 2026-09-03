@@ -4,7 +4,7 @@ mod agent;
 mod cells;
 mod config;
 mod dispatch;
-mod dispatcher;
+mod dispatch_http;
 mod host;
 mod image;
 mod node;
@@ -357,7 +357,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             listen,
             token_file,
             probe,
-        } => dispatcher::serve(listen, token_file, root, probe),
+        } => dispatch_http::serve(listen, token_file, root, probe),
         Cmd::Route {
             listen,
             backends,

@@ -7,7 +7,9 @@
 //! admission ("can this node spawn another cell?") via the health check.
 //! One accepted request = one warden = one cell — no multiplexing.
 
-use crate::dispatcher::{read_bounded_line, MAX_HEADER_COUNT, MAX_HEADER_LINE, MAX_REQUEST_LINE};
+use crate::dispatch_http::{
+    read_bounded_line, MAX_HEADER_COUNT, MAX_HEADER_LINE, MAX_REQUEST_LINE,
+};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
