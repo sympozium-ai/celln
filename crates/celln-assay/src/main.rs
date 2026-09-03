@@ -91,10 +91,13 @@ fn main() -> Result<()> {
             } else {
                 celln_manifest::Author::Host
             };
-            let _ = author;
             let bytes = std::fs::read(&file)?;
-            let h = assayer.admit_verified(&alias, &bytes, interpreter)?;
-            println!("admitted {alias}\n  {h}\n  tier=verified author=host");
+            let h = assayer.admit_verified_authored(&alias, &bytes, interpreter, author)?;
+            let entry = assayer.manifest().get(&h).expect("just admitted");
+            println!(
+                "admitted {alias}\n  {h}\n  tier={} author={}",
+                entry.tier, entry.author
+            );
             // Verified, not Forged, and the difference is the whole point: we
             // have these bytes and hashed them, but nothing rebuilt them. Use
             // `assay forge` when the source is available and the tier should

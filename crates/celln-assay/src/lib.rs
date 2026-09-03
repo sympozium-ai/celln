@@ -65,13 +65,27 @@ impl Assayer {
         bytes: &[u8],
         interpreter: bool,
     ) -> Result<Hash, AssayError> {
+        self.admit_verified_authored(alias, bytes, interpreter, Author::Host)
+    }
+
+    /// Admit externally built bytes at `Verified`, preserving who authored
+    /// their source. Agent authorship is execution-relevant provenance: it
+    /// keeps the artifact out of the tool lane even though the bytes are
+    /// hash-pinned and verified.
+    pub fn admit_verified_authored(
+        &mut self,
+        alias: &str,
+        bytes: &[u8],
+        interpreter: bool,
+        author: Author,
+    ) -> Result<Hash, AssayError> {
         let hash = self.store.put(bytes)?;
         self.manifest.admit(Entry {
             alias: alias.into(),
             hash: hash.clone(),
             tier: Tier::Verified,
             interpreter,
-            author: Author::Host,
+            author,
             recipe: None,
         });
         self.manifest.sign_standin();
