@@ -199,6 +199,28 @@ pub fn list(root: &Path) -> Vec<Record> {
     out
 }
 
+/// Count cells whose owning process is still alive.
+///
+/// The registry is the source of truth used by `celln ps`; node admission must
+/// use the same definition of "live" or its advertised capacity will disagree
+/// with the operator-visible state.
+pub fn live_count(root: &Path) -> u32 {
+    live_count_excluding_pid(root, None)
+}
+
+/// Count live cells, optionally excluding records owned by one process.
+///
+/// The dispatcher reserves slots for its own workers before their cells exist,
+/// so it excludes its PID here to avoid counting a running dispatch twice.
+pub fn live_count_excluding_pid(root: &Path, excluded_pid: Option<u32>) -> u32 {
+    list(root)
+        .into_iter()
+        .filter(|record| excluded_pid != Some(record.pid) && record.live().is_live())
+        .count()
+        .try_into()
+        .unwrap_or(u32::MAX)
+}
+
 /// Drop the oldest records past [`KEEP`].
 fn prune(root: &Path) {
     let all = list(root);

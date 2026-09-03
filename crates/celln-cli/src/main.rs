@@ -371,8 +371,8 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             *mode,
             token_file.as_deref(),
         ),
-        Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe),
-        Cmd::Node(NodeCmd::Admit { request, probe }) => node::admit_file(request, probe),
+        Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe, &root),
+        Cmd::Node(NodeCmd::Admit { request, probe }) => node::admit_file(request, probe, &root),
         Cmd::Node(NodeCmd::Resolve {
             request,
             mote_store,

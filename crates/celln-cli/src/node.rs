@@ -20,13 +20,14 @@ pub struct NodeEligibility {
     pub guest_kernel: bool,
     pub mote_store: bool,
     pub tool_store: bool,
+    pub live_cells: u32,
     pub max_cells: u32,
     pub memory_bytes: u64,
     pub egress_slots: u32,
 }
 
 impl NodeEligibility {
-    pub(crate) fn from_probe(args: &NodeProbeArgs) -> Self {
+    pub(crate) fn from_probe(args: &NodeProbeArgs, live_cells: u32) -> Self {
         let host = Host::probe();
         Self {
             node_name: args.node_name.clone(),
@@ -35,6 +36,7 @@ impl NodeEligibility {
             guest_kernel: host.get("guest-kernel"),
             mote_store: has_entries(&args.mote_store),
             tool_store: has_entries(&args.tool_store),
+            live_cells,
             max_cells: args.max_cells,
             memory_bytes: args.memory_bytes,
             egress_slots: args.egress_slots,
@@ -47,7 +49,7 @@ impl NodeEligibility {
             && self.guest_kernel
             && self.mote_store
             && self.tool_store
-            && self.max_cells > 0
+            && self.live_cells < self.max_cells
             && self.memory_bytes > 0
     }
 }
@@ -58,6 +60,7 @@ pub enum RefusalCode {
     InvalidRequest,
     Unsupported,
     NoEligibleNode,
+    AtCapacity,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,16 +79,19 @@ pub enum Admission {
     },
 }
 
-pub fn probe(args: &NodeProbeArgs) -> Result<u8> {
-    print_json(&NodeEligibility::from_probe(args))
+pub fn probe(args: &NodeProbeArgs, root: &Path) -> Result<u8> {
+    print_json(&NodeEligibility::from_probe(
+        args,
+        crate::cells::live_count(root),
+    ))
 }
 
-pub fn admit_file(path: &Path, args: &NodeProbeArgs) -> Result<u8> {
+pub fn admit_file(path: &Path, args: &NodeProbeArgs, root: &Path) -> Result<u8> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading execution request {}", path.display()))?;
     let request: ExecutionRequest = serde_json::from_str(&text)
         .with_context(|| format!("parsing execution request {}", path.display()))?;
-    let node = NodeEligibility::from_probe(args);
+    let node = NodeEligibility::from_probe(args, crate::cells::live_count(root));
     let result = admit(&request, &node);
     let code = match result {
         Admission::Accepted { .. } => exit::OK,
@@ -127,6 +133,14 @@ pub fn admit(request: &ExecutionRequest, node: &NodeEligibility) -> Admission {
             request_id: request.id.clone(),
             node: node.clone(),
             reason: RefusalCode::Unsupported,
+            problems: Vec::new(),
+        };
+    }
+    if node.live_cells >= node.max_cells {
+        return Admission::Refused {
+            request_id: request.id.clone(),
+            node: node.clone(),
+            reason: RefusalCode::AtCapacity,
             problems: Vec::new(),
         };
     }
@@ -184,6 +198,7 @@ mod tests {
             guest_kernel: false,
             mote_store: true,
             tool_store: true,
+            live_cells: 0,
             max_cells: 1,
             memory_bytes: 1,
             egress_slots: 0,
@@ -219,6 +234,7 @@ mod tests {
             guest_kernel: false,
             mote_store: true,
             tool_store: true,
+            live_cells: 0,
             max_cells: 1,
             memory_bytes: 1,
             egress_slots: 0,
@@ -228,6 +244,42 @@ mod tests {
             admit(&request, &node),
             Admission::Refused {
                 reason: RefusalCode::NoEligibleNode,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn admission_refuses_a_node_at_its_cell_limit() {
+        let request: ExecutionRequest = serde_json::from_str(
+            r#"{
+                "apiVersion": "celln.dev/v1alpha1",
+                "id": "run-at-capacity",
+                "workload": { "id": "review", "caller": "sympozium:default/run-at-capacity" },
+                "mote": { "hash": "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+                "tools": [],
+                "capabilities": { "workspace": "none", "timeoutMs": 1000, "memoryBytes": 1, "outputBytes": 1 },
+                "execution": { "lane": "agent", "requireHardwareIsolation": true }
+            }"#,
+        )
+        .expect("request parses");
+        let node = NodeEligibility {
+            node_name: "full-node".into(),
+            kvm: true,
+            cpu_virtualization: true,
+            guest_kernel: true,
+            mote_store: true,
+            tool_store: true,
+            live_cells: 2,
+            max_cells: 2,
+            memory_bytes: 1,
+            egress_slots: 0,
+        };
+
+        assert!(matches!(
+            admit(&request, &node),
+            Admission::Refused {
+                reason: RefusalCode::AtCapacity,
                 ..
             }
         ));
