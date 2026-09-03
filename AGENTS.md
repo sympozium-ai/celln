@@ -14,7 +14,8 @@ of the design corpus in `docs/`.
 ## Constraints (from the build plan §1)
 
 1. The guest never boots in the hot path — spawn is a CoW fork of a warm mote.
-2. No in-kernel network stack; AF_INET is marshalled over vsock to a host proxy.
+2. No in-kernel network stack; `pilot-fetch` sends bounded HTTPS requests over
+   four dedicated PIO ports (`0x500`-`0x503`) to the host proxy.
 3. The filesystem has no authority to run code — exec is by content hash against
    a signed manifest.
 4. Tool code is unwritable from the guest side (stage-2 sealing).
