@@ -204,6 +204,16 @@ impl Assayer {
 
     /// Simulate one background rebuild completing: pop the queue and upgrade that
     /// artifact's tier to Forged. Future cells silently get the better tier.
+    ///
+    /// Nothing in the production `celln run`/`celln agent` path calls this —
+    /// `rebuild_queue` is populated by [`Self::resolve`] but is only ever
+    /// drained by demo/test code (`celln-pilot`'s `demo`/`demo_kvm`, and the
+    /// tests below), and lives on an `Assayer` that is opened fresh and
+    /// dropped every CLI invocation, so nothing persists between them either.
+    /// There is currently no real background worker: a cold tool served at
+    /// `Verified` does not upgrade to `Forged` on its own. Do not surface
+    /// `upgrade_queued`/`pending_rebuilds` to a user as a promise that one is
+    /// coming unless a real worker actually drains this queue.
     pub fn run_one_rebuild(&mut self) -> Option<Hash> {
         let hash = self.rebuild_queue.pop_front()?;
         if let Some(entry) = self.manifest.get(&hash).cloned() {

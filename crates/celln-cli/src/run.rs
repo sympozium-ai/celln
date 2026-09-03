@@ -358,7 +358,7 @@ pub fn run_spec(
                 dim(if r.warm {
                     "warm — page map, no build"
                 } else {
-                    "cold — verified now, forged queued"
+                    "cold — verified now"
                 })
             ),
         );

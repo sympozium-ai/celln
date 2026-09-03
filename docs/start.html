@@ -63,7 +63,7 @@ run
 <h2 id="run">Seal a cell</h2>
 <pre>$ celln agent agent.toml
 &#9679; sealing cell code-reviewer
-  + /usr/bin/python        tier=verified cold &mdash; verified now, forged queued
+  + /usr/bin/python        tier=verified cold &mdash; verified now
   &middot; microVM sealed, phase=Materialise
   &middot; /usr/bin/python sealed read-only into the cell
   &middot; authority ratcheted to Work &mdash; no further tools can be lent
@@ -71,7 +71,7 @@ run
 &#9679; cell dissolved</pre>
 <p><strong>Expected result.</strong></p>
 <ul>
-<li><code>cold — verified now, forged queued</code>: an unseen tool is admitted at Verified in seconds and a hermetic rebuild is queued behind the traffic. Launch is never slow; trust upgrades asynchronously. Run it again and it is <code>warm — page map, no build</code>.</li>
+<li><code>cold — verified now</code>: an unseen tool is admitted at Verified in seconds, straight off the bytes you gave it — launch is never slow. Run it again and it is <code>warm — page map, no build</code>. Reaching <code>Forged</code> is earned by a proven double-compile-and-reproduce (see how <code>celln agent</code> forges agent-written source in <a href="agent-lane.html">the agent lane</a>); an externally-sourced tool does not upgrade to <code>Forged</code> in the background on its own.</li>
 <li><code>authority ratcheted to Work</code>: once any agent-authored code has run, the cell can never be lent another tool. Authority only shrinks, and the host enforces it, so a compromised cell cannot roll it back.</li>
 <li>Your Python binary is sealed into the microVM's physical address space as read-only memory.</li>
 </ul>
