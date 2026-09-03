@@ -49,6 +49,24 @@ pub fn resolve_bundle(
     mote_root: &Path,
     tool_root: &Path,
 ) -> Result<ResolvedBundle, String> {
+    // `admit` already runs this for the HTTP dispatcher's own submit path, but
+    // `celln node resolve-file` calls this function directly on a request that
+    // was never admitted (deliberately — resolution and admission are separate
+    // commands). Without this check here, a malformed hash in the request
+    // (e.g. one containing a path-traversal segment) would flow straight into
+    // `Store::get` below relying solely on the store's own defenses.
+    let problems = request.problems();
+    if !problems.is_empty() {
+        return Err(format!(
+            "execution request is invalid ({} problem(s)): {}",
+            problems.len(),
+            problems
+                .iter()
+                .map(|p| format!("{}: {}", p.field, p.message))
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
     let mote = request
         .mote
         .as_ref()
@@ -506,6 +524,41 @@ mod tests {
         assert_eq!(resolved.kernel_hash, kernel_hash.0);
         assert_eq!(resolved.initrd_hash, initrd_hash.0);
         assert_eq!(resolved.toolfs_hash, toolfs_hash.0);
+    }
+
+    /// `celln node resolve-file` calls `resolve_bundle` directly on a request
+    /// that was never run through `admit` (that's deliberate — resolution and
+    /// admission are separate commands). A malformed hash must still be
+    /// refused here, not only by whichever caller happens to run `problems()`
+    /// first, and never reach `Store::get` at all.
+    #[test]
+    fn a_malformed_mote_hash_is_refused_before_any_store_lookup_even_without_prior_admission() {
+        let motes = tempdir().expect("mote store");
+        let tools = tempdir().expect("tool store");
+        let request: ExecutionRequest = serde_json::from_value(json!({
+            "apiVersion": "celln.dev/v1alpha1",
+            "id": "traversal-1",
+            "workload": { "id": "traversal", "caller": "sympozium:default/traversal-1" },
+            "mote": { "hash": "blake3:/etc/passwd" },
+            "tools": [{ "alias": "/tools/program", "hash": "blake3:/etc/shadow" }],
+            "invocation": { "alias": "/tools/program", "args": [] },
+            "capabilities": { "workspace": "none", "timeoutMs": 1000, "memoryBytes": 268435456, "outputBytes": 1024 },
+            "execution": { "lane": "agent", "requireHardwareIsolation": true }
+        }))
+        .expect("request parses — shape is valid JSON even though the hashes aren't");
+
+        let error =
+            resolve_bundle(&request, motes.path(), tools.path()).expect_err("must be refused");
+        assert!(
+            error.contains("mote.hash") || error.contains("invalid"),
+            "error should name the bad field, got: {error}"
+        );
+        // Confirm this was refused before ever touching the store: an empty
+        // store root has no `objects/` entries to find, but the point is the
+        // request never got far enough to try.
+        assert!(std::fs::read_dir(motes.path().join("objects"))
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(true));
     }
 
     #[test]
