@@ -2,10 +2,11 @@
 //!
 //! Run `cargo run -p celln-pilot --features kvm --bin celln-fetch-proof -- URL` on a
 //! KVM host. A pass means a program running *inside* a real cell invoked the
-//! guest-only `/pilot-fetch` client and received a bounded HTTPS response from
-//! the host broker. It deliberately runs in the agent lane, which is the
-//! public `celln agent --allow-host` path and the one that must be able to
-//! execute the broker client without receiving authority over other guest code.
+//! guest-only `/pilot-fetch` client, proved that its three I/O ports work while
+//! the adjacent port is denied, and received a bounded HTTPS response from the
+//! host broker. It deliberately runs in the agent lane, which is the public
+//! `celln agent --allow-host` path and the one that must be able to execute the
+//! broker client without receiving authority over other guest code.
 
 use anyhow::{bail, Context, Result};
 use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
@@ -100,6 +101,9 @@ fn main() -> Result<()> {
     if !report
         .console
         .contains("CELLN:pilot_run_/probe=permitted:agent")
+        || !report
+            .console
+            .contains("CELLN_FETCH_IOPERM_OK ports=0x500-0x502 denied=0x503:SIGSEGV")
         || !report.console.contains("CELLN_FETCH_OK bytes=")
     {
         bail!(
@@ -107,7 +111,9 @@ fn main() -> Result<()> {
             report.tail(40)
         );
     }
-    println!("PASS: a real cell fetched HTTPS through pilot; no guest network device was present");
+    println!(
+        "PASS: a real cell used only pilot-fetch ports 0x500-0x502 and fetched HTTPS through pilot"
+    );
     Ok(())
 }
 
