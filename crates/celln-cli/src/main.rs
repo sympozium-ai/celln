@@ -71,9 +71,17 @@ enum Cmd {
         /// Socket address to bind, for example 127.0.0.1:8787.
         #[arg(long, default_value = "127.0.0.1:8787")]
         listen: String,
+        /// Permit a non-loopback bind. UNSAFE by itself: the dispatcher speaks
+        /// plaintext HTTP, so a TLS-terminating reverse proxy is required.
+        #[arg(long)]
+        unsafe_non_loopback: bool,
         /// File containing the bearer token accepted from the control plane.
         #[arg(long)]
         token_file: PathBuf,
+        /// Exact HTTPS hostname requests may ask the host broker to reach.
+        /// Repeat for each allowed host; no entries means deny all egress.
+        #[arg(long, env = "CELLN_DISPATCHER_EGRESS_HOSTS", value_delimiter = ',')]
+        allow_egress_host: Vec<String>,
         /// This node's identity and capacity, used to admit
         /// `celln.dev/v1alpha1` ExecutionRequests posted to `/v1/executions`.
         #[command(flatten)]
@@ -355,9 +363,18 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
         Cmd::Doctor => Ok(doctor(o)),
         Cmd::Dispatcher {
             listen,
+            unsafe_non_loopback,
             token_file,
+            allow_egress_host,
             probe,
-        } => dispatch_http::serve(listen, token_file, root, probe),
+        } => dispatch_http::serve(
+            listen,
+            *unsafe_non_loopback,
+            token_file,
+            allow_egress_host,
+            root,
+            probe,
+        ),
         Cmd::Route {
             listen,
             backends,
@@ -520,6 +537,25 @@ fn doctor(o: &Out) -> u8 {
 #[cfg(test)]
 mod cli_tests {
     use super::*;
+
+    #[test]
+    fn dispatcher_defaults_to_loopback_and_requires_no_unsafe_opt_in() {
+        let cli = Cli::try_parse_from(["celln", "dispatcher", "--token-file", "/run/celln/token"])
+            .expect("dispatcher command parses");
+        match cli.cmd {
+            Cmd::Dispatcher {
+                listen,
+                unsafe_non_loopback,
+                allow_egress_host,
+                ..
+            } => {
+                assert_eq!(listen, "127.0.0.1:8787");
+                assert!(!unsafe_non_loopback);
+                assert!(allow_egress_host.is_empty(), "egress defaults to deny-all");
+            }
+            _ => panic!("expected dispatcher command"),
+        }
+    }
 
     #[test]
     fn an_agent_spec_accepts_prompt_and_legacy_task() {
