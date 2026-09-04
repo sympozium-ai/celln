@@ -49,7 +49,7 @@ enum Cmd {
         #[arg(long)]
         interpreter: bool,
     },
-    /// Run one queued background rebuild (Verified -> Forged).
+    /// Explain how to earn Forged; retained so old scripts fail honestly.
     Rebuild,
     /// Build from source and admit at Forged — but only if it reproduces.
     ///
@@ -142,39 +142,23 @@ fn main() -> Result<()> {
             let kind = if r.warm {
                 "WARM (page-map)"
             } else {
-                "COLD (verified+queued)"
+                "COLD (verified)"
             };
             println!(
-                "resolved {alias}\n  {}\n  tier={}  {}{}",
-                r.hash,
-                r.tier,
-                kind,
-                if r.upgrade_queued {
-                    "  [forged rebuild queued]"
-                } else {
-                    ""
-                }
+                "resolved {alias}\n  {}\n  tier={}  {}",
+                r.hash, r.tier, kind
             );
         }
-        Cmd::Rebuild => match assayer.run_one_rebuild() {
-            Some(h) => println!(
-                "rebuilt -> forged: {h}\n  pending={}",
-                assayer.pending_rebuilds()
-            ),
-            None => println!("no pending rebuilds"),
-        },
+        Cmd::Rebuild => anyhow::bail!(
+            "no background rebuild queue exists; use `assay forge <alias> <source.rs>` to earn Forged"
+        ),
         Cmd::Revoke { hash } => {
             assayer.revoke(&Hash(hash.clone()));
             println!("revoked {hash} (halts in all running cells)");
         }
         Cmd::Status => {
             let m = assayer.manifest();
-            println!(
-                "manifest: {} entries  signed={}  pending_rebuilds={}",
-                m.len(),
-                m.verify_standin(),
-                assayer.pending_rebuilds()
-            );
+            println!("manifest: {} entries  signed={}", m.len(), m.verify_standin());
         }
     }
     Ok(())

@@ -214,6 +214,7 @@ struct SockFprog {
 fn install_network_seccomp() -> io::Result<()> {
     const BPF_LD_W_ABS: u16 = 0x20;
     const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_JMP_JSET_K: u16 = 0x45;
     const BPF_RET_K: u16 = 0x06;
     const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
     const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
@@ -231,6 +232,10 @@ fn install_network_seccomp() -> io::Result<()> {
     // deny without ever matching a `nr` comparison written against the native
     // numbering.
     const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+    // x32 uses AUDIT_ARCH_X86_64 too, but tags its syscall numbers with this
+    // bit. Checking only `arch` therefore does not exclude the x32 syscall
+    // table; reject tagged numbers before comparing native syscall numbers.
+    const X32_SYSCALL_BIT: u32 = 0x4000_0000;
     let denied = [
         libc::SYS_socket,
         libc::SYS_socketpair,
@@ -257,9 +262,9 @@ fn install_network_seccomp() -> io::Result<()> {
         libc::SYS_io_uring_enter,
         libc::SYS_io_uring_register,
     ];
-    let mut filter = Vec::with_capacity(4 + denied.len() * 2);
-    // Refuse outright if this call isn't in the native x86_64 syscall table —
-    // e.g. a 32-bit/x32 compat entry, which the `nr` checks below don't cover.
+    let mut filter = Vec::with_capacity(6 + denied.len() * 2);
+    // Refuse outright if this call isn't in the x86 family. A 32-bit compat
+    // entry reports AUDIT_ARCH_I386 and is stopped here.
     filter.push(SockFilter {
         code: BPF_LD_W_ABS,
         jt: 0,
@@ -283,6 +288,20 @@ fn install_network_seccomp() -> io::Result<()> {
         jt: 0,
         jf: 0,
         k: SECCOMP_DATA_NR_OFFSET,
+    });
+    // x32 reports AUDIT_ARCH_X86_64, so its tagged syscall number needs a
+    // separate check. If the bit is clear, skip the errno return.
+    filter.push(SockFilter {
+        code: BPF_JMP_JSET_K,
+        jt: 0,
+        jf: 1,
+        k: X32_SYSCALL_BIT,
+    });
+    filter.push(SockFilter {
+        code: BPF_RET_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ERRNO | EPERM,
     });
     for syscall in denied {
         filter.push(SockFilter {
