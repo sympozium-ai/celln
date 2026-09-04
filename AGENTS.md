@@ -21,6 +21,8 @@ of the design corpus in `docs/`.
 4. Tool code is unwritable from the guest side (stage-2 sealing).
 5. Authority only shrinks — the ratchet is host-enforced in `warden`.
 6. Compatibility is a feature — every ABI break is a silent latency tax.
+7. Agent-lane workloads retain no Linux capabilities: bounding, ambient,
+   inheritable, permitted, and effective sets are empty before exec.
 
 ## Working rules
 
