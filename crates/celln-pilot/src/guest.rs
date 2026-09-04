@@ -66,6 +66,30 @@ const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
 const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
 
+// Linux capability UAPI. The v3 capset layout has two 32-bit words and is the
+// current ABI even on 64-bit machines.
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+const PR_CAP_AMBIENT: libc::c_int = 47;
+const PR_CAP_AMBIENT_CLEAR_ALL: libc::c_ulong = 4;
+const PR_SET_SECUREBITS: libc::c_int = 28;
+const SECBIT_NOROOT: libc::c_ulong = 1;
+const SECBIT_NOROOT_LOCKED: libc::c_ulong = 2;
+const CAPABILITY_WORDS: usize = 2;
+
+#[repr(C)]
+struct CapUserHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CapUserData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
 const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
     | LANDLOCK_ACCESS_FS_WRITE_FILE
     | LANDLOCK_ACCESS_FS_READ_FILE
@@ -195,7 +219,76 @@ fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    install_network_seccomp()
+    install_network_seccomp()?;
+    drop_agent_capabilities()
+}
+
+/// Remove Linux capabilities from the agent-lane child before it can execute.
+///
+/// No capability is retained: agent-authored code needs ordinary userspace
+/// operations only. Pilot remains in the parent, so its mount and shutdown
+/// duties do not justify lending `CAP_SYS_ADMIN` or any other capability to a
+/// workload. Bounding-set drops happen first because they require
+/// `CAP_SETPCAP`; `no_new_privs` was set by the caller, so exec cannot recover
+/// privilege from set-id or file-capability metadata.
+fn drop_agent_capabilities() -> io::Result<()> {
+    unsafe {
+        // UID 0 normally regains capabilities when executing an ordinary
+        // file. Disable and lock that compatibility rule before clearing the
+        // sets; no_new_privs alone is not a substitute for an empty set.
+        if libc::prctl(
+            PR_SET_SECUREBITS,
+            SECBIT_NOROOT | SECBIT_NOROOT_LOCKED,
+            0,
+            0,
+            0,
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Capability ABI v3 can represent 64 capability numbers. Kernels
+        // reject numbers above cap_last_cap with EINVAL; those are not valid
+        // bounding-set bits and can safely be skipped.
+        for capability in 0..(CAPABILITY_WORDS * u32::BITS as usize) {
+            if libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EINVAL) {
+                    return Err(error);
+                }
+            }
+        }
+
+        if libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let header = CapUserHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let empty = [
+            CapUserData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            },
+            CapUserData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            },
+        ];
+        if libc::syscall(
+            libc::SYS_capset,
+            &header as *const CapUserHeader,
+            empty.as_ptr(),
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 #[repr(C)]
