@@ -25,8 +25,11 @@ use pilot::{exec, ExecOutcome};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::io;
-use std::os::unix::process::CommandExt;
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 
 const WORKSPACE: &str = "/celln/work";
 
@@ -389,6 +392,163 @@ fn mount_scratch(root: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Open executable bytes once and hash that open object. The returned file is
+/// the authority-bearing handle used by [`exec_open_file`]; callers must never
+/// resolve the pathname again after this point.
+fn open_and_hash(path: &str) -> io::Result<(File, Hash)> {
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok((file, Hash::of(&bytes)))
+}
+
+fn child_error(error_fd: i32, error: io::Error) -> ! {
+    let errno = error.raw_os_error().unwrap_or(libc::EIO);
+    let bytes = errno.to_ne_bytes();
+    unsafe {
+        libc::write(error_fd, bytes.as_ptr().cast(), bytes.len());
+        libc::_exit(127);
+    }
+}
+
+/// Execute the already-opened, already-hashed file without another pathname
+/// lookup. `execveat(AT_EMPTY_PATH)` binds the exec to this exact file
+/// description even if its old name is replaced between verification and
+/// execution.
+fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<ExitStatus> {
+    let argv_strings: Vec<CString> = std::iter::once(req.path.as_str())
+        .chain(req.args.iter().map(String::as_str))
+        .map(|arg| CString::new(arg).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput)))
+        .collect::<io::Result<_>>()?;
+    let mut argv: Vec<*const libc::c_char> = argv_strings.iter().map(|arg| arg.as_ptr()).collect();
+    argv.push(std::ptr::null());
+
+    let env_strings: Vec<CString> = req
+        .env
+        .iter()
+        .map(|(key, value)| {
+            CString::new(format!("{key}={value}"))
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+        })
+        .collect::<io::Result<_>>()?;
+    let mut envp: Vec<*const libc::c_char> =
+        env_strings.iter().map(|value| value.as_ptr()).collect();
+    envp.push(std::ptr::null());
+
+    // A successful exec closes the write end, telling the parent setup
+    // completed. A child-side setup/exec error sends its errno first, matching
+    // the useful error behavior `Command::status` provided here previously.
+    let mut error_pipe = [0; 2];
+    if unsafe { libc::pipe2(error_pipe.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Keep the executable fd available to an interpreter for a shebang file.
+    // It grants no new authority: the workload is already allowed to read and
+    // execute these exact verified bytes.
+    let descriptor_flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFD) };
+    if descriptor_flags < 0
+        || unsafe {
+            libc::fcntl(
+                file.as_raw_fd(),
+                libc::F_SETFD,
+                descriptor_flags & !libc::FD_CLOEXEC,
+            )
+        } < 0
+    {
+        unsafe {
+            libc::close(error_pipe[0]);
+            libc::close(error_pipe[1]);
+        }
+        return Err(io::Error::last_os_error());
+    }
+
+    io::stdout().flush()?;
+    io::stderr().flush()?;
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        unsafe {
+            libc::close(error_pipe[0]);
+            libc::close(error_pipe[1]);
+        }
+        return Err(io::Error::last_os_error());
+    }
+    if pid == 0 {
+        unsafe { libc::close(error_pipe[0]) };
+        if let Some(root) = &req.root {
+            if let Err(error) = enter_root(root) {
+                child_error(error_pipe[1], error);
+            }
+        }
+        if confine {
+            let workspace = if req.root.is_some() {
+                "/tmp"
+            } else {
+                WORKSPACE
+            };
+            if let Err(error) = enter_agent_lane(workspace, &req.path) {
+                child_error(error_pipe[1], error);
+            }
+        }
+        let empty = b"\0";
+        unsafe {
+            libc::syscall(
+                libc::SYS_execveat,
+                file.as_raw_fd(),
+                empty.as_ptr().cast::<libc::c_char>(),
+                argv.as_ptr(),
+                envp.as_ptr(),
+                libc::AT_EMPTY_PATH,
+            );
+        }
+        child_error(error_pipe[1], io::Error::last_os_error());
+    }
+
+    unsafe { libc::close(error_pipe[1]) };
+    let mut errno_bytes = [0u8; std::mem::size_of::<i32>()];
+    let read = loop {
+        let read = unsafe {
+            libc::read(
+                error_pipe[0],
+                errno_bytes.as_mut_ptr().cast(),
+                errno_bytes.len(),
+            )
+        };
+        if read >= 0 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            break read;
+        }
+    };
+    unsafe { libc::close(error_pipe[0]) };
+    let read_error = (read < 0).then(io::Error::last_os_error);
+
+    let mut raw_status = 0;
+    loop {
+        let waited = unsafe { libc::waitpid(pid, &mut raw_status, 0) };
+        if waited == pid {
+            break;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+    if let Some(error) = read_error {
+        return Err(error);
+    }
+    if read == errno_bytes.len() as isize {
+        return Err(io::Error::from_raw_os_error(i32::from_ne_bytes(
+            errno_bytes,
+        )));
+    }
+    if read != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "partial child exec error",
+        ));
+    }
+    Ok(ExitStatus::from_raw(raw_status))
+}
+
 fn main() {
     report("pilot", "alive");
 
@@ -516,17 +676,16 @@ fn run_requested(manifest: &Manifest) {
 fn run_one(manifest: &Manifest, req: &RunRequest) {
     // Where pilot itself can read the bytes, which is not where the child will
     // exec them from: the child is chroot'ed, so its `/usr/bin/x` is pilot's
-    // `/tools/usr/bin/x`. Hash the bytes here, before any chroot, so the
-    // exec-by-hash check is made against the file that will actually run.
+    // `/tools/usr/bin/x`. Open once before any chroot, hash that descriptor,
+    // then exec the same descriptor: the pathname is never resolved twice.
     let host_view = match &req.root {
         Some(root) => format!("{root}{}", req.path),
         None => req.path.clone(),
     };
-    let Ok(code) = std::fs::read(&host_view) else {
+    let Ok((executable, hash)) = open_and_hash(&host_view) else {
         report(&format!("pilot_run_{}", req.alias), "absent");
         return;
     };
-    let hash = Hash::of(&code);
 
     // Anything the agent wrote demotes this invocation, per the laundering ban.
     let input = if req.agent_authored_input {
@@ -551,36 +710,8 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
             // Everything between these markers is the program's own output.
             // The host slices on them so a cell can be piped like any process.
             println!("CELLN:out-begin");
-            let mut command = std::process::Command::new(&req.path);
-            // `init` gives pilot an empty environment today, but make the
-            // boundary explicit here: future pilot variables must not become
-            // implicit workload authority.
-            command.env_clear();
-            command.envs(&req.env);
-            command.args(&req.args);
-            let root = req.root.clone();
-            let exec_path = req.path.clone();
-            // Inside a sealed image the only writable place is the tmpfs just
-            // mounted; outside one it is the initramfs scratch dir.
-            let workspace = if root.is_some() { "/tmp" } else { WORKSPACE }.to_string();
             let confine = lane != Lane::Tool;
-            if root.is_some() || confine {
-                unsafe {
-                    command.pre_exec(move || {
-                        // Order matters: chroot first, so every Landlock rule
-                        // below is resolved inside the image rather than
-                        // against pilot's own filesystem.
-                        if let Some(r) = &root {
-                            enter_root(r)?;
-                        }
-                        if confine {
-                            enter_agent_lane(&workspace, &exec_path)?;
-                        }
-                        Ok(())
-                    });
-                }
-            }
-            let status = command.status();
+            let status = exec_open_file(&executable, req, confine);
             println!("CELLN:out-end");
 
             match status {
@@ -612,4 +743,51 @@ fn finish(code: i32) {
         }
     }
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacing_the_verified_path_cannot_change_what_executes() {
+        let root = std::env::temp_dir().join(format!(
+            "celln-pilot-exec-fd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("creates test directory");
+        let path = root.join("program");
+        let replacement = root.join("replacement");
+        std::fs::copy("/bin/true", &path).expect("copies original executable");
+        std::fs::copy("/bin/false", &replacement).expect("copies replacement executable");
+
+        let (verified, verified_hash) =
+            open_and_hash(path.to_str().expect("utf-8 test path")).expect("opens original");
+        std::fs::rename(&replacement, &path).expect("replaces verified pathname");
+        assert_ne!(
+            Hash::of(&std::fs::read(&path).expect("reads replacement")),
+            verified_hash,
+            "the pathname must now identify different bytes"
+        );
+
+        let request = RunRequest {
+            path: path.to_string_lossy().into_owned(),
+            alias: "verified-fd".into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            agent_authored_input: false,
+            root: None,
+        };
+        let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
+        assert!(
+            status.success(),
+            "the opened /bin/true bytes must run, not replacement /bin/false"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
