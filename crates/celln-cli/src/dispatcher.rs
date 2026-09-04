@@ -137,6 +137,10 @@ struct State {
     executions: Executions,
 }
 
+fn execution_is_active(record: &ExecutionRecord) -> bool {
+    !matches!(record.phase.as_str(), "Succeeded" | "Failed" | "Refused")
+}
+
 pub fn serve(listen: &str, token_file: &Path, root: PathBuf, probe: &NodeProbeArgs) -> Result<u8> {
     let token = std::fs::read_to_string(token_file)
         .with_context(|| format!("reading dispatcher token {}", token_file.display()))?
@@ -257,6 +261,39 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 return reply(&mut stream, 202, &existing.value);
             }
             evict_expired(&mut registry);
+
+            // Reserve capacity while holding the same lock used to insert the
+            // execution. Without this atomic check, a burst can admit every
+            // request before any worker has created its cell. Registry entries
+            // cover pre-cell work such as forging too, so accepted work cannot
+            // overcommit the node while waiting to launch.
+            let reserved_cells: u32 = registry
+                .values()
+                .filter(|entry| execution_is_active(&entry.value))
+                .count()
+                .try_into()
+                .unwrap_or(u32::MAX);
+            let other_live_cells =
+                crate::cells::live_count_excluding_pid(&state.root, Some(std::process::id()));
+            let live_cells = reserved_cells.saturating_add(other_live_cells);
+            let node = crate::node::NodeEligibility::from_probe(&state.probe, live_cells);
+            if let crate::node::Admission::Refused { reason, .. } =
+                crate::node::admit(&request, &node)
+            {
+                let status = if reason == crate::node::RefusalCode::AtCapacity {
+                    503
+                } else {
+                    422
+                };
+                return reply(
+                    &mut stream,
+                    status,
+                    &serde_json::json!({
+                        "error": if status == 503 { "node at capacity" } else { "request refused" },
+                        "reason": reason,
+                    }),
+                );
+            }
             registry.insert(request.id.clone(), Entry::new(record.clone()));
             drop(registry);
             let worker_executions = Arc::clone(&state.executions);
@@ -315,18 +352,6 @@ fn run_execution(
     root: PathBuf,
 ) {
     let started_at = crate::dispatch::now_rfc3339();
-    let node = crate::node::NodeEligibility::from_probe(&probe);
-    match crate::node::admit(&request, &node) {
-        crate::node::Admission::Refused { reason, .. } => {
-            update_execution(&executions, &request.id, |record| {
-                record.phase = "Refused".into();
-                record.reason = Some(format!("{reason:?}"));
-            });
-            return;
-        }
-        crate::node::Admission::Accepted { .. } => {}
-    }
-
     let runtime_root = match crate::agent::runtime_root() {
         Ok(path) => path,
         Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
@@ -541,6 +566,23 @@ mod tests {
 
         assert!(!registry.contains_key("stale"));
         assert!(registry.contains_key("fresh"));
+    }
+
+    #[test]
+    fn only_non_terminal_executions_consume_capacity() {
+        for phase in ["Admitting", "Forging", "Resolving", "Running"] {
+            let mut record = empty_record("active");
+            record.phase = phase.into();
+            assert!(execution_is_active(&record), "{phase} must reserve a slot");
+        }
+        for phase in ["Succeeded", "Failed", "Refused"] {
+            let mut record = empty_record("terminal");
+            record.phase = phase.into();
+            assert!(
+                !execution_is_active(&record),
+                "{phase} must release its slot"
+            );
+        }
     }
 
     #[test]
