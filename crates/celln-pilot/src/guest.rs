@@ -25,13 +25,22 @@ use pilot::{exec, ExecOutcome};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
 const WORKSPACE: &str = "/celln/work";
+const PILOT_FETCH: &str = "/pilot-fetch";
+const PILOT_FETCH_PORT: libc::c_ulong = 0x500;
+const PILOT_FETCH_PORT_COUNT: libc::c_ulong = 3;
+const PILOT_FETCH_STATUS_PORT: u16 = 0x503;
+const PILOT_FETCH_SCOPE_PROBE: &[u8] = b"--prove-ioperm-scope";
+const PILOT_FETCH_MAX_REQUEST: usize = 8192;
+const PILOT_FETCH_MAX_RESPONSE: usize = 1 << 20;
+const PILOT_FETCH_REQUEST_FIFO: &str = ".celln-fetch-request";
+const PILOT_FETCH_RESPONSE_PREFIX: &str = ".celln-fetch-response-";
 
 #[repr(C)]
 struct LandlockRulesetAttr {
@@ -65,6 +74,30 @@ const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
 const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
 const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
+
+// Linux capability UAPI. The v3 capset layout has two 32-bit words and is the
+// current ABI even on 64-bit machines.
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+const PR_CAP_AMBIENT: libc::c_int = 47;
+const PR_CAP_AMBIENT_CLEAR_ALL: libc::c_ulong = 4;
+const PR_SET_SECUREBITS: libc::c_int = 28;
+const SECBIT_NOROOT: libc::c_ulong = 1;
+const SECBIT_NOROOT_LOCKED: libc::c_ulong = 2;
+const CAPABILITY_WORDS: usize = 2;
+
+#[repr(C)]
+struct CapUserHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CapUserData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
 
 const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
     | LANDLOCK_ACCESS_FS_WRITE_FILE
@@ -115,7 +148,7 @@ fn enter_root(root: &str) -> io::Result<()> {
 /// initramfs scratch dir; inside one it is the tmpfs the caller mounted over
 /// the image's own `/tmp`, because the image itself is read-only by hardware
 /// and nothing in it can be written to.
-fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
+fn enter_agent_lane(workspace: &str, exec_path: &str, allow_fetch: bool) -> io::Result<()> {
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err(io::Error::last_os_error());
@@ -168,7 +201,17 @@ fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
             exec_path,
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
         )?;
-        // pilot-fetch uses I/O ports to talk to the host broker, not sockets.
+        if allow_fetch {
+            // This executable is additional authority and is granted only
+            // when the host put an egress policy on this invocation. The
+            // broker still validates every requested destination.
+            add(
+                PILOT_FETCH,
+                LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+            )?;
+        }
+        // pilot-fetch uses private workspace FIFOs to reach pilot's bounded
+        // I/O-port broker, not sockets or raw I/O of its own.
         // On the stock guest kernel, Landlock only authorises execve from this
         // initramfs when EXECUTE is granted on its root hierarchy; a rule for
         // the binary or its directory still returns EACCES. The kernel also
@@ -195,7 +238,224 @@ fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    install_network_seccomp()
+    install_network_seccomp()?;
+    drop_agent_capabilities()
+}
+
+/// Remove Linux capabilities from the agent-lane child before it can execute.
+///
+/// No capability is retained: agent-authored code needs ordinary userspace
+/// operations only. Pilot remains in the parent, so its mount and shutdown
+/// duties do not justify lending `CAP_SYS_ADMIN` or any other capability to a
+/// workload. Bounding-set drops happen first because they require
+/// `CAP_SETPCAP`; `no_new_privs` was set by the caller, so exec cannot recover
+/// privilege from set-id or file-capability metadata.
+fn drop_agent_capabilities() -> io::Result<()> {
+    unsafe {
+        // UID 0 normally regains capabilities when executing an ordinary
+        // file. Disable and lock that compatibility rule before clearing the
+        // sets; no_new_privs alone is not a substitute for an empty set.
+        if libc::prctl(
+            PR_SET_SECUREBITS,
+            SECBIT_NOROOT | SECBIT_NOROOT_LOCKED,
+            0,
+            0,
+            0,
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Capability ABI v3 can represent 64 capability numbers. Kernels
+        // reject numbers above cap_last_cap with EINVAL; those are not valid
+        // bounding-set bits and can safely be skipped.
+        for capability in 0..(CAPABILITY_WORDS * u32::BITS as usize) {
+            if libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EINVAL) {
+                    return Err(error);
+                }
+            }
+        }
+
+        if libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let header = CapUserHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let empty = [
+            CapUserData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            },
+            CapUserData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            },
+        ];
+        if libc::syscall(
+            libc::SYS_capset,
+            &header as *const CapUserHeader,
+            empty.as_ptr(),
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Establish the exact broker I/O bitmap while pilot still has CAP_SYS_RAWIO.
+fn grant_fetch_ports() -> io::Result<()> {
+    let result = unsafe { libc::ioperm(PILOT_FETCH_PORT, PILOT_FETCH_PORT_COUNT, 1) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[inline]
+unsafe fn fetch_port_out(port: u16, byte: u8) {
+    std::arch::asm!("out dx, al", in("dx") port, in("al") byte, options(nomem, nostack));
+}
+
+#[inline]
+unsafe fn fetch_port_in(port: u16) -> u8 {
+    let byte: u8;
+    std::arch::asm!("in al, dx", in("dx") port, out("al") byte, options(nomem, nostack));
+    byte
+}
+
+fn exchange_fetch_ports(request: &[u8]) -> io::Result<Vec<u8>> {
+    unsafe {
+        for &byte in request {
+            fetch_port_out(PILOT_FETCH_PORT as u16, byte);
+        }
+        fetch_port_out(PILOT_FETCH_PORT as u16 + 1, 1);
+    }
+    let mut length = [0u8; 4];
+    for byte in &mut length {
+        *byte = unsafe { fetch_port_in(PILOT_FETCH_PORT as u16 + 2) };
+    }
+    let length = u32::from_le_bytes(length) as usize;
+    if length > PILOT_FETCH_MAX_RESPONSE {
+        return Err(io::Error::other("host sent an oversized fetch response"));
+    }
+    let mut response = vec![0; length];
+    for byte in &mut response {
+        *byte = unsafe { fetch_port_in(PILOT_FETCH_PORT as u16 + 2) };
+    }
+    Ok(response)
+}
+
+fn prove_fetch_port_scope() -> io::Result<Vec<u8>> {
+    // Exercise all three permitted directions with a deliberately malformed
+    // request, then prove an adjacent port faults in a real guest child.
+    let _ = exchange_fetch_ports(b"x")?;
+    let child = unsafe { libc::fork() };
+    if child < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if child == 0 {
+        unsafe {
+            fetch_port_out(PILOT_FETCH_STATUS_PORT, 0);
+            libc::_exit(0);
+        }
+    }
+    let mut status = 0;
+    if unsafe { libc::waitpid(child, &mut status, 0) } != child {
+        return Err(io::Error::last_os_error());
+    }
+    if !libc::WIFSIGNALED(status) || libc::WTERMSIG(status) != libc::SIGSEGV {
+        return Err(io::Error::other(format!(
+            "adjacent I/O port was not denied with SIGSEGV: status={status}"
+        )));
+    }
+    Ok(b"CELLN_FETCH_IOPERM_OK ports=0x500-0x502 denied=0x503:SIGSEGV\n".to_vec())
+}
+
+fn read_fetch_frame(stream: &mut File) -> io::Result<Vec<u8>> {
+    let mut length = [0u8; 4];
+    stream.read_exact(&mut length)?;
+    let length = u32::from_le_bytes(length) as usize;
+    if length > PILOT_FETCH_MAX_REQUEST {
+        return Err(io::Error::other("oversized guest fetch request"));
+    }
+    let mut request = vec![0; length];
+    stream.read_exact(&mut request)?;
+    Ok(request)
+}
+
+fn write_fetch_frame(stream: &mut File, response: &[u8]) -> io::Result<()> {
+    stream.write_all(&(response.len() as u32).to_le_bytes())?;
+    stream.write_all(response)
+}
+
+fn run_fetch_broker(workspace: &str) -> io::Result<()> {
+    grant_fetch_ports()?;
+    // The bitmap is already fixed. The broker needs no Linux capability while
+    // relaying framed bytes, and it never executes guest-supplied code.
+    drop_agent_capabilities()?;
+    let workspace = CString::new(workspace).expect("validated workspace");
+    if unsafe { libc::chdir(workspace.as_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    loop {
+        let mut request_stream = File::open(PILOT_FETCH_REQUEST_FIFO)?;
+        let frame = read_fetch_frame(&mut request_stream)?;
+        let separator = frame
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(|| io::Error::other("fetch frame lacks a response name"))?;
+        let response_name = std::str::from_utf8(&frame[..separator])
+            .map_err(|_| io::Error::other("fetch response name is not UTF-8"))?;
+        response_name
+            .strip_prefix(PILOT_FETCH_RESPONSE_PREFIX)
+            .filter(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+            .ok_or_else(|| io::Error::other("invalid fetch response FIFO name"))?;
+        let request = &frame[separator + 1..];
+        let response = if request == PILOT_FETCH_SCOPE_PROBE {
+            prove_fetch_port_scope()?
+        } else {
+            exchange_fetch_ports(request)?
+        };
+        let mut response_stream = OpenOptions::new().write(true).open(response_name)?;
+        write_fetch_frame(&mut response_stream, &response)?;
+    }
+}
+
+/// Give an authorised workload only a connected stream to a tiny broker
+/// process. The broker owns the exact I/O bitmap; the workload owns neither
+/// raw port access nor a capability that could widen it.
+fn spawn_fetch_broker(workspace: &str, error_fd: i32) -> io::Result<()> {
+    let path = CString::new(format!("{workspace}/{PILOT_FETCH_REQUEST_FIFO}"))
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    unsafe { libc::unlink(path.as_ptr()) };
+    if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let broker = unsafe { libc::fork() };
+    if broker < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if broker == 0 {
+        unsafe { libc::close(error_fd) };
+        let code = match run_fetch_broker(workspace) {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("pilot: fetch broker failed: {error}");
+                1
+            }
+        };
+        unsafe { libc::_exit(code) };
+    }
+    Ok(())
 }
 
 #[repr(C)]
@@ -316,6 +576,11 @@ struct RunRequest {
     /// behaviour: exec `path` directly out of the sealed mount.
     #[serde(default)]
     root: Option<String>,
+    /// Host-authorised access to the bounded HTTPS broker. This permits the
+    /// `/pilot-fetch` executable and a private channel to pilot's narrowly
+    /// scoped I/O broker; it is not inferred from guest-controlled arguments.
+    #[serde(default)]
+    allow_fetch: bool,
 }
 
 /// One cell can be asked to run several tools. Each invocation is hash-checked
@@ -336,6 +601,8 @@ struct RunFile {
     env: BTreeMap<String, String>,
     #[serde(default)]
     agent_authored_input: bool,
+    #[serde(default)]
+    allow_fetch: bool,
 }
 
 impl RunFile {
@@ -359,6 +626,7 @@ impl RunFile {
                 env: self.env,
                 agent_authored_input: self.agent_authored_input,
                 root: self.root,
+                allow_fetch: self.allow_fetch,
             }],
             _ => Vec::new(),
         }
@@ -486,7 +754,12 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
             } else {
                 WORKSPACE
             };
-            if let Err(error) = enter_agent_lane(workspace, &req.path) {
+            if req.allow_fetch {
+                if let Err(error) = spawn_fetch_broker(workspace, error_pipe[1]) {
+                    child_error(error_pipe[1], error);
+                }
+            }
+            if let Err(error) = enter_agent_lane(workspace, &req.path, req.allow_fetch) {
                 child_error(error_pipe[1], error);
             }
         }
@@ -781,6 +1054,7 @@ mod tests {
             env: BTreeMap::new(),
             agent_authored_input: false,
             root: None,
+            allow_fetch: false,
         };
         let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
         assert!(

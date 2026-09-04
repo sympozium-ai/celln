@@ -43,7 +43,7 @@ $ CELLN_PROVIDER=local celln agent "&hellip;"    # override it for one shell com
 <h2 id="egress">Network is brokered, never ambient</h2>
 <p>A cell has no in-kernel network stack. Network-shaped work has to declare exactly where it may reach <em>before</em> the model is even called:</p>
 <pre>celln agent --allow-host example.com "crawl https://example.com/&hellip;"</pre>
-<p>Without <code>--allow-host</code>, Celln returns <code>Unsupported</code> rather than generating a crawler that can never connect. When it is granted, <code>pilot-fetch</code> passes the bounded request over four dedicated PIO ports and the <em>host</em> performs the fetch; this is a narrow request protocol, not a NIC or socket transport. Private addresses and redirects that leave the declared destination are refused. Getting the model provider itself into a cell is the same egress problem as any other network access, and gets the same answer.</p>
+<p>Without <code>--allow-host</code>, Celln returns <code>Unsupported</code> rather than generating a crawler that can never connect. When it is granted, <code>pilot-fetch</code> passes the bounded request over private workspace FIFOs to a capability-less pilot broker. Only that broker has the three-port PIO bitmap; the workload has neither raw I/O nor Linux capabilities. The <em>host</em> performs the fetch, and private addresses and redirects that leave the declared destination are refused. Getting the model provider itself into a cell is the same egress problem as any other network access, and gets the same answer.</p>
 
 <h2 id="enforced">What's actually enforced</h2>
 <ul>

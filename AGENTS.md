@@ -14,13 +14,16 @@ of the design corpus in `docs/`.
 ## Constraints (from the build plan §1)
 
 1. The guest never boots in the hot path — spawn is a CoW fork of a warm mote.
-2. No in-kernel network stack; `pilot-fetch` sends bounded HTTPS requests over
-   four dedicated PIO ports (`0x500`-`0x503`) to the host proxy.
+2. No in-kernel network stack; a capability-less pilot broker sends bounded
+   HTTPS requests over four dedicated PIO ports (`0x500`-`0x503`) to the host
+   proxy. Workloads and `pilot-fetch` have no raw I/O permission.
 3. The filesystem has no authority to run code — exec is by content hash against
    a signed manifest.
 4. Tool code is unwritable from the guest side (stage-2 sealing).
 5. Authority only shrinks — the ratchet is host-enforced in `warden`.
 6. Compatibility is a feature — every ABI break is a silent latency tax.
+7. Agent-lane workloads retain no Linux capabilities: bounding, ambient,
+   inheritable, permitted, and effective sets are empty before exec.
 
 ## Working rules
 
