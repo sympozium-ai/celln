@@ -8,6 +8,12 @@ Celln must not turn either mutable status text or a ConfigMap name into executio
 
 See `examples/execution/ensemble-handoff.json` for the wire request.
 
+The dispatcher transport and host-owned egress policy are documented in
+[`DISPATCHER_SECURITY.md`](DISPATCHER_SECURITY.md). In particular, the
+dispatcher has no native TLS: non-loopback deployments require an explicit
+unsafe bind opt-in and a TLS-terminating reverse proxy. Request egress is
+deny-all unless the host operator configures exact allowed hostnames.
+
 ## Redesigned integration shape: hermetic actions first
 
 Celln is not the initial backend for a full `AgentRun` or Ensemble. Sympozium
