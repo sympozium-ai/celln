@@ -527,6 +527,7 @@ fn execute(
             "env": r.env,
             "agent_authored_input": r.input == celln_spec::Input::Data,
             "root": root_dir,
+            "allow_fetch": !spec.cell.allow_hosts.is_empty(),
         }));
     }
     let run_json = work.join("run.json");
