@@ -261,6 +261,7 @@ pub fn launch(
             "alias": alias,
             "args": args,
             "agent_authored_input": matches!(request.execution.lane, RequestedLane::Agent),
+            "allow_fetch": !request.capabilities.egress.is_empty(),
         }))
         .map_err(|error| error.to_string())?,
     )

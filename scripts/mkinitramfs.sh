@@ -11,6 +11,10 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="${1:-$root/target/celln-initramfs.cpio}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+# `mktemp -d` creates mode 0700 and the archive otherwise preserves the host
+# developer's uid. A capability-less guest uid 0 cannot use DAC override, so
+# the initramfs root must carry deliberate guest ownership and traversal bits.
+chmod 0755 "$work"
 
 command -v gcc >/dev/null 2>&1 || { echo "gcc not found — needed to build the guest init" >&2; exit 1; }
 command -v cpio >/dev/null 2>&1 || { echo "cpio not found — needed to pack the initramfs" >&2; exit 1; }
@@ -154,7 +158,7 @@ else
 fi
 
 mkdir -p "$(dirname "$out")"
-( cd "$work" && find . -print0 | cpio --null -o -H newc --quiet ) > "$out"
+( cd "$work" && find . -print0 | cpio --null -o -H newc --quiet --owner=0:0 ) > "$out"
 
 printf 'initramfs: %s (%s bytes, init %s bytes)\n' \
   "$out" "$(stat -c%s "$out")" "$(stat -c%s "$work/init")"
