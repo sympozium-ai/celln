@@ -30,7 +30,7 @@
 #define SYS_dup2 33
 #define SYS_execve 59
 #define SYS_finit_module 313
-#define SYS_iopl 172
+#define SYS_ioperm 173
 
 /* Unused I/O port the guest pokes to say "I am live", so the host can
  * timestamp a cell reaching userspace in a single exit. Must match
@@ -442,10 +442,13 @@ void _start(void) {
 	 * per byte, which would be measuring our serial emulation rather than
 	 * spawn latency. A single OUT to an unused port is the cheapest thing a
 	 * guest can do that the host can timestamp. */
-	if (sys(SYS_iopl, 3, 0, 0, 0, 0, 0) == 0) {
+	if (sys(SYS_ioperm, CELLN_LIVE_PORT, 1, 1, 0, 0, 0) == 0) {
 		__asm__ volatile("outb %0, %1"
 		                 :
 		                 : "a"((unsigned char)0x5a), "Nd"((unsigned short)CELLN_LIVE_PORT));
+		/* I/O bitmap permissions survive execve. Revoke this one-shot grant
+		 * before pilot replaces init so no cell workload inherits it. */
+		sys(SYS_ioperm, CELLN_LIVE_PORT, 1, 0, 0, 0, 0);
 	}
 	report("cell", "live");
 
