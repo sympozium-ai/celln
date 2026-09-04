@@ -214,10 +214,28 @@ struct SockFprog {
 fn install_network_seccomp() -> io::Result<()> {
     const BPF_LD_W_ABS: u16 = 0x20;
     const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_JMP_JSET_K: u16 = 0x45;
     const BPF_RET_K: u16 = 0x06;
     const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
     const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
     const EPERM: u32 = 1;
+    // Offsets into the kernel's `struct seccomp_data { nr; arch; ... }`: `nr`
+    // at 0, `arch` at 4 (libc exposes the struct but not `offset_of!` at this
+    // MSRV, so these are the same kind of hardcoded UAPI constant as the
+    // Landlock values above).
+    const SECCOMP_DATA_NR_OFFSET: u32 = 0;
+    const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
+    // `AUDIT_ARCH_X86_64` = EM_X86_64 (62) | __AUDIT_ARCH_64BIT (0x8000_0000)
+    // | __AUDIT_ARCH_LE (0x4000_0000). Without gating on this, a 32-bit/x32
+    // compat-mode syscall entry (a different number space than the native
+    // x86_64 `SYS_*` values below) can reach a syscall this filter means to
+    // deny without ever matching a `nr` comparison written against the native
+    // numbering.
+    const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+    // x32 uses AUDIT_ARCH_X86_64 too, but tags its syscall numbers with this
+    // bit. Checking only `arch` therefore does not exclude the x32 syscall
+    // table; reject tagged numbers before comparing native syscall numbers.
+    const X32_SYSCALL_BIT: u32 = 0x4000_0000;
     let denied = [
         libc::SYS_socket,
         libc::SYS_socketpair,
@@ -235,13 +253,55 @@ fn install_network_seccomp() -> io::Result<()> {
         libc::SYS_umount2,
         libc::SYS_ptrace,
         libc::SYS_bpf,
+        // io_uring can create and use a socket (IORING_OP_SOCKET /
+        // IORING_OP_CONNECT / IORING_OP_SEND / IORING_OP_RECV) without ever
+        // calling socket()/connect()/sendto() — a known real-world seccomp
+        // network-filter bypass technique. Denying setup/enter/register
+        // closes that path regardless of which io_uring opcode is used.
+        libc::SYS_io_uring_setup,
+        libc::SYS_io_uring_enter,
+        libc::SYS_io_uring_register,
     ];
-    let mut filter = Vec::with_capacity(2 + denied.len() * 2);
+    let mut filter = Vec::with_capacity(6 + denied.len() * 2);
+    // Refuse outright if this call isn't in the x86 family. A 32-bit compat
+    // entry reports AUDIT_ARCH_I386 and is stopped here.
     filter.push(SockFilter {
         code: BPF_LD_W_ABS,
         jt: 0,
         jf: 0,
-        k: 0,
+        k: SECCOMP_DATA_ARCH_OFFSET,
+    });
+    filter.push(SockFilter {
+        code: BPF_JMP_JEQ_K,
+        jt: 1,
+        jf: 0,
+        k: AUDIT_ARCH_X86_64,
+    });
+    filter.push(SockFilter {
+        code: BPF_RET_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ERRNO | EPERM,
+    });
+    filter.push(SockFilter {
+        code: BPF_LD_W_ABS,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_DATA_NR_OFFSET,
+    });
+    // x32 reports AUDIT_ARCH_X86_64, so its tagged syscall number needs a
+    // separate check. If the bit is clear, skip the errno return.
+    filter.push(SockFilter {
+        code: BPF_JMP_JSET_K,
+        jt: 0,
+        jf: 1,
+        k: X32_SYSCALL_BIT,
+    });
+    filter.push(SockFilter {
+        code: BPF_RET_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ERRNO | EPERM,
     });
     for syscall in denied {
         filter.push(SockFilter {

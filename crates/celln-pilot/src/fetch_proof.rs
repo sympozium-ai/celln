@@ -103,6 +103,9 @@ fn main() -> Result<()> {
         .contains("CELLN:pilot_run_/probe=permitted:agent")
         || !report
             .console
+            .contains("CELLN_SECCOMP_BYPASSES_DENIED io_uring=EPERM x32_socket=EPERM")
+        || !report
+            .console
             .contains("CELLN_FETCH_IOPERM_OK ports=0x500-0x502 denied=0x503:SIGSEGV")
         || !report.console.contains("CELLN_FETCH_OK bytes=")
     {

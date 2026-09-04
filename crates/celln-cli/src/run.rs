@@ -348,7 +348,7 @@ pub fn run_spec(
             "tool_resolved",
             serde_json::json!({
                 "alias": t.alias, "hash": r.hash.to_string(), "tier": r.tier.to_string(),
-                "warm": r.warm, "upgrade_queued": r.upgrade_queued, "bytes": bytes.len(),
+                "warm": r.warm, "bytes": bytes.len(),
             }),
             format!(
                 "  {} {:<22} {} {}",
@@ -358,7 +358,7 @@ pub fn run_spec(
                 dim(if r.warm {
                     "warm — page map, no build"
                 } else {
-                    "cold — verified now, forged queued"
+                    "cold — verified now"
                 })
             ),
         );

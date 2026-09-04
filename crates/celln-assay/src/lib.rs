@@ -2,22 +2,23 @@
 
 use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
 use celln_store::Store;
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 pub struct Assayer {
     store: Store,
     manifest: Manifest,
     manifest_path: PathBuf,
-    rebuild_queue: VecDeque<Hash>,
 }
 
-/// Resolved tool and any deferred upgrade.
+/// Resolved tool and whether its bytes were already warm.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub hash: Hash,
     pub tier: Tier,
     pub warm: bool,
+    /// Retained for source/wire compatibility. Always false: Celln has no
+    /// background rebuild worker, and a tier is never upgraded without a real
+    /// reproducible build through `admit_forged_authored`.
     pub upgrade_queued: bool,
 }
 
@@ -44,7 +45,6 @@ impl Assayer {
             store,
             manifest,
             manifest_path,
-            rebuild_queue: VecDeque::new(),
         })
     }
 
@@ -124,7 +124,7 @@ impl Assayer {
         Ok(hash)
     }
 
-    /// Resolve warm tools directly; queue a rebuild for cold tools.
+    /// Resolve warm tools directly; admit cold upstream bytes at Verified.
     pub fn resolve(
         &mut self,
         alias: &str,
@@ -170,13 +170,11 @@ impl Assayer {
         });
         self.manifest.sign_standin();
         let _ = self.persist();
-        self.rebuild_queue.push_back(hash.clone());
-
         Ok(Resolved {
             hash,
             tier: Tier::Verified,
             warm: false,
-            upgrade_queued: true,
+            upgrade_queued: false,
         })
     }
 
@@ -200,25 +198,6 @@ impl Assayer {
         self.manifest.sign_standin();
         let _ = self.persist();
         Ok(hash)
-    }
-
-    /// Simulate one background rebuild completing: pop the queue and upgrade that
-    /// artifact's tier to Forged. Future cells silently get the better tier.
-    pub fn run_one_rebuild(&mut self) -> Option<Hash> {
-        let hash = self.rebuild_queue.pop_front()?;
-        if let Some(entry) = self.manifest.get(&hash).cloned() {
-            self.manifest.admit(Entry {
-                tier: Tier::Forged,
-                ..entry
-            });
-            self.manifest.sign_standin();
-            let _ = self.persist();
-        }
-        Some(hash)
-    }
-
-    pub fn pending_rebuilds(&self) -> usize {
-        self.rebuild_queue.len()
     }
 
     /// Revoke a hash fleet-wide.
@@ -288,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn cold_serves_verified_and_queues_forged() {
+    fn cold_stays_verified_without_a_fake_upgrade() {
         let dir = tempdir().unwrap();
         let mut assayer = Assayer::open(dir.path()).unwrap();
 
@@ -301,20 +280,17 @@ mod tests {
             Tier::Verified,
             "cold path serves Verified in seconds"
         );
-        assert!(r.upgrade_queued);
-        assert_eq!(assayer.pending_rebuilds(), 1);
+        assert!(!r.upgrade_queued);
 
-        // background rebuild lands -> future resolves are Forged
-        assayer.run_one_rebuild();
-        assert_eq!(assayer.pending_rebuilds(), 0);
+        // A later resolve is warm, but no process has earned a stronger tier.
         let r2 = assayer
             .resolve("/usr/lib/leftpad", b"leftpad-bytes", false)
             .unwrap();
         assert!(r2.warm);
         assert_eq!(
             r2.tier,
-            Tier::Forged,
-            "trust ratcheted up behind the traffic"
+            Tier::Verified,
+            "trust must not upgrade without a real reproducible rebuild"
         );
     }
 
