@@ -2,6 +2,12 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::fs::OpenOptions;
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 
 /// Written as `[provider]`. `[agent]` is the name this had before providers
@@ -80,8 +86,32 @@ pub fn set_default_agent(agent: &str) -> Result<PathBuf> {
         agent: Provider::default(),
     };
     let source = toml::to_string_pretty(&config).context("encoding celln config")?;
-    std::fs::write(&path, source).with_context(|| format!("writing config {}", path.display()))?;
+    write_private(&path, source.as_bytes())
+        .with_context(|| format!("writing config {}", path.display()))?;
     Ok(path)
+}
+
+#[cfg(unix)]
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+
+    // `mode` applies only when open creates the file, and is still filtered by
+    // umask. Tighten an existing file before replacing its contents, then set
+    // the exact final mode so even an unusually restrictive umask cannot alter
+    // this config's contract.
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.set_len(0)?;
+    file.write_all(contents)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, contents)
 }
 
 #[cfg(test)]
