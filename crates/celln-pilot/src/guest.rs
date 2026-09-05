@@ -275,6 +275,10 @@ fn install_network_seccomp() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "guest_seccomp_tests.rs"]
+mod seccomp_tests;
+
 /// Report an observation the host can assert on, same protocol the guest init
 /// uses: one `CELLN:key=value` line per fact, on the console.
 fn report(key: &str, val: &str) {
