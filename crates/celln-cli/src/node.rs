@@ -128,7 +128,9 @@ pub fn admit(request: &ExecutionRequest, node: &NodeEligibility) -> Admission {
             problems,
         };
     }
-    if request.execution.require_hardware_isolation && (!node.kvm || !node.cpu_virtualization) {
+    if crate::dispatch::check_supported_authority(request).is_err()
+        || request.execution.require_hardware_isolation && (!node.kvm || !node.cpu_virtualization)
+    {
         return Admission::Refused {
             request_id: request.id.clone(),
             node: node.clone(),
@@ -176,6 +178,34 @@ fn print_json(value: &impl Serialize) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_workspace_is_not_admitted_on_an_eligible_node() {
+        let mut request: ExecutionRequest =
+            serde_json::from_str(include_str!("../../../examples/execution/forge-task.json"))
+                .unwrap();
+        let node = NodeEligibility {
+            node_name: "test".into(),
+            kvm: true,
+            cpu_virtualization: true,
+            guest_kernel: true,
+            mote_store: true,
+            tool_store: true,
+            live_cells: 0,
+            max_cells: 1,
+            memory_bytes: 268435456,
+            egress_slots: 0,
+        };
+        assert!(matches!(admit(&request, &node), Admission::Accepted { .. }));
+        request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadOnly;
+        assert!(matches!(
+            admit(&request, &node),
+            Admission::Refused {
+                reason: RefusalCode::Unsupported,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn hardware_requirement_refuses_a_node_without_kvm() {

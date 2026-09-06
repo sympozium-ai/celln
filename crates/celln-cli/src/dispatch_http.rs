@@ -328,6 +328,13 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                     &serde_json::json!({"error": "invalid execution request", "problems": problems}),
                 );
             }
+            if let Err(reason) = crate::dispatch::check_supported_authority(&request) {
+                return reply(
+                    &mut stream,
+                    422,
+                    &serde_json::json!({"error": "request refused", "reason": "unsupported", "detail": reason}),
+                );
+            }
             if let Err(error) = state.egress_policy.check(&request) {
                 return reply(
                     &mut stream,
@@ -443,6 +450,15 @@ fn run_execution(
     probe: NodeProbeArgs,
     root: PathBuf,
 ) {
+    // Defense in depth: direct callers must refuse before model invocations,
+    // store access or runtime preparation, not only at the HTTP boundary.
+    if let Err(reason) = crate::dispatch::check_supported_authority(&request) {
+        update_execution(&executions, &request.id, |record| {
+            record.phase = "Refused".into();
+            record.reason = Some(reason);
+        });
+        return;
+    }
     let started_at = crate::dispatch::now_rfc3339();
     let runtime_root = match crate::agent::runtime_root() {
         Ok(path) => path,
@@ -534,11 +550,9 @@ fn run_execution(
         resolved: ResolvedExecution {
             mote,
             tools: vec![program_hash],
-            inputs: request
-                .inputs
-                .iter()
-                .map(|input| input.hash.clone())
-                .collect(),
+            // No input provider exists yet. Never echo requested hashes as
+            // evidence that their bytes were resolved or delivered.
+            inputs: Vec::new(),
         },
         output: stored_output,
         started_at,
@@ -617,6 +631,87 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn unsupported_forge_authority_is_refused_without_side_effects() {
+        let mut request = request_with_egress(&[]);
+        request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path().join("must-not-be-created");
+        let executions: Executions = Arc::new(Mutex::new(HashMap::new()));
+        executions.lock().unwrap().insert(
+            request.id.clone(),
+            Entry::new(ExecutionRecord {
+                request_id: request.id.clone(),
+                phase: "Admitting".into(),
+                reason: None,
+                output: None,
+                receipt: None,
+            }),
+        );
+        let probe = NodeProbeArgs {
+            node_name: "test".into(),
+            mote_store: root.join("motes"),
+            tool_store: root.join("tools"),
+            max_cells: 1,
+            memory_bytes: 268435456,
+            egress_slots: 0,
+        };
+        run_execution(
+            request.clone(),
+            Arc::clone(&executions),
+            probe,
+            root.clone(),
+        );
+        let registry = executions.lock().unwrap();
+        let record = &registry[&request.id].value;
+        assert_eq!(record.phase, "Refused");
+        assert!(record
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("workspace delivery"));
+        assert!(record.receipt.is_none());
+        assert!(!execution_is_active(record));
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn http_unsupported_authority_returns_422_without_reserving_capacity() {
+        let mut request = request_with_egress(&[]);
+        request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadOnly;
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path().join("unused");
+        let state = State {
+            token: "test-token-at-least-24-bytes".into(),
+            egress_policy: EgressPolicy::new(&[]).unwrap(),
+            root: root.clone(),
+            probe: NodeProbeArgs {
+                node_name: "test".into(),
+                mote_store: root.join("motes"),
+                tool_store: root.join("tools"),
+                max_cells: 1,
+                memory_bytes: 268435456,
+                egress_slots: 0,
+            },
+            executions: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        let body = serde_json::to_string(&request).unwrap();
+        write!(client, "POST /v1/executions HTTP/1.1\r\nAuthorization: Bearer {}\r\nContent-Length: {}\r\n\r\n{}", state.token, body.len(), body).unwrap();
+        handle(server, &state).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 422"), "{response}");
+        assert!(response.contains("workspace delivery"));
+        assert!(state.executions.lock().unwrap().is_empty());
+        assert!(!root.exists());
+    }
 
     #[test]
     fn receipt_phase_tracks_exit_and_output_storage_independently() {
