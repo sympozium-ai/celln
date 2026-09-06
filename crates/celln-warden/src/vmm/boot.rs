@@ -294,6 +294,12 @@ impl BootReport {
     }
 }
 
+/// Check the same kernel image format accepted by the loader without booting
+/// or allocating guest memory. This is preflight, not evidence of guest boot.
+pub fn kernel_is_loadable(path: &Path) -> bool {
+    BzImage::load(path).is_ok()
+}
+
 /// A parsed bzImage.
 struct BzImage {
     bytes: Vec<u8>,

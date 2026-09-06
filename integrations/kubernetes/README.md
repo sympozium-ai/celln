@@ -10,7 +10,7 @@ Do not implement Celln as a `RuntimeClass`/CRI handler. CRI owns a pod filesyste
 and process lifecycle; Celln must instead receive explicit content hashes and
 capabilities, then let `warden` make a sealed cell from a warm mote. The node agent
 is the narrow Kubernetes seam: it reports eligibility and admits or refuses a
-request. A future Sympozium controller adapter should translate `AgentRun` policy
+request. The Sympozium controller adapter must translate `AgentRun` policy
 into this request and persist the returned verdict in `AgentRun.status.conditions`.
 
 The included DaemonSet has only the privileged access required to inspect `/dev/kvm`
@@ -24,22 +24,32 @@ the host root filesystem, or an ambient network capability into a cell.
 ```
 
 The script builds and loads the local image, deploys the DaemonSet, and writes the
-real node report and admission verdict below `target/kubernetes-proof/`. The current
-kind node exposes `/dev/kvm`, so an unavailable KVM boundary would be reported as
-`unsupported`, never silently downgraded. It does not contain a prepared Celln mote
-or tool store, so this fresh cluster truthfully returns `no_eligible_node`. Populate
-signed mote and tool stores on the node before a node is eligible; do not create
-placeholder files just to make the report pass.
+real node report and admission verdict below `target/kubernetes-proof/`. Results
+depend on that cluster's KVM, kernel and configured stores. An unavailable KVM
+boundary is `unsupported`, never silently downgraded. Prepare and authorize the
+requested artifacts before dispatching declared workloads; do not create
+placeholder files to imitate object availability.
 
 The command emits JSON only. `verdict: accepted` means the node admitted the intent;
 it does not claim the request's workload was run. An accepted node now also requires
-a bootable guest kernel: KVM visibility and non-empty directories are not a truthful
-execution capability. The versioned terminal result contract is
+a readable loader-compatible guest kernel with matching modules. This remains
+preflight, not a proof that a particular guest boots. The versioned terminal result contract is
 [`examples/execution/succeeded-receipt.json`](../../examples/execution/succeeded-receipt.json);
 it binds a request, node, cell, resolved authority, and optional output to immutable
-BLAKE3 references. It is a contract for the dispatcher, not evidence that a dispatcher
-exists yet. Executing a workload through the node agent and writing that receipt back
-to Sympozium remains the next slice.
+BLAKE3 references. `celln dispatch serve` now executes requests and returns terminal
+results through its authenticated execution endpoints. Declared requests fork an
+operator-pinned warm mote; forge requests build their program before preparing and
+forking a mote. Fresh external Sympozium integration acceptance remains tracked in #2.
+
+For live scheduling, use authenticated `GET /v1/node`, not a standalone node-probe
+process that cannot see the service's pre-cell reservations. The dispatcher now
+reserves aggregate guest memory and broker slots atomically; zero egress slots
+refuses network-enabled requests. Public `/v1/health` uses configured stores and
+reports preflight readiness without exposing cache identities. See
+[capacity and readiness](../../docs/NODE_CAPACITY.md),
+[declared substrates](../../docs/DECLARED_SUBSTRATES.md), and
+[input/workspace authority](../../docs/DISPATCH_INPUTS.md) for configuration,
+trust boundaries and compatibility requirements.
 
 ## Exercise actual Celln cells on the KVM host
 

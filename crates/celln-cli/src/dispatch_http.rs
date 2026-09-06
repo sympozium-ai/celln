@@ -92,6 +92,7 @@ struct Entry<T> {
     at: Instant,
     value: T,
     control: Option<celln_control::Control>,
+    reservation: Option<Reservation>,
 }
 
 impl<T> Entry<T> {
@@ -100,6 +101,7 @@ impl<T> Entry<T> {
             at: Instant::now(),
             value,
             control: None,
+            reservation: None,
         }
     }
 }
@@ -133,6 +135,60 @@ pub struct ExecutionRecord {
 }
 
 type Executions = Arc<Mutex<HashMap<String, Entry<ExecutionRecord>>>>;
+
+/// Reserve the full declared guest RAM and one synchronous broker per cell
+/// with egress. Destinations share that broker; they are not concurrent slots.
+#[derive(Clone, Copy)]
+struct Reservation {
+    memory_bytes: u64,
+    egress_slots: u32,
+}
+
+impl Reservation {
+    fn for_request(request: &ExecutionRequest) -> Self {
+        Self {
+            memory_bytes: request.capabilities.memory_bytes,
+            egress_slots: u32::from(!request.capabilities.egress.is_empty()),
+        }
+    }
+}
+
+fn apply_reservations(
+    node: &mut crate::node::NodeEligibility,
+    registry: &HashMap<String, Entry<ExecutionRecord>>,
+    other_live_cells: u32,
+) {
+    node.live_cells = other_live_cells;
+    // Legacy/other-process records do not carry resource declarations. Do
+    // not invent spare capacity when a live owner's usage is unknown.
+    if other_live_cells != 0 {
+        node.memory_bytes = 0;
+        node.egress_slots = 0;
+    }
+    for entry in registry
+        .values()
+        .filter(|entry| execution_is_active(&entry.value))
+    {
+        node.live_cells = node.live_cells.saturating_add(1);
+        if let Some(reservation) = entry.reservation {
+            node.memory_bytes = node.memory_bytes.saturating_sub(reservation.memory_bytes);
+            node.egress_slots = node.egress_slots.saturating_sub(reservation.egress_slots);
+        } else {
+            node.memory_bytes = 0;
+            node.egress_slots = 0;
+        }
+    }
+}
+
+fn current_node(
+    state: &State,
+    registry: &HashMap<String, Entry<ExecutionRecord>>,
+) -> crate::node::NodeEligibility {
+    let mut node = crate::node::NodeEligibility::from_probe(&state.probe, 0);
+    let other = crate::cells::live_count_excluding_pid(&state.root, Some(std::process::id()));
+    apply_reservations(&mut node, registry, other);
+    node
+}
 
 struct State {
     token: String,
@@ -232,6 +288,9 @@ pub fn serve(
     if token.len() < 24 {
         bail!("dispatcher token must contain at least 24 non-whitespace bytes");
     }
+    // Reservations are process-local. Two dispatchers must not independently
+    // advertise the same state root's capacity while neither has a cell yet.
+    let _ownership = own_dispatch_root(&root)?;
     let listener = TcpListener::bind(listen_address)
         .with_context(|| format!("binding dispatcher {listen_address}"))?;
     let state = Arc::new(State {
@@ -263,6 +322,29 @@ pub fn serve(
     Ok(crate::exit::OK)
 }
 
+fn own_dispatch_root(root: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        std::fs::create_dir_all(root)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("dispatcher.lock"))?;
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            bail!("dispatcher state root is already owned or cannot be locked");
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        bail!("dispatcher ownership locking is unsupported on this host")
+    }
+}
+
 fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let request_line = read_bounded_line(&mut reader, MAX_REQUEST_LINE)?;
@@ -291,18 +373,45 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         );
     }
     match (method.as_str(), path.as_str()) {
-        ("GET", "/v1/health") => {
-            let has_kvm = Path::new("/dev/kvm").exists();
-            let motes = Path::new("/var/lib/celln/motes");
-            let tools = Path::new("/var/lib/celln/tools");
+        ("GET", "/v1/node") => {
+            let registry = state
+                .executions
+                .lock()
+                .expect("dispatcher registry not poisoned");
+            let node = current_node(state, &registry);
+            #[cfg(target_os = "linux")]
+            let warm = crate::dispatch::warm::availability();
+            #[cfg(not(target_os = "linux"))]
+            let warm: Option<Vec<String>> = None;
             reply(
                 &mut stream,
                 200,
                 &serde_json::json!({
-                    "ok": has_kvm,
-                    "kvm": has_kvm,
-                    "mote_store": motes.exists() && motes.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false),
-                    "tool_store": tools.exists() && tools.read_dir().map(|mut d| d.next().is_some()).unwrap_or(false),
+                    "node": node, "warm": warm, "availability_is_advisory": true,
+                    "preflight_only": true,
+                    "configured_memory_bytes": state.probe.memory_bytes,
+                    "configured_egress_slots": state.probe.egress_slots,
+                }),
+            )
+        }
+        ("GET", "/v1/health") => {
+            let registry = state
+                .executions
+                .lock()
+                .expect("dispatcher registry not poisoned");
+            let node = current_node(state, &registry);
+            reply(
+                &mut stream,
+                200,
+                &serde_json::json!({
+                    "ok": node.eligible(),
+                    "kvm": node.kvm,
+                    "mote_store": node.mote_store,
+                    "tool_store": node.tool_store,
+                    "node": node,
+                    "configured_memory_bytes": state.probe.memory_bytes,
+                    "configured_egress_slots": state.probe.egress_slots,
+                    "preflight_only": true,
                 }),
             )
         }
@@ -376,16 +485,7 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
             // request before any worker has created its cell. Registry entries
             // cover pre-cell work such as forging too, so accepted work cannot
             // overcommit the node while waiting to launch.
-            let reserved_cells: u32 = registry
-                .values()
-                .filter(|entry| execution_is_active(&entry.value))
-                .count()
-                .try_into()
-                .unwrap_or(u32::MAX);
-            let other_live_cells =
-                crate::cells::live_count_excluding_pid(&state.root, Some(std::process::id()));
-            let live_cells = reserved_cells.saturating_add(other_live_cells);
-            let node = crate::node::NodeEligibility::from_probe(&state.probe, live_cells);
+            let node = current_node(state, &registry);
             if let crate::node::Admission::Refused { reason, .. } =
                 crate::node::admit(&request, &node)
             {
@@ -405,12 +505,13 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
             }
             let mut entry = Entry::new(record.clone());
             entry.control = Some(control.clone());
+            entry.reservation = Some(Reservation::for_request(&request));
             registry.insert(request.id.clone(), entry);
             drop(registry);
             let worker_executions = Arc::clone(&state.executions);
             let probe = state.probe.clone();
             let root = state.root.clone();
-            thread::spawn(move || {
+            let worker = thread::Builder::new().spawn(move || {
                 control.scope(|| {
                     let id = request.id.clone();
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -425,6 +526,18 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                     }
                 })
             });
+            if worker.is_err() {
+                fail_execution(
+                    &state.executions,
+                    &record.request_id,
+                    "execution worker unavailable".into(),
+                );
+                return reply(
+                    &mut stream,
+                    503,
+                    &serde_json::json!({"error": "execution worker unavailable"}),
+                );
+            }
             reply(&mut stream, 202, &record)
         }
         ("POST", path) if path.starts_with("/v1/executions/") && path.ends_with("/cancel") => {
@@ -693,6 +806,133 @@ mod tests {
                 egress_slots: 0,
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn a_state_root_has_one_dispatcher_owner_and_releases_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let owner = own_dispatch_root(dir.path()).unwrap();
+        assert!(own_dispatch_root(dir.path()).is_err());
+        drop(owner);
+        assert!(own_dispatch_root(dir.path()).is_ok());
+    }
+
+    fn eligible_node(memory: u64, egress: u32) -> crate::node::NodeEligibility {
+        crate::node::NodeEligibility {
+            node_name: "test".into(),
+            kvm: true,
+            cpu_virtualization: true,
+            guest_kernel: true,
+            mote_store: true,
+            tool_store: true,
+            live_cells: 0,
+            max_cells: 100,
+            memory_bytes: memory,
+            egress_slots: egress,
+        }
+    }
+
+    #[test]
+    fn concurrent_admission_cannot_overcommit_memory_or_brokers() {
+        for (destinations, expected) in [(vec![], 2), (vec!["https://example.com"], 1)] {
+            let registry: Executions = Arc::new(Mutex::new(HashMap::new()));
+            let barrier = Arc::new(std::sync::Barrier::new(16));
+            let mut workers = Vec::new();
+            for index in 0..16 {
+                let registry = registry.clone();
+                let barrier = barrier.clone();
+                let mut request = request_with_egress(&destinations);
+                request.id = format!("request-{index}");
+                workers.push(thread::spawn(move || {
+                    barrier.wait();
+                    let mut registry = registry.lock().unwrap();
+                    let mut node = eligible_node(2 * 268435456, 1);
+                    apply_reservations(&mut node, &registry, 0);
+                    if matches!(
+                        crate::node::admit(&request, &node),
+                        crate::node::Admission::Accepted { .. }
+                    ) {
+                        let mut entry = Entry::new(empty_record(&request.id));
+                        entry.reservation = Some(Reservation::for_request(&request));
+                        registry.insert(request.id, entry);
+                    }
+                }));
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            assert_eq!(registry.lock().unwrap().len(), expected);
+        }
+    }
+
+    #[test]
+    fn reservations_survive_cancellation_and_release_on_every_terminal_state() {
+        let req = request_with_egress(&["https://example.com", "https://another.example"]);
+        let mut entry = Entry::new(empty_record("run"));
+        entry.reservation = Some(Reservation::for_request(&req));
+        let mut registry = HashMap::from([("run".into(), entry)]);
+        for phase in ["Admitting", "Forging", "Running", "Cancelling"] {
+            registry.get_mut("run").unwrap().value.phase = phase.into();
+            let mut node = eligible_node(268435456, 1);
+            apply_reservations(&mut node, &registry, 0);
+            assert_eq!(
+                (node.live_cells, node.memory_bytes, node.egress_slots),
+                (1, 0, 0)
+            );
+        }
+        for phase in ["Succeeded", "Failed", "Refused", "Cancelled"] {
+            registry.get_mut("run").unwrap().value.phase = phase.into();
+            let mut node = eligible_node(268435456, 1);
+            apply_reservations(&mut node, &registry, 0);
+            assert_eq!(
+                (node.live_cells, node.memory_bytes, node.egress_slots),
+                (0, 268435456, 1)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_excess_usage_never_wraps_into_available_capacity() {
+        let mut node = eligible_node(1, 1);
+        apply_reservations(&mut node, &HashMap::new(), 1);
+        assert_eq!((node.memory_bytes, node.egress_slots), (0, 0));
+        let mut registry = HashMap::from([("unknown".into(), Entry::new(empty_record("unknown")))]);
+        let mut node = eligible_node(u64::MAX, u32::MAX);
+        apply_reservations(&mut node, &registry, 0);
+        assert_eq!((node.memory_bytes, node.egress_slots), (0, 0));
+        registry.get_mut("unknown").unwrap().reservation = Some(Reservation {
+            memory_bytes: u64::MAX,
+            egress_slots: u32::MAX,
+        });
+        let mut node = eligible_node(1, 1);
+        apply_reservations(&mut node, &registry, 0);
+        assert_eq!((node.memory_bytes, node.egress_slots), (0, 0));
+    }
+
+    #[test]
+    fn health_uses_configured_paths_and_identity_hints_require_authentication() {
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        std::fs::create_dir(&state.probe.mote_store).unwrap();
+        for (path, expected) in [("/v1/health", "HTTP/1.1 200"), ("/v1/node", "HTTP/1.1 401")] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            write!(client, "GET {path} HTTP/1.1\r\n\r\n").unwrap();
+            handle(server, &state).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with(expected), "{response}");
+            if path == "/v1/health" {
+                let body: serde_json::Value =
+                    serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+                assert_eq!(body["mote_store"], true);
+                assert_eq!(body["tool_store"], false);
+                assert_eq!(body["ok"], false);
+                assert_eq!(body["configured_memory_bytes"], 268435456u64);
+                assert!(body.get("warm").is_none());
+            }
         }
     }
 
@@ -1014,6 +1254,7 @@ mod tests {
                     ..empty_record("stale")
                 },
                 control: None,
+                reservation: None,
             },
         );
         registry.insert("fresh".into(), Entry::new(empty_record("fresh")));
@@ -1023,6 +1264,7 @@ mod tests {
                 at: Instant::now() - RECORD_TTL - Duration::from_secs(1),
                 value: empty_record("old-active"),
                 control: None,
+                reservation: None,
             },
         );
 

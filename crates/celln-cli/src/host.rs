@@ -38,16 +38,19 @@ impl Host {
         let mut caps = Vec::new();
 
         let kvm = std::path::Path::new("/dev/kvm").exists();
-        let readable = std::fs::File::open("/dev/kvm").is_ok();
+        #[cfg(target_os = "linux")]
+        let readable = warden::vmm::kvm::KvmVmm::new().is_ok();
+        #[cfg(not(target_os = "linux"))]
+        let readable = false;
         caps.push(cap(
             "kvm",
             kvm && readable,
             if !kvm {
                 String::from("/dev/kvm not present")
             } else if !readable {
-                String::from("/dev/kvm present but not readable by this user")
+                String::from("KVM unavailable or read-only memslots unsupported")
             } else {
-                String::from("/dev/kvm available")
+                String::from("KVM available with read-only memslots")
             },
             if kvm && !readable {
                 "add yourself to the kvm group: sudo usermod -aG kvm $USER (then log out and in)"
