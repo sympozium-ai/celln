@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/celln-control",
     "crates/celln-manifest",
     "crates/celln-spec",
     "crates/celln-cli",
@@ -20,6 +21,7 @@ repository = "https://github.com/sympozium-ai/celln"
 
 # Pinned to versions that build on Rust 1.75 (edition 2021).
 [workspace.dependencies]
+celln-control = { version = "0.5.7", path = "crates/celln-control" }
 # Inter-crate versions track `workspace.package.version` exactly, and
 # `scripts/release.sh --bump` moves them together. A pin left behind at an
 # older version is not a stale nicety: publishing a crate whose sibling has not

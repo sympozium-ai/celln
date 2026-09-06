@@ -91,6 +91,7 @@ fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>)> {
 struct Entry<T> {
     at: Instant,
     value: T,
+    control: Option<celln_control::Control>,
 }
 
 impl<T> Entry<T> {
@@ -98,13 +99,16 @@ impl<T> Entry<T> {
         Entry {
             at: Instant::now(),
             value,
+            control: None,
         }
     }
 }
 
-fn evict_expired<T>(registry: &mut HashMap<String, Entry<T>>) {
+fn evict_expired(registry: &mut HashMap<String, Entry<ExecutionRecord>>) {
     let now = Instant::now();
-    registry.retain(|_, entry| now.duration_since(entry.at) < RECORD_TTL);
+    registry.retain(|_, entry| {
+        execution_is_active(&entry.value) || now.duration_since(entry.at) < RECORD_TTL
+    });
 }
 
 /// One `celln.dev/v1alpha1` execution in flight or finished on this node.
@@ -205,7 +209,10 @@ fn validate_listen(listen: &str, unsafe_non_loopback: bool) -> Result<(SocketAdd
 }
 
 fn execution_is_active(record: &ExecutionRecord) -> bool {
-    !matches!(record.phase.as_str(), "Succeeded" | "Failed" | "Refused")
+    !matches!(
+        record.phase.as_str(),
+        "Succeeded" | "Failed" | "Refused" | "Cancelled"
+    )
 }
 
 pub fn serve(
@@ -335,6 +342,9 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                     &serde_json::json!({"error": "request refused", "reason": "unsupported", "detail": reason}),
                 );
             }
+            let control = celln_control::Control::new(Duration::from_millis(
+                request.capabilities.timeout_ms,
+            ))?;
             if let Err(error) = state.egress_policy.check(&request) {
                 return reply(
                     &mut stream,
@@ -393,13 +403,55 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                     }),
                 );
             }
-            registry.insert(request.id.clone(), Entry::new(record.clone()));
+            let mut entry = Entry::new(record.clone());
+            entry.control = Some(control.clone());
+            registry.insert(request.id.clone(), entry);
             drop(registry);
             let worker_executions = Arc::clone(&state.executions);
             let probe = state.probe.clone();
             let root = state.root.clone();
-            thread::spawn(move || run_execution(request, worker_executions, probe, root));
+            thread::spawn(move || {
+                control.scope(|| {
+                    let id = request.id.clone();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        run_execution(request, Arc::clone(&worker_executions), probe, root)
+                    }));
+                    if result.is_err() {
+                        fail_execution(
+                            &worker_executions,
+                            &id,
+                            "execution worker panicked during cleanup".into(),
+                        );
+                    }
+                })
+            });
             reply(&mut stream, 202, &record)
+        }
+        ("POST", path) if path.starts_with("/v1/executions/") && path.ends_with("/cancel") => {
+            let id = &path["/v1/executions/".len()..path.len() - "/cancel".len()];
+            let mut registry = state
+                .executions
+                .lock()
+                .expect("dispatcher registry not poisoned");
+            let Some(entry) = registry.get_mut(id) else {
+                return reply(
+                    &mut stream,
+                    404,
+                    &serde_json::json!({"error": "unknown execution"}),
+                );
+            };
+            if execution_is_active(&entry.value) {
+                if let Some(control) = &entry.control {
+                    control.cancel();
+                }
+                entry.value.phase = "Cancelling".into();
+                entry.value.reason = Some("cancellation requested; cleanup pending".into());
+                // Reservation remains live until the worker has unwound all
+                // subprocesses, VM handles and preparation state.
+                reply(&mut stream, 202, &entry.value)
+            } else {
+                reply(&mut stream, 200, &entry.value)
+            }
         }
         ("GET", path) if path.starts_with("/v1/executions/") => {
             let id = path.trim_start_matches("/v1/executions/");
@@ -427,6 +479,24 @@ fn update_execution(executions: &Executions, id: &str, f: impl FnOnce(&mut Execu
         .get_mut(id)
     {
         f(&mut entry.value);
+        if let Some(reason) = entry.control.as_ref().and_then(|c| c.reason()) {
+            if !execution_is_active(&entry.value) {
+                let phase = match reason {
+                    celln_control::Stopped::Cancelled => ExecutionPhase::Cancelled,
+                    celln_control::Stopped::Deadline => ExecutionPhase::Failed,
+                };
+                entry.value.phase = format!("{phase:?}");
+                entry.value.reason = Some(reason.to_string());
+                if let Some(receipt) = &mut entry.value.receipt {
+                    receipt.phase = phase;
+                }
+            } else if reason == celln_control::Stopped::Cancelled {
+                entry.value.phase = "Cancelling".into();
+            }
+        }
+        if !execution_is_active(&entry.value) {
+            entry.at = Instant::now();
+        }
     }
 }
 
@@ -450,6 +520,9 @@ fn run_execution(
     probe: NodeProbeArgs,
     root: PathBuf,
 ) {
+    if let Err(error) = celln_control::check() {
+        return fail_execution(&executions, &request.id, error.to_string());
+    }
     // Defense in depth: direct callers must refuse before model invocations,
     // store access or runtime preparation, not only at the HTTP boundary.
     if let Err(reason) = crate::dispatch::check_supported_authority(&request) {
@@ -471,7 +544,7 @@ fn run_execution(
         let forged = match crate::dispatch::forge(
             forge_request,
             &assay_root,
-            request.capabilities.timeout_ms / 1000,
+            request.capabilities.timeout_ms.div_ceil(1000),
         ) {
             Ok(forged) => forged,
             Err(error) => return fail_execution(&executions, &request.id, error),
@@ -604,6 +677,94 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn lifecycle_state(root: &Path) -> State {
+        State {
+            token: "test-token-at-least-24-bytes".into(),
+            egress_policy: EgressPolicy::new(&[]).unwrap(),
+            root: root.into(),
+            probe: NodeProbeArgs {
+                node_name: "test".into(),
+                mote_store: root.join("motes"),
+                tool_store: root.join("tools"),
+                max_cells: 1,
+                memory_bytes: 268435456,
+                egress_slots: 0,
+            },
+            executions: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn cancel_http(state: &State, id: &str, token: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (server, _) = listener.accept().unwrap();
+        write!(client, "POST /v1/executions/{id}/cancel HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\n\r\n").unwrap();
+        handle(server, state).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn cancellation_is_authenticated_idempotent_and_reserves_until_cleanup() {
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        let control = celln_control::Control::new(Duration::from_secs(60)).unwrap();
+        let mut entry = Entry::new(empty_record("running"));
+        entry.control = Some(control.clone());
+        state
+            .executions
+            .lock()
+            .unwrap()
+            .insert("running".into(), entry);
+        assert!(cancel_http(&state, "running", "wrong").starts_with("HTTP/1.1 401"));
+        assert!(control.reason().is_none());
+        for _ in 0..2 {
+            let response = cancel_http(&state, "running", &state.token);
+            assert!(response.starts_with("HTTP/1.1 202"));
+            assert!(response.contains("Cancelling"));
+            assert!(execution_is_active(
+                &state.executions.lock().unwrap()["running"].value
+            ));
+        }
+        assert_eq!(control.reason(), Some(celln_control::Stopped::Cancelled));
+        // Worker cleanup, not the HTTP request, publishes the terminal state.
+        fail_execution(&state.executions, "running", "worker unwound".into());
+        assert!(!execution_is_active(
+            &state.executions.lock().unwrap()["running"].value
+        ));
+        let response = cancel_http(&state, "running", &state.token);
+        assert!(response.starts_with("HTTP/1.1 200"));
+        assert!(response.contains("Cancelled"));
+        assert!(cancel_http(&state, "absent", &state.token).starts_with("HTTP/1.1 404"));
+    }
+
+    #[test]
+    fn deadline_wins_a_terminal_success_race() {
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        let mut entry = Entry::new(empty_record("expired"));
+        entry.control = Some(celln_control::Control::new(Duration::ZERO).unwrap());
+        state
+            .executions
+            .lock()
+            .unwrap()
+            .insert("expired".into(), entry);
+        update_execution(&state.executions, "expired", |record| {
+            record.phase = "Succeeded".into()
+        });
+        let registry = state.executions.lock().unwrap();
+        let record = &registry["expired"].value;
+        assert_eq!(record.phase, "Failed");
+        assert_eq!(
+            record.reason.as_deref(),
+            Some("execution deadline exceeded")
+        );
+    }
 
     #[test]
     fn unsupported_forge_authority_is_refused_without_side_effects() {
@@ -838,15 +999,28 @@ mod tests {
             "stale".into(),
             Entry {
                 at: Instant::now() - RECORD_TTL - Duration::from_secs(1),
-                value: empty_record("stale"),
+                value: ExecutionRecord {
+                    phase: "Succeeded".into(),
+                    ..empty_record("stale")
+                },
+                control: None,
             },
         );
         registry.insert("fresh".into(), Entry::new(empty_record("fresh")));
+        registry.insert(
+            "old-active".into(),
+            Entry {
+                at: Instant::now() - RECORD_TTL - Duration::from_secs(1),
+                value: empty_record("old-active"),
+                control: None,
+            },
+        );
 
         evict_expired(&mut registry);
 
         assert!(!registry.contains_key("stale"));
         assert!(registry.contains_key("fresh"));
+        assert!(registry.contains_key("old-active"));
     }
 
     #[test]

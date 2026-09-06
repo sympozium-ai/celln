@@ -413,6 +413,54 @@ mod tests {
             eprintln!("PASS: warm {arg}, private scratch, distinct args; cold={cold_elapsed:?}, warm={:?}", started.elapsed());
         }
 
+        // Stop a real running guest without refreshing the end-to-end timer.
+        for cancel in [false, true] {
+            let control = celln_control::Control::new(std::time::Duration::from_secs(if cancel {
+                60
+            } else {
+                1
+            }))
+            .unwrap();
+            let signal = control.clone();
+            let timer = cancel.then(|| {
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    signal.cancel();
+                })
+            });
+            let mut req = request(&bundle_hash, &program_hash);
+            req.invocation.as_mut().unwrap().args = vec!["timeout".into()];
+            let started = std::time::Instant::now();
+            let (outcome, _) = control
+                .scope(|| launch_declared(&req, &motes, &tools, &state))
+                .unwrap();
+            if let Some(timer) = timer {
+                timer.join().unwrap();
+            }
+            assert!(outcome.timed_out && !outcome.succeeded(), "{outcome:?}");
+            assert!(String::from_utf8_lossy(outcome.output.as_deref().unwrap())
+                .contains("before timeout"));
+            assert!(started.elapsed() < std::time::Duration::from_secs(4));
+            assert_eq!(crate::cells::live_count(&state), 0);
+            assert_eq!(
+                control.reason(),
+                Some(if cancel {
+                    celln_control::Stopped::Cancelled
+                } else {
+                    celln_control::Stopped::Deadline
+                })
+            );
+            eprintln!("PASS: real guest stopped, cancel={cancel}, no live cell remains");
+        }
+        let mut cold = request(&bundle_hash, &program_hash);
+        cold.capabilities.memory_bytes = 320 << 20; // different cache key
+        let control = celln_control::Control::new(std::time::Duration::from_millis(150)).unwrap();
+        let result = control.scope(|| launch_declared(&cold, &motes, &tools, &state));
+        assert!(result.is_err());
+        assert_eq!(control.reason(), Some(celln_control::Stopped::Deadline));
+        assert_eq!(crate::cells::live_count(&state), 0);
+        eprintln!("PASS: deadline stops cold preparation before cell launch");
+
         // A pinned bundle whose selected tool hash differs from the sealed
         // file must refuse in pilot, even if that actual file is manifest-admitted.
         let different = Store::open(&tools)

@@ -19,6 +19,8 @@ mock = []
 kvm = ["dep:kvm-ioctls", "dep:kvm-bindings", "dep:libc"]
 
 [dependencies]
+tempfile.workspace = true
+celln-control.workspace = true
 celln-manifest.workspace = true
 thiserror.workspace = true
 kvm-ioctls = { workspace = true, optional = true }

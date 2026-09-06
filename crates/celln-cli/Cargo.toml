@@ -13,6 +13,7 @@ name = "celln"
 path = "src/main.rs"
 
 [dependencies]
+celln-control.workspace = true
 celln-spec.workspace = true
 celln-manifest.workspace = true
 celln-store.workspace = true

@@ -69,4 +69,5 @@ This completes the outcome and unsupported-input/closure refusal slices of #13.
 Declared execution now forks an operator-pinned warm substrate with a separate
 one-shot invocation channel; see [Declared substrates](DECLARED_SUBSTRATES.md)
 for the trust root, compatibility requirements and exact artifact semantics.
-End-to-end cancellation and deadlines remain separate work.
+Cancellation and end-to-end deadlines are described in
+[Dispatcher lifecycle](DISPATCH_LIFECYCLE.md).

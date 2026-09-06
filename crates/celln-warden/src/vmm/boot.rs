@@ -1360,6 +1360,8 @@ impl LinuxCell {
     /// Run the guest until it shuts down or the watchdog fires, collecting
     /// console output.
     pub fn run(&mut self) -> Result<BootReport, VmmError> {
+        let control = celln_control::current();
+        celln_control::check().map_err(|e| VmmError::Backend(e.to_string()))?;
         install_wake_handler();
         let stop = Arc::new(AtomicBool::new(false));
         // `pthread_t` is opaque and may be pointer-shaped, so it cannot cross
@@ -1368,12 +1370,16 @@ impl LinuxCell {
         let tid = unsafe { libc::pthread_self() as usize };
         let watchdog = {
             let stop = stop.clone();
+            let control = control.clone();
             let timeout = self.cfg.timeout;
             std::thread::spawn(move || {
                 let deadline = Instant::now() + timeout;
                 while Instant::now() < deadline {
                     if stop.load(Ordering::Relaxed) {
                         return;
+                    }
+                    if control.as_ref().is_some_and(|c| c.reason().is_some()) {
+                        break;
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
@@ -1393,6 +1399,9 @@ impl LinuxCell {
         let mut stop_at_marker = false;
         let mut live_signal_at: Option<Instant> = None;
         let end = loop {
+            if control.as_ref().is_some_and(|c| c.reason().is_some()) {
+                stop.store(true, Ordering::Relaxed);
+            }
             if stop.load(Ordering::Relaxed) {
                 break BootEnd::TimedOut;
             }
