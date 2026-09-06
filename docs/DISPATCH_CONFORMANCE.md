@@ -70,10 +70,10 @@ External evidence lives in the conformance run's `sympozium/` subdirectory.
 
 ## Remaining scope
 
-These proofs cover the one-node milestone, not fresh external Sympozium
-controller behavior. The epic still requires that integration run on the
-intended revision, plus merged-stack validation. Secret leases/live provider
+The optional external proof covers the actual Sympozium controller, not just an
+HTTP client substitute. A complete acceptance run requires passing summaries
+for both repositories on the intended clean revisions. Secret leases/live provider
 withdrawal, distributed revocation and multi-node scheduling are not claimed.
 Unsupported closures still refuse; their eventual implementation needs its own
-conformance extension. The existing #25 can be retired once this refreshed
-harness is accepted, retaining its contributor attribution.
+conformance extension. Contributor PR #25 was superseded by merged #64, with
+its attribution retained.

@@ -1,0 +1,1506 @@
+{
+  "dispatcher": {
+    "binary": "blake3:7031514b03a13ba58764eb76fb90d3fdae8855818cf4d8cd20c0b3077f0ea380",
+    "cases": [
+      "silent",
+      "failed",
+      "spoof",
+      "fetch-grant",
+      "workspace-none",
+      "workspace-read-only",
+      "workspace-read-write",
+      "immutable-input",
+      "unapproved-input",
+      "unsupported-closure",
+      "cancel",
+      "deadline",
+      "aggregate-memory",
+      "revoked-tool",
+      "audit",
+      "authentication"
+    ],
+    "dirty": false,
+    "host": "Linux 7.1.12-200.fc44.x86_64 x86_64 GNU/Linux",
+    "revision": "c4a2c9670a088a00d7d7353dd0a669403fd26b29",
+    "status": "passed",
+    "suite": "dispatcher-real-kvm"
+  },
+  "sympozium": {
+    "suite": "sympozium-real-controller-celln-kvm",
+    "status": "passed",
+    "revision": "aabe054989aec9db5ae29b3b76da8bfbdc8a0509",
+    "dirty": false,
+    "controllerSha256": "bb4d81a6d73fa479da7abd76e34a5281f0cef7a8a811981606f13806ffe0f345",
+    "kind": "kind v0.33.0 go1.26.7 linux/amd64",
+    "cases": [
+      "silent",
+      "failed",
+      "spoof",
+      "inputs",
+      "workspace-none",
+      "workspace-read-only",
+      "workspace-read-write",
+      "unsupported",
+      "unapproved-input",
+      "timeout",
+      "delete-cancel"
+    ]
+  },
+  "preflight": {
+    "suite": "celln-kubernetes-conformance",
+    "status": "passed",
+    "revision": "c4a2c9670a088a00d7d7353dd0a669403fd26b29",
+    "dirty": false,
+    "provider": "podman",
+    "kind": "kind v0.33.0 go1.26.7 linux/amd64",
+    "runtime": "podman version 5.8.4",
+    "binarySha256": "56578bbdbb9b2986b8703da6b1839d764053276c7b53f2e768386c68f1c06529",
+    "cases": [
+      {
+        "name": "unsupported_hardware",
+        "status": "passed",
+        "evidence": {
+          "verdict": "refused",
+          "request_id": "celln-conformance-unsupported",
+          "node": {
+            "node_name": "celln-conformance-1182407-control-plane",
+            "kvm": false,
+            "cpu_virtualization": true,
+            "guest_kernel": false,
+            "mote_store": false,
+            "tool_store": false,
+            "live_cells": 0,
+            "max_cells": 1,
+            "memory_bytes": 268435456,
+            "egress_slots": 0
+          },
+          "reason": "unsupported"
+        }
+      }
+    ]
+  },
+  "finalNode": {
+    "availability_is_advisory": true,
+    "configured_egress_slots": 1,
+    "configured_memory_bytes": 268435456,
+    "node": {
+      "cpu_virtualization": true,
+      "egress_slots": 1,
+      "guest_kernel": true,
+      "kvm": true,
+      "live_cells": 0,
+      "max_cells": 2,
+      "memory_bytes": 268435456,
+      "mote_store": true,
+      "node_name": "conformance",
+      "tool_store": true
+    },
+    "preflight_only": true,
+    "warm": [
+      {
+        "guest_memory_bytes": 268435456,
+        "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+        "tools": [
+          "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+        ]
+      }
+    ]
+  },
+  "executions": [
+    {
+      "name": "proof-silent",
+      "uid": "ed0ed2ef-df08-4ce1-a0c4-224ac5600f82",
+      "controllerPhase": "Succeeded",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-silent-ed0ed2ef-df08-4ce1-a0c4-224ac5600f82",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-silent"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "data",
+            "hash": "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface",
+            "mediaType": "text/plain",
+            "bytes": 11
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "silent"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-silent-ed0ed2ef-df08-4ce1-a0c4-224ac5600f82",
+        "phase": "succeeded",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:09Z",
+        "completedAt": "2026-09-06T13:59:09Z",
+        "cellId": "b388288891d7",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ]
+        },
+        "output": null
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-silent-ed0ed2ef-df08-4ce1-a0c4-224ac5600f82",
+        "caller": "sympozium:celln-proof/proof-silent",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:09Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:09Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:09Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:09Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:09Z",
+            "phase": "Succeeded"
+          }
+        ],
+        "execution": {
+          "cellId": "b388288891d7",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:563064b0bca893d49d382bbcd785025c3bf4a7d8b48570ea61bfb47ec4e1bf00"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 0,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-silent-ed0ed2ef-df08-4ce1-a0c4-224ac5600f82",
+          "phase": "succeeded",
+          "node": "conformance",
+          "cellId": "b388288891d7",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": [
+              "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+            ]
+          },
+          "output": null,
+          "startedAt": "2026-09-06T13:59:09Z",
+          "completedAt": "2026-09-06T13:59:09Z"
+        }
+      }
+    },
+    {
+      "name": "proof-failed",
+      "uid": "55a0c669-5cbd-48dc-8319-c154df302659",
+      "controllerPhase": "Failed",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-failed-55a0c669-5cbd-48dc-8319-c154df302659",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-failed"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "data",
+            "hash": "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface",
+            "mediaType": "text/plain",
+            "bytes": 11
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "failed"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-failed-55a0c669-5cbd-48dc-8319-c154df302659",
+        "phase": "failed",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:15Z",
+        "completedAt": "2026-09-06T13:59:15Z",
+        "cellId": "01167ca8fc5c",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ]
+        },
+        "output": {
+          "hash": "blake3:afeba30c5f97f946a12a34b0c9f4dfdf824651acfb2ab870e498863c0bd22db1",
+          "mediaType": "application/octet-stream",
+          "bytes": 15
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-failed-55a0c669-5cbd-48dc-8319-c154df302659",
+        "caller": "sympozium:celln-proof/proof-failed",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:15Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:15Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:15Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:15Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:15Z",
+            "phase": "Failed"
+          }
+        ],
+        "execution": {
+          "cellId": "01167ca8fc5c",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:d7dbc9a275305d8e322413602ab32b822857832cbaf26909988374bd550d427f"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 7,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-failed-55a0c669-5cbd-48dc-8319-c154df302659",
+          "phase": "failed",
+          "node": "conformance",
+          "cellId": "01167ca8fc5c",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": [
+              "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+            ]
+          },
+          "output": {
+            "hash": "blake3:afeba30c5f97f946a12a34b0c9f4dfdf824651acfb2ab870e498863c0bd22db1",
+            "mediaType": "application/octet-stream",
+            "bytes": 15
+          },
+          "startedAt": "2026-09-06T13:59:15Z",
+          "completedAt": "2026-09-06T13:59:15Z"
+        }
+      }
+    },
+    {
+      "name": "proof-spoof",
+      "uid": "8d2965c6-6f74-4ddd-923b-bee99ab029b7",
+      "controllerPhase": "Failed",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-spoof-8d2965c6-6f74-4ddd-923b-bee99ab029b7",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-spoof"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "data",
+            "hash": "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface",
+            "mediaType": "text/plain",
+            "bytes": 11
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "spoof"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-spoof-8d2965c6-6f74-4ddd-923b-bee99ab029b7",
+        "phase": "failed",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:21Z",
+        "completedAt": "2026-09-06T13:59:21Z",
+        "cellId": "016cbf60d820",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ]
+        },
+        "output": {
+          "hash": "blake3:3c0dd8221eba0a0c0bd4f2418f5bc58291f8dfa3a521f4dade3fa2a9a3819610",
+          "mediaType": "application/octet-stream",
+          "bytes": 103
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-spoof-8d2965c6-6f74-4ddd-923b-bee99ab029b7",
+        "caller": "sympozium:celln-proof/proof-spoof",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:21Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:21Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:21Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:21Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:21Z",
+            "phase": "Failed"
+          }
+        ],
+        "execution": {
+          "cellId": "016cbf60d820",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:11f62284752efc2d496a1f7a01247557329d138adf764bfcaca9262d1289c048"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 9,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-spoof-8d2965c6-6f74-4ddd-923b-bee99ab029b7",
+          "phase": "failed",
+          "node": "conformance",
+          "cellId": "016cbf60d820",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": [
+              "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+            ]
+          },
+          "output": {
+            "hash": "blake3:3c0dd8221eba0a0c0bd4f2418f5bc58291f8dfa3a521f4dade3fa2a9a3819610",
+            "mediaType": "application/octet-stream",
+            "bytes": 103
+          },
+          "startedAt": "2026-09-06T13:59:21Z",
+          "completedAt": "2026-09-06T13:59:21Z"
+        }
+      }
+    },
+    {
+      "name": "proof-inputs",
+      "uid": "c8271612-fe34-460e-986c-2373cc221e8f",
+      "controllerPhase": "Succeeded",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-inputs-c8271612-fe34-460e-986c-2373cc221e8f",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-inputs"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "data",
+            "hash": "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface",
+            "mediaType": "text/plain",
+            "bytes": 11
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "inputs",
+            "first-input"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-inputs-c8271612-fe34-460e-986c-2373cc221e8f",
+        "phase": "succeeded",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:27Z",
+        "completedAt": "2026-09-06T13:59:27Z",
+        "cellId": "b9599c20cd73",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ]
+        },
+        "output": {
+          "hash": "blake3:949dcae29b56b368105b70d9bc09df74b9e070de7b1fa0a58fa8c03252cf05ca",
+          "mediaType": "application/octet-stream",
+          "bytes": 19
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-inputs-c8271612-fe34-460e-986c-2373cc221e8f",
+        "caller": "sympozium:celln-proof/proof-inputs",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:27Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:27Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:27Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:27Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:27Z",
+            "phase": "Succeeded"
+          }
+        ],
+        "execution": {
+          "cellId": "b9599c20cd73",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:68de40b1a8bf2bc635d6c11aa8c39b230d0f71c952c01f24839da703b7d8cf9a"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 0,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-inputs-c8271612-fe34-460e-986c-2373cc221e8f",
+          "phase": "succeeded",
+          "node": "conformance",
+          "cellId": "b9599c20cd73",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": [
+              "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+            ]
+          },
+          "output": {
+            "hash": "blake3:949dcae29b56b368105b70d9bc09df74b9e070de7b1fa0a58fa8c03252cf05ca",
+            "mediaType": "application/octet-stream",
+            "bytes": 19
+          },
+          "startedAt": "2026-09-06T13:59:27Z",
+          "completedAt": "2026-09-06T13:59:27Z"
+        }
+      }
+    },
+    {
+      "name": "proof-workspace-none",
+      "uid": "c9b70fc9-fca9-4822-8157-c6dc40bbecb5",
+      "controllerPhase": "Succeeded",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-workspace-none-c9b70fc9-fca9-4822-8157-c6dc40bbecb5",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-workspace-none"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "workspace",
+            "none"
+          ]
+        },
+        "capabilities": {
+          "workspace": "none",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-workspace-none-c9b70fc9-fca9-4822-8157-c6dc40bbecb5",
+        "phase": "succeeded",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:33Z",
+        "completedAt": "2026-09-06T13:59:33Z",
+        "cellId": "e2ed44f0dfbc",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": []
+        },
+        "output": {
+          "hash": "blake3:27a4a2e4d0268d516800537be7c06106066ccfbec42e08a8a1faac15811e7226",
+          "mediaType": "application/octet-stream",
+          "bytes": 15
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-workspace-none-c9b70fc9-fca9-4822-8157-c6dc40bbecb5",
+        "caller": "sympozium:celln-proof/proof-workspace-none",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:33Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:33Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:33Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:33Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:33Z",
+            "phase": "Succeeded"
+          }
+        ],
+        "execution": {
+          "cellId": "e2ed44f0dfbc",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:6e9598084a83defcdf53d1a691cb254c5796448129548d44402bc01746727b6f"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "none",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "none",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 0,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-workspace-none-c9b70fc9-fca9-4822-8157-c6dc40bbecb5",
+          "phase": "succeeded",
+          "node": "conformance",
+          "cellId": "e2ed44f0dfbc",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": []
+          },
+          "output": {
+            "hash": "blake3:27a4a2e4d0268d516800537be7c06106066ccfbec42e08a8a1faac15811e7226",
+            "mediaType": "application/octet-stream",
+            "bytes": 15
+          },
+          "startedAt": "2026-09-06T13:59:33Z",
+          "completedAt": "2026-09-06T13:59:33Z"
+        }
+      }
+    },
+    {
+      "name": "proof-workspace-read-only",
+      "uid": "21e9945e-9258-4b12-bffd-88bbe200b500",
+      "controllerPhase": "Succeeded",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-workspace-read-only-21e9945e-9258-4b12-bffd-88bbe200b500",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-workspace-read-only"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "workspace",
+            "read-only"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-workspace-read-only-21e9945e-9258-4b12-bffd-88bbe200b500",
+        "phase": "succeeded",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:39Z",
+        "completedAt": "2026-09-06T13:59:39Z",
+        "cellId": "62b06babc70f",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": []
+        },
+        "output": {
+          "hash": "blake3:a4e12d7e48e2d8b7c9c66c010be13caef7d72724a3b73adede06f3d59b72845d",
+          "mediaType": "application/octet-stream",
+          "bytes": 20
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-workspace-read-only-21e9945e-9258-4b12-bffd-88bbe200b500",
+        "caller": "sympozium:celln-proof/proof-workspace-read-only",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:39Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:39Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:39Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:39Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:39Z",
+            "phase": "Succeeded"
+          }
+        ],
+        "execution": {
+          "cellId": "62b06babc70f",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:8502b494008c5cb2be51503232d0e3a110d9f8d845f3f41a975e2e60d4d4300b"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 0,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-workspace-read-only-21e9945e-9258-4b12-bffd-88bbe200b500",
+          "phase": "succeeded",
+          "node": "conformance",
+          "cellId": "62b06babc70f",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": []
+          },
+          "output": {
+            "hash": "blake3:a4e12d7e48e2d8b7c9c66c010be13caef7d72724a3b73adede06f3d59b72845d",
+            "mediaType": "application/octet-stream",
+            "bytes": 20
+          },
+          "startedAt": "2026-09-06T13:59:39Z",
+          "completedAt": "2026-09-06T13:59:39Z"
+        }
+      }
+    },
+    {
+      "name": "proof-workspace-read-write",
+      "uid": "60dc04df-36d8-4bcf-b639-90782cc87da8",
+      "controllerPhase": "Succeeded",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-workspace-read-write-60dc04df-36d8-4bcf-b639-90782cc87da8",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-workspace-read-write"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "workspace",
+            "read-write"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-write",
+          "timeoutMs": 15000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-workspace-read-write-60dc04df-36d8-4bcf-b639-90782cc87da8",
+        "phase": "succeeded",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:45Z",
+        "completedAt": "2026-09-06T13:59:45Z",
+        "cellId": "23e6116d66e5",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": []
+        },
+        "output": {
+          "hash": "blake3:c700b0228d9a1e447597b91c9aa1ea314daf2322e6e725f63d44202a9916428d",
+          "mediaType": "application/octet-stream",
+          "bytes": 21
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-workspace-read-write-60dc04df-36d8-4bcf-b639-90782cc87da8",
+        "caller": "sympozium:celln-proof/proof-workspace-read-write",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:45Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:45Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:45Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:45Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:45Z",
+            "phase": "Succeeded"
+          }
+        ],
+        "execution": {
+          "cellId": "23e6116d66e5",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:03caf1d23b3d6b35920702c34a20a47079dae1e977d24c2913cf0eb70e75ddcf"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-write",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-write",
+            "egress": [],
+            "timeoutMs": 15000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": 0,
+          "signal": null,
+          "watchdogStopped": false
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-workspace-read-write-60dc04df-36d8-4bcf-b639-90782cc87da8",
+          "phase": "succeeded",
+          "node": "conformance",
+          "cellId": "23e6116d66e5",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": []
+          },
+          "output": {
+            "hash": "blake3:c700b0228d9a1e447597b91c9aa1ea314daf2322e6e725f63d44202a9916428d",
+            "mediaType": "application/octet-stream",
+            "bytes": 21
+          },
+          "startedAt": "2026-09-06T13:59:45Z",
+          "completedAt": "2026-09-06T13:59:45Z"
+        }
+      }
+    },
+    {
+      "name": "proof-timeout",
+      "uid": "0812eeef-125b-4187-98e9-906d60cba004",
+      "controllerPhase": "Failed",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-timeout-0812eeef-125b-4187-98e9-906d60cba004",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-timeout"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "data",
+            "hash": "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface",
+            "mediaType": "text/plain",
+            "bytes": 11
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "timeout"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 1000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "requestId": "proof-timeout-0812eeef-125b-4187-98e9-906d60cba004",
+        "phase": "failed",
+        "node": "conformance",
+        "startedAt": "2026-09-06T13:59:53Z",
+        "completedAt": "2026-09-06T13:59:54Z",
+        "cellId": "28fb3f73c9fa",
+        "resolved": {
+          "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+          "tools": [
+            "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          ],
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ]
+        },
+        "output": {
+          "hash": "blake3:2d0f1ad08e2bb949f2127055789f8c78c6256804b2c6c63b762e7c74d7ba258f",
+          "mediaType": "application/octet-stream",
+          "bytes": 15
+        }
+      },
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-timeout-0812eeef-125b-4187-98e9-906d60cba004",
+        "caller": "sympozium:celln-proof/proof-timeout",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:53Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:53Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:53Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T13:59:54Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T13:59:54Z",
+            "phase": "Failed"
+          }
+        ],
+        "execution": {
+          "cellId": "28fb3f73c9fa",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:92fe300a35bab7467a90503b3e8d72c93e0ef4b89c38e932537310a127ec8793"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 1000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": null,
+          "signal": null,
+          "watchdogStopped": true
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-timeout-0812eeef-125b-4187-98e9-906d60cba004",
+          "phase": "failed",
+          "node": "conformance",
+          "cellId": "28fb3f73c9fa",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": [
+              "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+            ]
+          },
+          "output": {
+            "hash": "blake3:2d0f1ad08e2bb949f2127055789f8c78c6256804b2c6c63b762e7c74d7ba258f",
+            "mediaType": "application/octet-stream",
+            "bytes": 15
+          },
+          "startedAt": "2026-09-06T13:59:53Z",
+          "completedAt": "2026-09-06T13:59:54Z"
+        }
+      }
+    },
+    {
+      "name": "proof-cancel",
+      "uid": "b66547e3-b84b-4211-9371-c1c358813002",
+      "controllerPhase": "Running",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha1",
+        "id": "proof-cancel-b66547e3-b84b-4211-9371-c1c358813002",
+        "workload": {
+          "id": "reference",
+          "caller": "sympozium:celln-proof/proof-cancel"
+        },
+        "mote": {
+          "hash": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9"
+        },
+        "tools": [
+          {
+            "alias": "/tools/program",
+            "hash": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+          }
+        ],
+        "inputs": [
+          {
+            "name": "data",
+            "hash": "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface",
+            "mediaType": "text/plain",
+            "bytes": 11
+          }
+        ],
+        "invocation": {
+          "alias": "/tools/program",
+          "args": [
+            "timeout"
+          ]
+        },
+        "capabilities": {
+          "workspace": "read-only",
+          "timeoutMs": 30000,
+          "memoryBytes": 268435456,
+          "outputBytes": 1024
+        },
+        "execution": {
+          "lane": "tool",
+          "requireHardwareIsolation": true
+        }
+      },
+      "persistedReceipt": null,
+      "audit": {
+        "apiVersion": "celln.dev/audit-v1alpha1",
+        "requestId": "proof-cancel-b66547e3-b84b-4211-9371-c1c358813002",
+        "caller": "sympozium:celln-proof/proof-cancel",
+        "workload": "reference",
+        "node": "conformance",
+        "events": [
+          {
+            "sequence": 0,
+            "at": "2026-09-06T13:59:59Z",
+            "phase": "Admitting"
+          },
+          {
+            "sequence": 1,
+            "at": "2026-09-06T13:59:59Z",
+            "phase": "Resolving"
+          },
+          {
+            "sequence": 2,
+            "at": "2026-09-06T13:59:59Z",
+            "phase": "CellRunning"
+          },
+          {
+            "sequence": 3,
+            "at": "2026-09-06T14:00:01Z",
+            "phase": "Cancelling"
+          },
+          {
+            "sequence": 4,
+            "at": "2026-09-06T14:00:01Z",
+            "phase": "Dissolved"
+          },
+          {
+            "sequence": 5,
+            "at": "2026-09-06T14:00:01Z",
+            "phase": "Cancelled"
+          }
+        ],
+        "execution": {
+          "cellId": "b2e2713e2c59",
+          "substrate": {
+            "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+            "initrd": "blake3:8346e685bdd74cdcf71fbe3373b0537e80fb854724c52f1e1b1a0e055b7c0c05",
+            "toolfs": "blake3:ac65b00b8b472842ae6b03bf7008a84aad9b58c4882961a9752934bbd1a2737d",
+            "invocation": "blake3:92fe300a35bab7467a90503b3e8d72c93e0ef4b89c38e932537310a127ec8793"
+          },
+          "pilot": {
+            "tool": "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776",
+            "lane": "tool",
+            "workspace": "read-only",
+            "fetch": false
+          },
+          "granted": {
+            "workspace": "read-only",
+            "egress": [],
+            "timeoutMs": 30000,
+            "memoryBytes": 268435456,
+            "outputBytes": 1024
+          },
+          "inputs": [
+            "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+          ],
+          "broker": {
+            "requests": 0,
+            "denied": 0,
+            "responseBytes": 0
+          },
+          "exitCode": null,
+          "signal": null,
+          "watchdogStopped": true
+        },
+        "receipt": {
+          "apiVersion": "celln.dev/v1alpha1",
+          "requestId": "proof-cancel-b66547e3-b84b-4211-9371-c1c358813002",
+          "phase": "cancelled",
+          "node": "conformance",
+          "cellId": "b2e2713e2c59",
+          "resolved": {
+            "mote": "blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9",
+            "tools": [
+              "blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776"
+            ],
+            "inputs": [
+              "blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface"
+            ]
+          },
+          "output": {
+            "hash": "blake3:2d0f1ad08e2bb949f2127055789f8c78c6256804b2c6c63b762e7c74d7ba258f",
+            "mediaType": "application/octet-stream",
+            "bytes": 15
+          },
+          "startedAt": "2026-09-06T13:59:59Z",
+          "completedAt": "2026-09-06T14:00:01Z"
+        }
+      }
+    }
+  ],
+  "refusals": [
+    {
+      "name": "proof-unsupported",
+      "status": {
+        "cellnActionId": "proof-unsupported-d0c7f1e2-cfd9-4775-879d-e42e79aaf22f",
+        "cellnRequest": "{\"apiVersion\":\"celln.dev/v1alpha1\",\"id\":\"proof-unsupported-d0c7f1e2-cfd9-4775-879d-e42e79aaf22f\",\"workload\":{\"id\":\"reference\",\"caller\":\"sympozium:celln-proof/proof-unsupported\"},\"mote\":{\"hash\":\"blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9\"},\"tools\":[{\"alias\":\"/tools/program\",\"hash\":\"blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776\",\"closure\":{\"hash\":\"blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9\"}}],\"inputs\":[{\"name\":\"data\",\"hash\":\"blake3:503c76239615797c7455e89aa647f3c3aac4dfe197eed6730b6210a6543aface\",\"mediaType\":\"text/plain\",\"bytes\":11}],\"invocation\":{\"alias\":\"/tools/program\",\"args\":[\"unsupported\"]},\"capabilities\":{\"workspace\":\"read-only\",\"timeoutMs\":15000,\"memoryBytes\":268435456,\"outputBytes\":1024},\"execution\":{\"lane\":\"tool\",\"requireHardwareIsolation\":true}}",
+        "completedAt": "2026-09-06T13:59:51Z",
+        "error": "Celln router refused dispatch (HTTP 422): {\"detail\":\"unsupported authority: tool closure delivery is not implemented\",\"error\":\"request refused\",\"reason\":\"unsupported\"}",
+        "phase": "Failed"
+      }
+    },
+    {
+      "name": "proof-unapproved-input",
+      "status": {
+        "cellnActionId": "proof-unapproved-input-295804cf-35b0-430e-875d-51145e3cab5f",
+        "cellnRequest": "{\"apiVersion\":\"celln.dev/v1alpha1\",\"id\":\"proof-unapproved-input-295804cf-35b0-430e-875d-51145e3cab5f\",\"workload\":{\"id\":\"reference\",\"caller\":\"sympozium:celln-proof/proof-unapproved-input\"},\"mote\":{\"hash\":\"blake3:fc1f3d137d900dcf331fe2909a77ed561f007a47c654f8029227bd43964d4fa9\"},\"tools\":[{\"alias\":\"/tools/program\",\"hash\":\"blake3:80927c3d9d664a9e8c854c03634bbaf7ef401680f1af6e73d4c37aae19a8f776\"}],\"inputs\":[{\"name\":\"data\",\"hash\":\"blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"mediaType\":\"text/plain\",\"bytes\":11}],\"invocation\":{\"alias\":\"/tools/program\",\"args\":[\"unapproved-input\"]},\"capabilities\":{\"workspace\":\"read-only\",\"timeoutMs\":15000,\"memoryBytes\":268435456,\"outputBytes\":1024},\"execution\":{\"lane\":\"tool\",\"requireHardwareIsolation\":true}}",
+        "completedAt": "2026-09-06T13:59:51Z",
+        "error": "Celln execution Refused: input is not authorized by host policy",
+        "phase": "Failed",
+        "startedAt": "2026-09-06T13:59:51Z"
+      }
+    }
+  ],
+  "cleanup": {
+    "ownedClustersRemoved": true,
+    "originalKubernetesContext": "kubernetes-admin@kubernetes"
+  }
+}
