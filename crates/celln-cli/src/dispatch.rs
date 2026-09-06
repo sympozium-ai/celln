@@ -44,6 +44,25 @@ pub struct ResolvedBundle {
     pub toolfs_hash: String,
 }
 
+/// Runtime support is narrower than the transport schema. Do not silently
+/// discard requested authority or describe requested-but-unused objects as
+/// resolved provenance. Remove each refusal only with its delivery proof.
+pub(crate) fn check_supported_authority(request: &ExecutionRequest) -> Result<(), String> {
+    if !request.inputs.is_empty() {
+        return Err("unsupported authority: input delivery is not implemented".into());
+    }
+    if request.capabilities.workspace != celln_spec::WorkspaceAccess::None {
+        return Err("unsupported authority: workspace delivery is not implemented".into());
+    }
+    if request.tools.iter().any(|tool| tool.closure.is_some()) {
+        return Err("unsupported authority: tool closure delivery is not implemented".into());
+    }
+    if request.tools.len() > 1 {
+        return Err("unsupported authority: only the invoked tool can be delivered".into());
+    }
+    Ok(())
+}
+
 pub fn resolve_bundle(
     request: &ExecutionRequest,
     mote_root: &Path,
@@ -67,6 +86,7 @@ pub fn resolve_bundle(
                 .join("; ")
         ));
     }
+    check_supported_authority(request)?;
     let mote = request
         .mote
         .as_ref()
@@ -261,6 +281,7 @@ pub fn launch(
 ) -> Result<LaunchOutcome, String> {
     use warden::vmm::boot::{BootConfig, LinuxCell};
 
+    check_supported_authority(request)?;
     if !Path::new("/dev/kvm").exists() {
         return Err("no /dev/kvm — cannot seal a cell on this host".to_owned());
     }
@@ -413,7 +434,7 @@ pub fn launch(
 
 #[cfg(not(target_os = "linux"))]
 pub fn launch(
-    _request: &ExecutionRequest,
+    request: &ExecutionRequest,
     _alias: &str,
     _args: &[String],
     _program_bytes: &[u8],
@@ -421,6 +442,7 @@ pub fn launch(
     _assay_root: &Path,
     _state_root: &Path,
 ) -> Result<LaunchOutcome, String> {
+    check_supported_authority(request)?;
     Err("sealing cells needs Linux with /dev/kvm".to_owned())
 }
 
@@ -478,6 +500,69 @@ mod tests {
     use celln_store::Store;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn unsupported_authority_refuses_before_resolution_or_launch() {
+        let base: ExecutionRequest = serde_json::from_value(json!({
+            "apiVersion": "celln.dev/v1alpha1", "id": "authority-test",
+            "workload": { "id": "test", "caller": "test" },
+            "mote": { "hash": Hash::of(b"mote").0 },
+            "tools": [{ "alias": "/tools/program", "hash": Hash::of(b"program").0 }],
+            "invocation": { "alias": "/tools/program" },
+            "capabilities": { "workspace": "none", "timeoutMs": 1000, "memoryBytes": 268435456, "outputBytes": 1024 },
+            "execution": { "lane": "agent", "requireHardwareIsolation": true }
+        })).unwrap();
+        assert!(base.problems().is_empty());
+        assert!(check_supported_authority(&base).is_ok());
+        let mut cases = Vec::new();
+        let mut input = base.clone();
+        input.inputs.push(celln_spec::ExecutionInput {
+            name: "data".into(),
+            hash: Hash::of(b"data").0,
+            media_type: "text/plain".into(),
+            bytes: 4,
+        });
+        cases.push((input, "input delivery"));
+        for access in [
+            celln_spec::WorkspaceAccess::ReadOnly,
+            celln_spec::WorkspaceAccess::ReadWrite,
+        ] {
+            let mut workspace = base.clone();
+            workspace.capabilities.workspace = access;
+            cases.push((workspace, "workspace delivery"));
+        }
+        let mut closure = base.clone();
+        closure.tools[0].closure = Some(celln_spec::ImmutableRef {
+            hash: Hash::of(b"closure").0,
+        });
+        cases.push((closure, "closure delivery"));
+        let mut extra = base.clone();
+        extra.tools.push(celln_spec::ToolRef {
+            alias: "/tools/extra".into(),
+            hash: Hash::of(b"extra").0,
+            closure: None,
+        });
+        cases.push((extra, "only the invoked tool"));
+        let work = tempdir().unwrap();
+        let missing = work.path().join("must-not-be-created");
+        for (request, reason) in cases {
+            assert!(request.problems().is_empty());
+            let error = resolve_bundle(&request, &missing, &missing).unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            let error = launch(
+                &request,
+                "program",
+                &[],
+                b"program",
+                &missing,
+                &missing,
+                &missing,
+            )
+            .unwrap_err();
+            assert!(error.contains(reason), "{error}");
+            assert!(!missing.exists());
+        }
+    }
 
     #[test]
     fn resolved_bundle_binds_the_requested_invocation_to_the_declared_tool() {
