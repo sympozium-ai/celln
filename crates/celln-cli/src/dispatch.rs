@@ -65,6 +65,7 @@ pub struct ResolvedBundle {
 /// discard requested authority or describe requested-but-unused objects as
 /// resolved provenance. Remove each refusal only with its delivery proof.
 pub(crate) fn check_supported_authority(request: &ExecutionRequest) -> Result<(), String> {
+    celln_control::check().map_err(|e| e.to_string())?;
     if !request.inputs.is_empty() {
         return Err("unsupported authority: input delivery is not implemented".into());
     }
@@ -211,6 +212,7 @@ pub fn forge(
     timeout_secs: u64,
 ) -> Result<ForgedProgram, String> {
     use crate::agent::{ask_model, discover_backend, Backend, ALIAS, AVAILABLE_RUNTIMES, BRIEF};
+    celln_control::check().map_err(|e| e.to_string())?;
 
     let backend = match forge_request.backend.as_deref() {
         Some(name) => Backend::from_saved_name(name).ok_or_else(|| {
@@ -257,6 +259,7 @@ pub fn forge(
             Err(error) => return Err(error.to_string()),
         };
 
+    celln_control::check().map_err(|e| e.to_string())?;
     let mut assayer = assay::Assayer::open(assay_root).map_err(|error| error.to_string())?;
     let hash = assayer
         .admit_forged_authored(ALIAS, &code, false, celln_manifest::Author::Agent, &proof)
@@ -465,13 +468,16 @@ fn run_cell(
         }
     };
 
-    let outcome = parse_report(
+    let mut outcome = parse_report(
         &report.console,
         cell_id,
         request.capabilities.output_bytes as usize,
         report.end == warden::vmm::boot::BootEnd::TimedOut,
         report.end == warden::vmm::boot::BootEnd::Shutdown,
     );
+    if let Some(reason) = celln_control::current().and_then(|c| c.reason()) {
+        outcome.denial = Some(reason.to_string());
+    }
     if let Some(record) = record.as_mut() {
         crate::cells::finish(state_root, record, "kvm", outcome.denial.clone());
     }

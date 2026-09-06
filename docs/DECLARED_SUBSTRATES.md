@@ -95,7 +95,8 @@ preparation. Forge dispatch also prepares then forks, but its freshly generated
 substrate may miss the cache; deterministic forge substrate reuse is not claimed.
 The cache is not an aggregate memory scheduler (#5).
 
-This does not complete #13 or the epic: cancellation/deadlines,
-full provenance, input providers and external integration remain outstanding.
+Cancellation/deadlines use the shared [execution control](DISPATCH_LIFECYCLE.md).
+This does not complete the epic: full provenance, input providers and external
+integration remain outstanding.
 See [warm dispatch measurements](WARM_DISPATCH_MEASUREMENTS.md) for the current
 end-to-end numbers and guest isolation proof.

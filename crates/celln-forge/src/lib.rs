@@ -61,9 +61,7 @@ pub enum ForgeError {
 }
 
 pub fn toolchain() -> Result<String, ForgeError> {
-    let out = Command::new("rustc")
-        .arg("-V")
-        .output()
+    let out = celln_control::process::output(Command::new("rustc").arg("-V"))
         .map_err(|e| ForgeError::Toolchain(e.to_string()))?;
     if !out.status.success() {
         return Err(ForgeError::Toolchain(
@@ -84,13 +82,15 @@ fn compile_in(dir: &Path, source: &[u8], args: &[String]) -> Result<Vec<u8>, For
         .iter()
         .map(|a| a.replace("%BUILD_DIR%", &dir.display().to_string()))
         .collect();
-    let out = Command::new("rustc")
-        .args(&concrete)
-        .arg("-o")
-        .arg(&bin)
-        .arg(&src)
-        .env("CARGO_NET_OFFLINE", "true")
-        .output()?;
+    celln_control::check()?;
+    let out = celln_control::process::output(
+        Command::new("rustc")
+            .args(&concrete)
+            .arg("-o")
+            .arg(&bin)
+            .arg(&src)
+            .env("CARGO_NET_OFFLINE", "true"),
+    )?;
     if !out.status.success() {
         return Err(ForgeError::Build(
             String::from_utf8_lossy(&out.stderr).trim().into(),

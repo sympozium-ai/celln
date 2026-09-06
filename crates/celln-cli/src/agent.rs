@@ -110,12 +110,8 @@ fn authenticated(has_api_key: bool, cli_status_ok: bool) -> bool {
 }
 
 fn cli_login_ok(program: &str, args: &[&str]) -> bool {
-    Command::new(program)
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    celln_control::process::output(Command::new(program).args(args))
+        .is_ok_and(|out| out.status.success())
 }
 
 impl Backend {
@@ -214,13 +210,11 @@ impl Backend {
             Backend::Local => {
                 // ollama needs the daemon running. Quick check: does `ollama list`
                 // exit successfully?
-                let out = std::process::Command::new("ollama")
-                    .args(["list"])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status();
+                let out = celln_control::process::output(
+                    std::process::Command::new("ollama").args(["list"]),
+                );
                 match out {
-                    Ok(s) if s.success() => Ok(()),
+                    Ok(s) if s.status.success() => Ok(()),
                     _ => Err("ollama daemon is not running — start it with `ollama serve`".into()),
                 }
             }
@@ -632,23 +626,24 @@ fn bootstrap_runtime() -> Result<PathBuf> {
     if !found {
         // Try building them from the workspace
         eprintln!("  · building pilot binaries (one-time)...");
-        let status = std::process::Command::new("cargo")
-            .args([
-                "build",
-                "--release",
-                "--target",
-                "x86_64-unknown-linux-musl",
-                "-p",
-                "celln-pilot",
-                "--bin",
-                "celln-pilot",
-                "--bin",
-                "pilot-fetch",
-            ])
-            .current_dir(workspace)
-            .status()
-            .context("building pilot binaries")?;
-        if !status.success() {
+        let output = celln_control::process::output(
+            std::process::Command::new("cargo")
+                .args([
+                    "build",
+                    "--release",
+                    "--target",
+                    "x86_64-unknown-linux-musl",
+                    "-p",
+                    "celln-pilot",
+                    "--bin",
+                    "celln-pilot",
+                    "--bin",
+                    "pilot-fetch",
+                ])
+                .current_dir(workspace),
+        )
+        .context("building pilot binaries")?;
+        if !output.status.success() {
             anyhow::bail!("cargo build of pilot binaries failed");
         }
         let dir = workspace.join("target/x86_64-unknown-linux-musl/release");
@@ -1171,6 +1166,12 @@ fn output_deadline(
     limit: Duration,
     term_first: bool,
 ) -> Result<std::process::Output> {
+    if celln_control::current().is_some() {
+        return Ok(celln_control::process::output_with_timeout(
+            &mut cmd,
+            Some(limit),
+        )?);
+    }
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1462,9 +1463,7 @@ fn guest_pilot_binaries_present(dir: &Path) -> bool {
 
 /// Ask rustup, the same way `mkinitramfs.sh` does, so the two cannot disagree.
 fn musl_target_installed() -> bool {
-    Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output()
+    celln_control::process::output(Command::new("rustup").args(["target", "list", "--installed"]))
         .is_ok_and(|o| {
             o.status.success()
                 && String::from_utf8_lossy(&o.stdout)
@@ -1488,7 +1487,8 @@ pub(crate) fn sh_env(
     for (k, v) in env {
         c.env(k, v);
     }
-    let out = c.output().with_context(|| format!("running {script}"))?;
+    let out =
+        celln_control::process::output(&mut c).with_context(|| format!("running {script}"))?;
     if !out.status.success() {
         bail!("{script}: {}", String::from_utf8_lossy(&out.stderr).trim());
     }

@@ -125,6 +125,7 @@ version = "0.5.7"
 dependencies = [
  "anyhow",
  "celln-assay",
+ "celln-control",
  "celln-forge",
  "celln-manifest",
  "celln-pilot",
@@ -141,9 +142,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "celln-control"
+version = "0.5.7"
+dependencies = [
+ "libc",
+ "tempfile",
+]
+
+[[package]]
 name = "celln-forge"
 version = "0.5.7"
 dependencies = [
+ "celln-control",
  "celln-manifest",
  "serde",
  "thiserror",
@@ -198,10 +208,12 @@ dependencies = [
 name = "celln-warden"
 version = "0.5.7"
 dependencies = [
+ "celln-control",
  "celln-manifest",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "tempfile",
  "thiserror",
 ]
 

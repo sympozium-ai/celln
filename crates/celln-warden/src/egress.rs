@@ -83,10 +83,31 @@ impl HttpBroker {
         {
             return Err(FetchDenied::Host(host));
         }
-        let ip = (host.as_str(), 443)
-            .to_socket_addrs()
-            .map_err(|_| FetchDenied::Address)?
-            .find_map(|a| match a.ip() {
+        let addresses: Vec<IpAddr> = if celln_control::current().is_some() {
+            // NSS resolution can block. Keep it in an owned subprocess under
+            // the same execution deadline, never an abandoned resolver thread.
+            let out = celln_control::process::output_with_timeout(
+                Command::new("getent").args(["--", "ahostsv4", &host]),
+                Some(self.policy.timeout),
+            )
+            .map_err(|e| FetchDenied::Fetch(e.to_string()))?;
+            if !out.status.success() {
+                return Err(FetchDenied::Address);
+            }
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+                .collect()
+        } else {
+            (host.as_str(), 443)
+                .to_socket_addrs()
+                .map_err(|_| FetchDenied::Address)?
+                .map(|a| a.ip())
+                .collect()
+        };
+        let ip = addresses
+            .into_iter()
+            .find_map(|a| match a {
                 IpAddr::V4(v) if is_public_v4(v.octets()) => Some(IpAddr::V4(v)),
                 _ => None,
             })
@@ -105,33 +126,31 @@ impl HttpBroker {
             }
             let (host, ip) = self.authorize(&url)?;
             self.used += 1;
-            let header = std::env::temp_dir().join(format!(
-                "celln-fetch-{}-{}",
-                std::process::id(),
-                self.used
-            ));
-            let out = Command::new("curl")
-                .args([
-                    "--silent",
-                    "--show-error",
-                    "--proto",
-                    "=https",
-                    "--max-redirs",
-                    "0",
-                ])
-                .arg("--max-time")
-                .arg(self.policy.timeout.as_secs().to_string())
-                .arg("--max-filesize")
-                .arg(self.policy.max_response_bytes.to_string())
-                .arg("--resolve")
-                .arg(format!("{host}:443:{ip}"))
-                .arg("--dump-header")
-                .arg(&header)
-                .arg(&url)
-                .output()
-                .map_err(|e| FetchDenied::Fetch(e.to_string()))?;
-            let headers = std::fs::read_to_string(&header).unwrap_or_default();
-            let _ = std::fs::remove_file(&header);
+            let header =
+                tempfile::NamedTempFile::new().map_err(|e| FetchDenied::Fetch(e.to_string()))?;
+            let out = celln_control::process::output_with_timeout(
+                Command::new("curl")
+                    .args([
+                        "--silent",
+                        "--show-error",
+                        "--proto",
+                        "=https",
+                        "--max-redirs",
+                        "0",
+                    ])
+                    .arg("--max-time")
+                    .arg(self.policy.timeout.as_secs().to_string())
+                    .arg("--max-filesize")
+                    .arg(self.policy.max_response_bytes.to_string())
+                    .arg("--resolve")
+                    .arg(format!("{host}:443:{ip}"))
+                    .arg("--dump-header")
+                    .arg(header.path())
+                    .arg(&url),
+                Some(self.policy.timeout),
+            )
+            .map_err(|e| FetchDenied::Fetch(e.to_string()))?;
+            let headers = std::fs::read_to_string(header.path()).unwrap_or_default();
             if !out.status.success() {
                 return Err(FetchDenied::Fetch(
                     String::from_utf8_lossy(&out.stderr).trim().into(),

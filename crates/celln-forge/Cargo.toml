@@ -11,6 +11,7 @@ description = "The build plane: rebuilds an artifact from source and proves the 
 name = "forge"
 
 [dependencies]
+celln-control.workspace = true
 celln-manifest.workspace = true
 serde.workspace = true
 thiserror.workspace = true
