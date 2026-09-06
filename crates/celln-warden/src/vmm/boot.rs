@@ -772,6 +772,7 @@ pub struct ForkTiming {
 }
 
 pub struct Mote {
+    tool_maps: Vec<super::kvm::SharedTool>,
     ram: Arc<OwnedFd>,
     ram_size: usize,
     /// Width of the tool-window hole, so a fork rebuilds the same RAM split.
@@ -857,6 +858,7 @@ pub struct LinuxCell {
     /// The CPUID the vCPU was configured with; travels with a snapshot.
     cpuid: kvm_bindings::CpuId,
     tools: HashMap<Hash, (u32, u64, usize)>, // slot, gpa, len
+    tool_maps: Vec<super::kvm::SharedTool>,
     next_slot: u32,
     next_tool_gpa: u64,
     cfg: BootConfig,
@@ -988,6 +990,7 @@ impl LinuxCell {
             stop_on_signal: false,
             cpuid,
             tools: HashMap::new(),
+            tool_maps: Vec::new(),
             next_slot: FIRST_TOOL_SLOT,
             next_tool_gpa: TOOL_WINDOW_GPA,
             cfg,
@@ -1019,6 +1022,7 @@ impl LinuxCell {
         unsafe { self.vm.set_user_memory_region(region) }
             .map_err(|e| kvm_err("set_user_memory_region(tool)", e))?;
         self.tools.insert(hash.clone(), (self.next_slot, gpa, len));
+        self.tool_maps.push(map);
         self.next_slot += 1;
         // Advance by the aligned extent, not the raw length, so the Nth
         // sealed image lands exactly on the Nth declared namespace base.
@@ -1204,6 +1208,7 @@ impl LinuxCell {
                 .map(|(h, (_, gpa, len))| (h.clone(), *gpa, *len))
                 .collect(),
             cfg: self.cfg.clone(),
+            tool_maps: self.tool_maps.clone(),
         })
     }
 
@@ -1351,6 +1356,7 @@ impl LinuxCell {
                 stop_on_signal: false,
                 cpuid: mote.cpuid.clone(),
                 tools,
+                tool_maps: mote.tool_maps.clone(),
                 next_slot,
                 next_tool_gpa: TOOL_WINDOW_GPA,
                 cfg: mote.cfg.clone(),

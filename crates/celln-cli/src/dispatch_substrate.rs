@@ -26,7 +26,7 @@ fn authorize(request: &ExecutionRequest, state_root: &Path) -> Result<(), String
 }
 
 /// A pinned bundle cannot undo authority already narrowed on this node.
-fn local_agent_constraint(hash: &str, state_root: &Path) -> Result<bool, String> {
+pub(super) fn local_agent_constraint(hash: &str, state_root: &Path) -> Result<bool, String> {
     let path = state_root.join("assay/manifest.json");
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -96,8 +96,12 @@ pub(crate) fn launch_declared(
     let inputs = super::inputs::resolve(request, state_root)?;
     let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
     let local_agent = local_agent_constraint(&resolved.program_hash, state_root)?;
-    if resolved.format.as_deref() != Some("celln.warm-static-v1") {
-        return Err("unsupported declared mote format; expected celln.warm-static-v1".into());
+    let closure = super::closure::resolve(request, &resolved, state_root)?;
+    if !matches!(
+        resolved.format.as_deref(),
+        Some("celln.warm-static-v1" | "celln.warm-closure-v1")
+    ) {
+        return Err("unsupported declared mote format".into());
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -114,11 +118,22 @@ pub(crate) fn launch_declared(
         if !resolved.initrd_bytes.starts_with(b"070701") {
             return Err("unsupported initrd: warm static format requires uncompressed newc".into());
         }
+        let mut force_agent =
+            local_agent || request.execution.lane == celln_spec::RequestedLane::Agent;
+        if let Some(c) = &closure {
+            force_agent |= c.signed.closure.interpreter;
+            for m in c.signed.closure.members.values() {
+                force_agent |= local_agent_constraint(&m.hash, state_root)?;
+            }
+        }
         let run = serde_json::to_vec(&serde_json::json!({
-            "path": "/tools/program", "alias": invocation.alias,
+            "path": closure.as_ref().map_or("/tools/program", |c| c.signed.closure.entrypoint.as_str()),
+            "root": closure.as_ref().map(|_| "/tools"),
+            "closure_members": closure.as_ref().map(|c| &c.signed.closure.members),
+            "alias": invocation.alias,
             "args": invocation.args, "expected_hash": resolved.program_hash,
             "agent_authored_input": request.execution.lane == celln_spec::RequestedLane::Agent,
-            "force_agent_lane": local_agent || request.execution.lane == celln_spec::RequestedLane::Agent,
+            "force_agent_lane": force_agent,
             "allow_fetch": !request.capabilities.egress.is_empty(),
             "report_output_limit": request.capabilities.output_bytes,
             "workspace_access": request.capabilities.workspace,
@@ -138,6 +153,7 @@ pub(crate) fn launch_declared(
         }
         initrd_bytes.extend(file_archive("celln/dispatch-warm", b"pio-v1\n"));
         let identity = super::SubstrateIdentity {
+            closure: closure.as_ref().map(|c| c.provenance.clone()),
             kernel: resolved.kernel_hash.clone(),
             initrd: celln_manifest::Hash::of(&initrd_bytes).0,
             toolfs: resolved.toolfs_hash.clone(),
@@ -320,6 +336,7 @@ mod tests {
         let Some(runtime) = super::super::tests::test_runtime_root(work.path()) else {
             return;
         };
+        let material_started = std::time::Instant::now();
         let program = work.path().join("program");
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dispatch_outcome_probe.rs");
@@ -394,6 +411,7 @@ mod tests {
         let bundle_hash = store.put(&serde_json::to_vec(&bundle).unwrap()).unwrap();
         let state = work.path().join("state");
         pin(&state, &bundle_hash);
+        let material_elapsed = material_started.elapsed();
         let preparations =
             super::super::warm::PREPARATIONS.load(std::sync::atomic::Ordering::SeqCst);
         let cold_started = std::time::Instant::now();
@@ -429,6 +447,7 @@ mod tests {
         assert_eq!(hints[0].tools, vec![program_hash.0.clone()]);
         assert_eq!(hints[0].guest_memory_bytes, 268435456);
         let cold_elapsed = cold_started.elapsed();
+        let mut warm_micros = Vec::new();
         for arg in ["first", "second"] {
             let mut req = request(&bundle_hash, &program_hash);
             req.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
@@ -445,7 +464,34 @@ mod tests {
                 preparations + 1
             );
             eprintln!("PASS: warm {arg}, private scratch, distinct args; cold={cold_elapsed:?}, warm={:?}", started.elapsed());
+            warm_micros.push(started.elapsed().as_micros());
         }
+        let shared = warden::vmm::kvm::shared_tool_map_existing(&toolfs_hash).unwrap();
+        let maps = warden::vmm::kvm::shared_tool_count();
+        let forks: Vec<_> = (0..8)
+            .map(|_| {
+                super::super::warm::fork(
+                    format!("{}:268435456", bundle_hash.0),
+                    vec![program_hash.0.clone()],
+                    || panic!("warm only"),
+                )
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(warden::vmm::kvm::shared_tool_count(), maps);
+        assert_eq!(
+            warden::vmm::kvm::shared_tool_map_existing(&toolfs_hash)
+                .unwrap()
+                .addr(),
+            shared.addr()
+        );
+        drop(forks);
+        let evidence_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/closure-proof");
+        std::fs::create_dir_all(&evidence_dir).unwrap();
+        std::fs::write(evidence_dir.join(format!("static-{}.json", std::process::id())), serde_json::to_vec_pretty(&json!({
+            "materialisationMicros":material_elapsed.as_micros(), "coldExecutionMicros":cold_elapsed.as_micros(), "warmExecutionMicros":warm_micros,
+            "simultaneousForks":8,"additionalToolAllocations":0,"sharedToolBytes":shared.len(), "programBytes":program_bytes.len()
+        })).unwrap()).unwrap();
 
         for (access, name) in [
             (celln_spec::WorkspaceAccess::None, "none"),

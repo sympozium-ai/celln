@@ -10,6 +10,9 @@ use celln_store::Store;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[path = "dispatch_closure.rs"]
+pub(crate) mod closure;
+
 #[path = "dispatch_substrate.rs"]
 mod substrate;
 pub(crate) use substrate::launch_declared;
@@ -69,8 +72,12 @@ pub struct ResolvedBundle {
 pub(crate) fn check_supported_authority(request: &ExecutionRequest) -> Result<(), String> {
     celln_control::check().map_err(|e| e.to_string())?;
     inputs::validate(request)?;
-    if request.tools.iter().any(|tool| tool.closure.is_some()) {
-        return Err("unsupported authority: tool closure delivery is not implemented".into());
+    if request.tools.iter().any(|tool| tool.closure.is_some())
+        && (request.forge.is_some()
+            || !request.inputs.is_empty()
+            || !request.capabilities.egress.is_empty())
+    {
+        return Err("unsupported authority: closure delivery with forge, inputs or egress".into());
     }
     if request.tools.len() > 1 {
         return Err("unsupported authority: only the invoked tool can be delivered".into());
@@ -181,6 +188,8 @@ pub struct LaunchOutcome {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubstrateIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closure: Option<closure::Provenance>,
     pub kernel: String,
     /// Exact loaded initrd including the fixed warm-dispatch marker.
     pub initrd: String,
@@ -464,6 +473,7 @@ fn run_prepared(
         cfg.mem_size
     );
     let identity = SubstrateIdentity {
+        closure: None,
         kernel: kernel_hash.0,
         initrd: initrd_hash.0,
         toolfs: Hash::of(&payload).0,
@@ -692,6 +702,7 @@ mod tests {
         closure.tools[0].closure = Some(celln_spec::ImmutableRef {
             hash: Hash::of(b"closure").0,
         });
+        closure.capabilities.egress = vec!["https://example.com".into()];
         cases.push((closure, "closure delivery"));
         let mut extra = base.clone();
         extra.tools.push(celln_spec::ToolRef {
@@ -996,8 +1007,8 @@ mod tests {
     /// Full forge-from-task pipeline, on real hardware: a real,
     /// already-authenticated backend writes a program from a task string,
     /// `forge` builds/admits it, and `launch` seals and runs the exact bytes
-    /// that came back — no pre-declared mote or tool at all. Pinned to
-    /// `anthropic` for a repeatable choice of backend; this makes a real,
+    /// that came back — no pre-declared mote or tool at all. Defaults to
+    /// `anthropic`; CELLN_TEST_FORGE_BACKEND explicitly selects another backend. This makes a real,
     /// possibly billed, call. Not run by default — needs /dev/kvm, the
     /// guest pilot binaries, and `claude` authenticated on this host. Run
     /// explicitly with:
@@ -1010,10 +1021,12 @@ mod tests {
             eprintln!("skipping: no /dev/kvm on this runner");
             return;
         }
-        if !crate::agent::Backend::Anthropic.available() {
-            eprintln!(
-                "skipping: `claude` not available/authenticated on this host — see `celln providers`"
-            );
+        let backend =
+            std::env::var("CELLN_TEST_FORGE_BACKEND").unwrap_or_else(|_| "anthropic".into());
+        let provider =
+            crate::agent::Backend::from_saved_name(&backend).expect("known explicit test backend");
+        if !provider.available() {
+            eprintln!("skipping: selected backend is unavailable — see `celln providers`");
             return;
         }
 
@@ -1026,7 +1039,7 @@ mod tests {
             "apiVersion": "celln.dev/v1alpha1",
             "id": "forge-smoke-test",
             "workload": { "id": "smoke-test", "caller": "test:forge" },
-            "forge": { "task": "print exactly the line: hello from a forged execution request", "backend": "anthropic" },
+            "forge": { "task": "print exactly the line: hello from a forged execution request", "backend": backend },
             "capabilities": { "workspace": "none", "timeoutMs": 90000, "memoryBytes": 268435456, "outputBytes": 65536 },
             "execution": { "lane": "agent", "requireHardwareIsolation": true }
         }))
@@ -1057,6 +1070,15 @@ mod tests {
             &state_root,
         )
         .expect("cell launches and runs");
+
+        assert!(outcome.succeeded(), "{outcome:?}");
+        assert_eq!(outcome.execution.as_ref().unwrap().lane, "agent");
+        assert_eq!(outcome.execution.as_ref().unwrap().tool, forged.hash);
+        assert_eq!(crate::cells::live_count(&state_root), 0);
+        eprintln!(
+            "PASS: real {backend} model → reproduced program {} → sealed KVM execution → dissolved",
+            forged.hash
+        );
 
         assert!(
             outcome.denial.is_none(),

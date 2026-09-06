@@ -24,6 +24,11 @@ pub(crate) fn availability() -> Option<Vec<Availability>> {
 }
 static CACHE: OnceLock<Mutex<Cached>> = OnceLock::new();
 #[cfg(test)]
+pub(super) fn evict() {
+    *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
+    warden::vmm::kvm::collect_unused_tools();
+}
+#[cfg(test)]
 pub(super) static PREPARATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
@@ -77,6 +82,7 @@ pub(super) fn fork(
             // Drop the only shared writable RAM mapping before publishing.
             drop(template);
             *cache = Some((key, Arc::clone(&mote), hint));
+            warden::vmm::kvm::collect_unused_tools();
             mote
         }
     };

@@ -11,6 +11,94 @@ use std::time::{Duration, Instant};
 
 const TOKEN: &str = "isolated-conformance-token-not-a-real-secret";
 
+pub(crate) fn prove_closure(
+    request: &ExecutionRequest,
+    motes: &Path,
+    tools: &Path,
+    root: &Path,
+    evidence: &Path,
+) {
+    let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/celln");
+    let address = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let token = root.join("closure-test-token");
+    std::fs::write(&token, TOKEN).unwrap();
+    let log = std::fs::File::create(evidence.join("dispatcher.log")).unwrap();
+    let child = Command::new(binary)
+        .arg("--root")
+        .arg(root)
+        .arg("dispatcher")
+        .arg("--listen")
+        .arg(address.to_string())
+        .arg("--token-file")
+        .arg(&token)
+        .arg("--mote-store")
+        .arg(motes)
+        .arg("--tool-store")
+        .arg(tools)
+        .args(["--memory-bytes", "268435456", "--egress-slots", "1"])
+        .stdout(Stdio::from(log.try_clone().unwrap()))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .unwrap();
+    let mut server = Server {
+        child,
+        address,
+        evidence: evidence.to_owned(),
+    };
+    let start = Instant::now();
+    while TcpStream::connect(address).is_err() {
+        assert!(
+            server.child.try_wait().unwrap().is_none(),
+            "dispatcher exited"
+        );
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    server.submit(request);
+    let audit = server.terminal(request, "Succeeded");
+    assert_eq!(
+        audit["execution"]["substrate"]["closure"]["hash"],
+        request.tools[0].closure.as_ref().unwrap().hash
+    );
+    let mut refused = request.clone();
+    refused.id = "unknown-closure".into();
+    refused.tools[0].closure.as_mut().unwrap().hash =
+        celln_manifest::Hash::of(b"unknown closure").0;
+    server.submit(&refused);
+    assert!(server.terminal(&refused, "Failed")["execution"].is_null());
+    if let Some(script) = std::env::var_os("CELLN_SYMPOZIUM_PROOF") {
+        let external = evidence.join("sympozium");
+        std::fs::create_dir_all(&external).unwrap();
+        let reference = evidence.join(format!("{}-request.json", request.id));
+        let log = std::fs::File::create(external.join("proof.log")).unwrap();
+        let status = Command::new("timeout")
+            .args(["--signal=TERM", "--kill-after=10s", "600s"])
+            .arg(script)
+            .env("CELLN_ROUTER_URL", format!("http://{address}"))
+            .env("CELLN_TOKEN_FILE", &token)
+            .env("CELLN_PROOF_REQUEST", reference)
+            .env("CELLN_PROOF_EVIDENCE", &external)
+            .env("CELLN_PROOF_ROOT", root)
+            .env(
+                "CELLN_PROOF_BINARY",
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/celln"),
+            )
+            .env("CELLN_PROOF_MODE", "closure")
+            .stdout(Stdio::from(log.try_clone().unwrap()))
+            .stderr(Stdio::from(log))
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "external closure proof failed; inspect {}",
+            external.display()
+        );
+    }
+}
+
 struct Server {
     child: Child,
     address: SocketAddr,
@@ -271,6 +359,7 @@ pub(crate) fn prove(base: ExecutionRequest, motes: &Path, tools: &Path, root: &P
     assert!(audit["receipt"].is_null());
     let mut unsupported = request.clone();
     unsupported.id = "http-unsupported-closure".into();
+    unsupported.capabilities.egress = vec!["https://example.com".into()];
     unsupported.tools[0].closure = Some(celln_spec::ImmutableRef {
         hash: celln_manifest::Hash::of(b"closure").0,
     });
