@@ -11,7 +11,8 @@ and process lifecycle; Celln must instead receive explicit content hashes and
 capabilities, then let `warden` make a sealed cell from a warm mote. The node agent
 is the narrow Kubernetes seam: it reports eligibility and admits or refuses a
 request. The Sympozium controller adapter must translate `AgentRun` policy
-into this request and persist the returned verdict in `AgentRun.status.conditions`.
+into this request. It freezes the request in `AgentRun.status.cellnRequest` and
+persists the validated terminal receipt in `AgentRun.status.cellnReceipt`.
 
 The included DaemonSet has only the privileged access required to inspect `/dev/kvm`
 and read the Celln mote/tool stores. It does not mount the container runtime socket,
@@ -36,7 +37,7 @@ selects Podman; see the [Kind rootless requirements](https://kind.sigs.k8s.io/do
 `CELLN_KIND_BIN` selects a project-local Kind executable. Missing tools/runtime
 fail explicitly; this proof never modifies host cgroup or kernel settings.
 
-The command emits JSON only. `verdict: accepted` means the node admitted the intent;
+The `celln node admit` command emits JSON only. `verdict: accepted` means the node admitted the intent;
 it does not claim the request's workload was run. An accepted node now also requires
 a readable loader-compatible guest kernel with matching modules. This remains
 preflight, not a proof that a particular guest boots. The versioned terminal result contract is
@@ -45,7 +46,7 @@ it binds a request, node, cell, resolved authority, and optional output to immut
 BLAKE3 references. `celln dispatcher` now executes requests and returns terminal
 results through its authenticated execution endpoints. Declared requests fork an
 operator-pinned warm mote; forge requests build their program before preparing and
-forking a mote. Fresh external Sympozium integration acceptance remains tracked in #2.
+forking a mote. External controller acceptance uses the separate full-path proof below.
 
 For live scheduling, use authenticated `GET /v1/node`, not a standalone node-probe
 process that cannot see the service's pre-cell reservations. The dispatcher now
@@ -82,6 +83,21 @@ operator state. Hardware prerequisites may skip; a skipped run is not evidence
 that isolation passed. The broader kernel sealing/hostile-guest proofs remain
 in `celln verify` and the warden suite.
 
+For the actual Sympozium controller → Kubernetes AgentRun → Celln execution path:
+
+```sh
+CELLN_KIND_BIN=/absolute/path/to/kind \
+CELLN_SYMPOZIUM_PROOF=/absolute/path/to/sympozium/test/integration/test-celln-real-controller.sh \
+make conformance-kvm
+```
+
+This opt-in starts a fresh Kind/Podman API server and the production Sympozium
+controller on the host, connected to the isolated host KVM dispatcher. It does
+not deploy to an existing cluster or claim nested KVM isolation inside Kind.
+Requests, status, receipts and audits are retained under the conformance run's
+`sympozium/` directory. See [conformance](../../docs/DISPATCH_CONFORMANCE.md)
+for prerequisites, permissions and evidence semantics.
+
 The companion benchmark harness exercises model-authored tasks: code is forged
 twice, sealed and run in a real cell; bounded web tasks use `/pilot-fetch`.
 
@@ -98,8 +114,6 @@ latter; it stores raw hardware measurements in `target/celln-bench/`.
 Open `docs/kubernetes.html` locally for the full-stack SVG and two animated
 walkthroughs, including the recorded 10- and 20-run measurements.
 
-Clean up with:
-
-```sh
-kubectl delete -f integrations/kubernetes/node-probe.yaml
-```
+Both proof scripts clean up their owned clusters automatically. If you separately
+deploy `node-probe.yaml`, remove it only from the explicitly selected test context;
+the proof scripts never require deleting resources from your current context.
