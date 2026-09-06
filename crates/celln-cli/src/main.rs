@@ -4,6 +4,8 @@ mod agent;
 mod cells;
 mod config;
 mod dispatch;
+#[cfg(all(test, target_os = "linux"))]
+mod dispatch_conformance;
 mod dispatch_http;
 mod host;
 mod image;

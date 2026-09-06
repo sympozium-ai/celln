@@ -674,7 +674,13 @@ fn run_execution(
     }
     let started_at = crate::dispatch::now_rfc3339();
     if let Err(error) = crate::dispatch::inputs::resolve(&request, &root) {
-        return fail_execution(&executions, &request.id, error);
+        // Policy/provider admission refused before any program executes. Do
+        // not label this a workload failure or invent a terminal guest receipt.
+        update_execution(&executions, &request.id, |record| {
+            record.phase = "Refused".into();
+            record.reason = Some(error);
+        });
+        return;
     }
     let assay_root = root.join("assay");
 
@@ -1102,48 +1108,50 @@ mod tests {
 
     #[test]
     fn unsupported_forge_authority_is_refused_without_side_effects() {
-        let mut request = request_with_egress(&[]);
-        request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
-        request.inputs.push(celln_spec::ExecutionInput {
-            name: "oversized".into(),
-            hash: celln_manifest::Hash::of(b"data").0,
-            media_type: "text/plain".into(),
-            bytes: 65537,
-        });
-        let work = tempfile::tempdir().unwrap();
-        let root = work.path().join("must-not-be-created");
-        let executions: Executions = Arc::new(Mutex::new(HashMap::new()));
-        executions.lock().unwrap().insert(
-            request.id.clone(),
-            Entry::new(ExecutionRecord {
-                request_id: request.id.clone(),
-                phase: "Admitting".into(),
-                reason: None,
-                output: None,
-                receipt: None,
-            }),
-        );
-        let probe = NodeProbeArgs {
-            node_name: "test".into(),
-            mote_store: root.join("motes"),
-            tool_store: root.join("tools"),
-            max_cells: 1,
-            memory_bytes: 268435456,
-            egress_slots: 0,
-        };
-        run_execution(
-            request.clone(),
-            Arc::clone(&executions),
-            probe,
-            root.clone(),
-        );
-        let registry = executions.lock().unwrap();
-        let record = &registry[&request.id].value;
-        assert_eq!(record.phase, "Refused");
-        assert!(record.reason.as_deref().unwrap().contains("input budget"));
-        assert!(record.receipt.is_none());
-        assert!(!execution_is_active(record));
-        assert!(!root.exists());
+        for (bytes, expected) in [(65537, "input budget"), (4, "input trust policy")] {
+            let mut request = request_with_egress(&[]);
+            request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
+            request.inputs.push(celln_spec::ExecutionInput {
+                name: "oversized".into(),
+                hash: celln_manifest::Hash::of(b"data").0,
+                media_type: "text/plain".into(),
+                bytes,
+            });
+            let work = tempfile::tempdir().unwrap();
+            let root = work.path().join("must-not-be-created");
+            let executions: Executions = Arc::new(Mutex::new(HashMap::new()));
+            executions.lock().unwrap().insert(
+                request.id.clone(),
+                Entry::new(ExecutionRecord {
+                    request_id: request.id.clone(),
+                    phase: "Admitting".into(),
+                    reason: None,
+                    output: None,
+                    receipt: None,
+                }),
+            );
+            let probe = NodeProbeArgs {
+                node_name: "test".into(),
+                mote_store: root.join("motes"),
+                tool_store: root.join("tools"),
+                max_cells: 1,
+                memory_bytes: 268435456,
+                egress_slots: 0,
+            };
+            run_execution(
+                request.clone(),
+                Arc::clone(&executions),
+                probe,
+                root.clone(),
+            );
+            let registry = executions.lock().unwrap();
+            let record = &registry[&request.id].value;
+            assert_eq!(record.phase, "Refused");
+            assert!(record.reason.as_deref().unwrap().contains(expected));
+            assert!(record.receipt.is_none());
+            assert!(!execution_is_active(record));
+            assert!(!root.exists());
+        }
     }
 
     #[test]

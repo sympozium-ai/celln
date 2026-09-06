@@ -524,6 +524,13 @@ mod tests {
             eprintln!("PASS: immutable named input {data} delivered on same warm mote");
         }
 
+        crate::dispatch_conformance::prove(
+            request(&bundle_hash, &program_hash),
+            &motes,
+            &tools,
+            &state,
+        );
+
         // Stop a real running guest without refreshing the end-to-end timer.
         for cancel in [false, true] {
             let control = celln_control::Control::new(std::time::Duration::from_secs(if cancel {
