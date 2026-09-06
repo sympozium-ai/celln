@@ -12,6 +12,8 @@
 use celln_manifest::{ExecDenied, Hash, Input, Lane, Manifest};
 use serde::Serialize;
 
+pub mod dispatch_report;
+
 /// The result of asking pilot to run something.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecOutcome {

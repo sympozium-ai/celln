@@ -73,6 +73,8 @@ jobs:
           cargo test -p celln-warden --features kvm
           cargo run -p celln-cli -- verify --no-json
           make acceptance-kvm
+          cargo build --release --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch
+          cargo test -p celln-cli dispatch_outcomes_on_real_kvm -- --ignored --nocapture
       - name: no /dev/kvm on this runner
         if: steps.kvm.outputs.have == 'no'
         run: |

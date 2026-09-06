@@ -524,21 +524,7 @@ fn run_execution(
     };
 
     let output = outcome.output.as_deref().filter(|bytes| !bytes.is_empty());
-    let stored_output = output.and_then(|bytes| {
-        Store::open(root.join("outputs"))
-            .and_then(|store| store.put(bytes))
-            .ok()
-            .map(|hash| ExecutionOutput {
-                hash: hash.0,
-                media_type: "application/octet-stream".into(),
-                bytes: bytes.len() as u64,
-            })
-    });
-    let phase = if stored_output.is_some() {
-        ExecutionPhase::Succeeded
-    } else {
-        ExecutionPhase::Failed
-    };
+    let (phase, stored_output, reason) = collect_result(&outcome, &root.join("outputs"));
     let receipt = ExecutionReceipt {
         api_version: "celln.dev/v1alpha1".into(),
         request_id: request.id.clone(),
@@ -561,10 +547,53 @@ fn run_execution(
     let output_text = output.map(|bytes| String::from_utf8_lossy(bytes).into_owned());
     update_execution(&executions, &request.id, |record| {
         record.phase = format!("{:?}", receipt.phase);
-        record.reason = outcome.denial.clone();
+        record.reason = reason;
         record.output = output_text;
         record.receipt = Some(receipt.clone());
     });
+}
+
+/// Guest success and output persistence are separate facts. A silent exit 0
+/// succeeds with no output object; nonzero exits keep their bounded output.
+fn collect_result(
+    outcome: &crate::dispatch::LaunchOutcome,
+    output_root: &Path,
+) -> (ExecutionPhase, Option<ExecutionOutput>, Option<String>) {
+    let mut reason = outcome.denial.clone();
+    let stored = outcome
+        .output
+        .as_deref()
+        .filter(|bytes| !bytes.is_empty())
+        .map(|bytes| {
+            Store::open(output_root)
+                .and_then(|store| store.put(bytes))
+                .map(|hash| ExecutionOutput {
+                    hash: hash.0,
+                    media_type: "application/octet-stream".into(),
+                    bytes: bytes.len() as u64,
+                })
+        })
+        .transpose();
+    match stored {
+        Ok(output) => (
+            if outcome.succeeded() {
+                ExecutionPhase::Succeeded
+            } else {
+                ExecutionPhase::Failed
+            },
+            output,
+            reason,
+        ),
+        Err(_) => {
+            // Keep local paths and filesystem diagnostics out of the wire.
+            let prefix = reason.take().map(|s| format!("{s}; ")).unwrap_or_default();
+            (
+                ExecutionPhase::Failed,
+                None,
+                Some(format!("{prefix}output persistence failed")),
+            )
+        }
+    }
 }
 
 fn reply(stream: &mut TcpStream, status: u16, body: &impl Serialize) -> Result<()> {
@@ -588,6 +617,44 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn receipt_phase_tracks_exit_and_output_storage_independently() {
+        let work = tempfile::tempdir().unwrap();
+        let mut outcome = crate::dispatch::LaunchOutcome {
+            cell_id: "cell".into(),
+            output: Some(vec![]),
+            denial: None,
+            exit_code: Some(0),
+            signal: None,
+            timed_out: false,
+        };
+        let (phase, output, reason) = collect_result(&outcome, work.path());
+        assert_eq!(phase, ExecutionPhase::Succeeded);
+        assert!(output.is_none() && reason.is_none());
+        outcome.exit_code = Some(7);
+        outcome.denial = Some("guest exited with code 7".into());
+        outcome.output = Some(b"failure detail".to_vec());
+        let (phase, output, reason) = collect_result(&outcome, work.path());
+        assert_eq!(phase, ExecutionPhase::Failed);
+        let output = output.unwrap();
+        assert_eq!(
+            Store::open(work.path())
+                .unwrap()
+                .get(&celln_manifest::Hash(output.hash))
+                .unwrap(),
+            b"failure detail"
+        );
+        assert_eq!(reason, outcome.denial);
+        let blocked = work.path().join("not-a-directory");
+        std::fs::write(&blocked, b"blocked").unwrap();
+        outcome.exit_code = Some(0);
+        outcome.denial = None;
+        let (phase, output, reason) = collect_result(&outcome, &blocked);
+        assert_eq!(phase, ExecutionPhase::Failed);
+        assert!(output.is_none());
+        assert_eq!(reason.as_deref(), Some("output persistence failed"));
+    }
 
     fn request_with_egress(destinations: &[&str]) -> ExecutionRequest {
         let mut request: ExecutionRequest =
