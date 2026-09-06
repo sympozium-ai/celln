@@ -142,6 +142,20 @@ fn enter_root(root: &str) -> io::Result<()> {
 /// the image's own `/tmp`, because the image itself is read-only by hardware
 /// and nothing in it can be written to.
 fn enter_agent_lane(workspace: &str, exec_path: &str, allow_fetch: bool) -> io::Result<()> {
+    if allow_fetch {
+        // CAP_SYS_RAWIO also authorises legacy device-node interfaces that
+        // would bypass the ioperm argument filter. Pilot no longer needs them
+        // after init hands off, so remove them before lending the one retained
+        // capability. With CAP_MKNOD absent from every resulting set, the
+        // workload cannot recreate them.
+        for path in ["/dev/port", "/dev/mem", "/dev/kmem"] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err(io::Error::last_os_error());

@@ -111,6 +111,9 @@ fn main() -> Result<()> {
         || !report
             .console
             .contains("CELLN_FETCH_CAPABILITY_SCOPE_OK widen=EPERM iopl=EPERM")
+        || !report
+            .console
+            .contains("CELLN_FETCH_RAW_DEVICES_OK inaccessible")
         || !report.console.contains("CELLN_FETCH_OK bytes=")
     {
         bail!(
