@@ -17,7 +17,7 @@ pub(crate) use substrate::launch_declared;
 pub(crate) mod inputs;
 #[cfg(target_os = "linux")]
 #[path = "dispatch_warm.rs"]
-mod warm;
+pub(crate) mod warm;
 
 /// The serializable substrate descriptor stored under `ExecutionRequest.mote`.
 /// Each referenced object is resolved by content hash before the VMM is given
@@ -395,7 +395,15 @@ pub fn launch(
         .with_pmem(payload.len())
         .with_initrd(&initrd);
     let invocation = std::fs::read(run_json).map_err(|e| e.to_string())?;
-    run_prepared(request, alias, cfg, payload, &invocation, state_root)
+    run_prepared(
+        request,
+        alias,
+        cfg,
+        payload,
+        &invocation,
+        state_root,
+        Hash::of(program_bytes).0,
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -406,6 +414,7 @@ fn run_prepared(
     payload: Vec<u8>,
     invocation: &[u8],
     state_root: &Path,
+    program_hash: String,
 ) -> Result<LaunchOutcome, String> {
     if invocation.len() > warden::MAX_INVOCATION_BYTES {
         return Err("invocation exceeds bounded delivery channel".into());
@@ -424,7 +433,7 @@ fn run_prepared(
         Hash::of(&payload),
         cfg.mem_size
     );
-    let mut cell = warm::fork(key, || Ok((cfg, payload)))?;
+    let mut cell = warm::fork(key, vec![program_hash], || Ok((cfg, payload)))?;
     cell.set_invocation(invocation).map_err(|e| e.to_string())?;
     run_cell(request, alias, cell, state_root)
 }

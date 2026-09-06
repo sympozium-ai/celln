@@ -33,17 +33,28 @@ impl NodeEligibility {
             node_name: args.node_name.clone(),
             kvm: host.get("kvm"),
             cpu_virtualization: host.get("cpu-virt"),
-            guest_kernel: host.get("guest-kernel"),
+            guest_kernel: guest_kernel_ready(),
             mote_store: has_entries(&args.mote_store),
             tool_store: has_entries(&args.tool_store),
             live_cells,
             max_cells: args.max_cells,
-            memory_bytes: args.memory_bytes,
-            egress_slots: args.egress_slots,
+            // A standalone probe cannot recover declarations from legacy
+            // live records. The dispatcher starts at zero and applies its
+            // authoritative in-process reservations below this layer.
+            memory_bytes: if live_cells == 0 {
+                args.memory_bytes
+            } else {
+                0
+            },
+            egress_slots: if live_cells == 0 {
+                args.egress_slots
+            } else {
+                0
+            },
         }
     }
 
-    fn eligible(&self) -> bool {
+    pub(crate) fn eligible(&self) -> bool {
         self.kvm
             && self.cpu_virtualization
             && self.guest_kernel
@@ -138,7 +149,10 @@ pub fn admit(request: &ExecutionRequest, node: &NodeEligibility) -> Admission {
             problems: Vec::new(),
         };
     }
-    if node.live_cells >= node.max_cells {
+    if node.live_cells >= node.max_cells
+        || request.capabilities.memory_bytes > node.memory_bytes
+        || (!request.capabilities.egress.is_empty() && node.egress_slots == 0)
+    {
         return Admission::Refused {
             request_id: request.id.clone(),
             node: node.clone(),
@@ -146,7 +160,7 @@ pub fn admit(request: &ExecutionRequest, node: &NodeEligibility) -> Admission {
             problems: Vec::new(),
         };
     }
-    if !node.eligible() || request.capabilities.memory_bytes > node.memory_bytes {
+    if !node.eligible() {
         return Admission::Refused {
             request_id: request.id.clone(),
             node: node.clone(),
@@ -161,10 +175,24 @@ pub fn admit(request: &ExecutionRequest, node: &NodeEligibility) -> Admission {
 }
 
 fn has_entries(path: &Path) -> bool {
-    std::fs::read_dir(path)
-        .ok()
-        .and_then(|mut entries| entries.next())
-        .is_some()
+    // Readiness is access to the configured store, not a claim that every
+    // requested identity is present or trusted. Empty stores are valid for
+    // forge requests; per-object integrity is checked during resolution.
+    path.is_dir() && std::fs::read_dir(path).is_ok()
+}
+
+fn guest_kernel_ready() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        warden::vmm::boot::BootConfig::host_kernel().is_some_and(|path| {
+            warden::vmm::boot::BootConfig::modules_dir_for(&path).is_some()
+                && warden::vmm::boot::kernel_is_loadable(&path)
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 fn print_json(value: &impl Serialize) -> Result<u8> {

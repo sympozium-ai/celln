@@ -322,8 +322,10 @@ struct NodeProbeArgs {
     #[arg(long, env = "CELLN_MAX_CELLS", default_value = "1")]
     max_cells: u32,
     #[arg(long, env = "CELLN_MEMORY_BYTES", default_value = "268435456")]
+    /// Aggregate active guest-RAM reservation budget (not a process RSS cap).
     memory_bytes: u64,
     #[arg(long, env = "CELLN_EGRESS_SLOTS", default_value = "0")]
+    /// Maximum simultaneous egress-enabled executions; zero disables egress admission.
     egress_slots: u32,
 }
 

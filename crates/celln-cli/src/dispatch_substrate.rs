@@ -132,7 +132,7 @@ pub(crate) fn launch_declared(
             "{}:{}",
             resolved.bundle_hash, request.capabilities.memory_bytes
         );
-        let mut cell = super::warm::fork(key, || {
+        let mut cell = super::warm::fork(key, vec![resolved.program_hash.clone()], || {
             // The shared template contains no request args, credentials or
             // egress grant. Only enable the post-fork invocation channel.
             let mut initrd_bytes = resolved.initrd_bytes.clone();
@@ -404,6 +404,11 @@ mod tests {
         assert_eq!(resolved.initrd_hash, initrd_hash.0);
         assert_eq!(crate::cells::live_count(&state), 0);
         eprintln!("PASS: declared initrd marker and exact sealed tool execute");
+        let hints = super::super::warm::availability().unwrap();
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].mote.as_deref(), Some(bundle_hash.0.as_str()));
+        assert_eq!(hints[0].tools, vec![program_hash.0.clone()]);
+        assert_eq!(hints[0].guest_memory_bytes, 268435456);
         let cold_elapsed = cold_started.elapsed();
         for arg in ["first", "second"] {
             let mut req = request(&bundle_hash, &program_hash);
