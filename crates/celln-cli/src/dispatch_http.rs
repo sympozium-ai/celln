@@ -12,9 +12,9 @@ use celln_spec::{
 };
 use celln_store::Store;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -132,16 +132,92 @@ type Executions = Arc<Mutex<HashMap<String, Entry<ExecutionRecord>>>>;
 
 struct State {
     token: String,
+    egress_policy: EgressPolicy,
     root: PathBuf,
     probe: NodeProbeArgs,
     executions: Executions,
+}
+
+#[derive(Debug)]
+struct EgressPolicy {
+    allow_hosts: BTreeSet<String>,
+}
+
+impl EgressPolicy {
+    fn new(allow_hosts: &[String]) -> Result<Self> {
+        let mut normalized = BTreeSet::new();
+        for host in allow_hosts {
+            let host = host.to_ascii_lowercase();
+            if host.is_empty()
+                || !host
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+            {
+                bail!(
+                    "invalid --allow-egress-host {host:?}: expected one exact hostname without a scheme, port, path, or wildcard"
+                );
+            }
+            normalized.insert(host);
+        }
+        Ok(Self {
+            allow_hosts: normalized,
+        })
+    }
+
+    fn check(&self, request: &ExecutionRequest) -> Result<()> {
+        for destination in &request.capabilities.egress {
+            // ExecutionRequest::problems() validates the HTTPS-only shape
+            // before this host policy runs. Keep this check fail-closed too,
+            // so it remains safe if called independently later.
+            let host = destination
+                .strip_prefix("https://")
+                .filter(|host| !host.is_empty())
+                .context("egress destination is not a named HTTPS host")?;
+            if !self.allow_hosts.contains(&host.to_ascii_lowercase()) {
+                bail!(
+                    "egress destination {destination:?} is outside this dispatcher's host allowlist"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Parse and validate the exact address that will be passed to `bind`.
+///
+/// Accepting a hostname here would require DNS resolution. Resolving once for
+/// policy and again inside `TcpListener::bind` creates a check/use gap in which
+/// the two answers can differ, so the dispatcher deliberately requires a
+/// numeric IP socket address at this security boundary.
+fn validate_listen(listen: &str, unsafe_non_loopback: bool) -> Result<(SocketAddr, bool)> {
+    let address: SocketAddr = listen.parse().with_context(|| {
+        format!(
+            "invalid dispatcher listen address {listen:?}; use a numeric IP socket address such as 127.0.0.1:8787 or [::1]:8787"
+        )
+    })?;
+    let non_loopback = !address.ip().is_loopback();
+    if non_loopback && !unsafe_non_loopback {
+        bail!(
+            "refusing non-loopback dispatcher bind {listen:?}; use --unsafe-non-loopback only behind a TLS-terminating reverse proxy"
+        );
+    }
+    Ok((address, non_loopback))
 }
 
 fn execution_is_active(record: &ExecutionRecord) -> bool {
     !matches!(record.phase.as_str(), "Succeeded" | "Failed" | "Refused")
 }
 
-pub fn serve(listen: &str, token_file: &Path, root: PathBuf, probe: &NodeProbeArgs) -> Result<u8> {
+pub fn serve(
+    listen: &str,
+    unsafe_non_loopback: bool,
+    token_file: &Path,
+    allow_egress_hosts: &[String],
+    root: PathBuf,
+    probe: &NodeProbeArgs,
+) -> Result<u8> {
+    let (listen_address, non_loopback) = validate_listen(listen, unsafe_non_loopback)?;
+    let egress_policy = EgressPolicy::new(allow_egress_hosts)?;
     let token = std::fs::read_to_string(token_file)
         .with_context(|| format!("reading dispatcher token {}", token_file.display()))?
         .trim()
@@ -149,15 +225,21 @@ pub fn serve(listen: &str, token_file: &Path, root: PathBuf, probe: &NodeProbeAr
     if token.len() < 24 {
         bail!("dispatcher token must contain at least 24 non-whitespace bytes");
     }
-    let listener =
-        TcpListener::bind(listen).with_context(|| format!("binding dispatcher {listen}"))?;
+    let listener = TcpListener::bind(listen_address)
+        .with_context(|| format!("binding dispatcher {listen_address}"))?;
     let state = Arc::new(State {
         token,
+        egress_policy,
         root,
         probe: probe.clone(),
         executions: Arc::new(Mutex::new(HashMap::new())),
     });
-    eprintln!("celln dispatcher listening on {listen}");
+    if non_loopback {
+        eprintln!(
+            "WARNING: dispatcher is exposed on a non-loopback address and provides no TLS; a TLS-terminating reverse proxy is required"
+        );
+    }
+    eprintln!("celln dispatcher listening on {listen_address}");
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -244,6 +326,16 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                     &mut stream,
                     400,
                     &serde_json::json!({"error": "invalid execution request", "problems": problems}),
+                );
+            }
+            if let Err(error) = state.egress_policy.check(&request) {
+                return reply(
+                    &mut stream,
+                    403,
+                    &serde_json::json!({
+                        "error": "egress policy refused execution request",
+                        "reason": error.to_string(),
+                    }),
                 );
             }
             let record = ExecutionRecord {
@@ -496,6 +588,60 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn request_with_egress(destinations: &[&str]) -> ExecutionRequest {
+        let mut request: ExecutionRequest =
+            serde_json::from_str(include_str!("../../../examples/execution/forge-task.json"))
+                .expect("example request parses");
+        request.capabilities.egress = destinations
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect();
+        request
+    }
+
+    #[test]
+    fn non_loopback_bind_requires_explicit_unsafe_opt_in() {
+        assert!(!validate_listen("127.0.0.1:8787", false).unwrap().1);
+        assert!(!validate_listen("[::1]:8787", false).unwrap().1);
+
+        let error = validate_listen("0.0.0.0:8787", false).unwrap_err();
+        assert!(error.to_string().contains("--unsafe-non-loopback"));
+        assert!(error.to_string().contains("TLS-terminating reverse proxy"));
+        assert!(validate_listen("0.0.0.0:8787", true).unwrap().1);
+    }
+
+    #[test]
+    fn listen_policy_binds_the_exact_numeric_address_it_validated() {
+        let (address, _) = validate_listen("127.0.0.1:8787", false).unwrap();
+        assert_eq!(address, "127.0.0.1:8787".parse().unwrap());
+
+        let error = validate_listen("localhost:8787", false).unwrap_err();
+        assert!(error.to_string().contains("numeric IP socket address"));
+    }
+
+    #[test]
+    fn host_egress_policy_refuses_a_request_selected_destination() {
+        let policy = EgressPolicy::new(&["api.example.com".to_owned()]).unwrap();
+        policy
+            .check(&request_with_egress(&["https://api.example.com"]))
+            .expect("operator-approved host is allowed");
+
+        let error = policy
+            .check(&request_with_egress(&["https://metadata.example"]))
+            .unwrap_err();
+        assert!(error.to_string().contains("https://metadata.example"));
+        assert!(error.to_string().contains("outside"));
+    }
+
+    #[test]
+    fn empty_host_egress_policy_is_deny_all() {
+        let policy = EgressPolicy::new(&[]).unwrap();
+        assert!(policy.check(&request_with_egress(&[])).is_ok());
+        assert!(policy
+            .check(&request_with_egress(&["https://api.example.com"]))
+            .is_err());
+    }
 
     #[test]
     fn constant_time_eq_matches_equal_bytes_and_rejects_different_lengths() {

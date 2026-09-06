@@ -208,7 +208,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/celln --root /var/lib/celln dispatcher --listen 0.0.0.0:8787 --token-file /etc/celln/dispatcher-token/token
+# The dispatcher has no native TLS. Keep it on loopback; expose it only through
+# a separately configured TLS-terminating reverse proxy.
+ExecStart=/usr/local/bin/celln --root /var/lib/celln dispatcher --listen 127.0.0.1:8787 --token-file /etc/celln/dispatcher-token/token
 Restart=always
 RestartSec=5
 Environment=PATH=/root/.cargo/bin:/usr/local/bin:/opt/celln/runtime/scripts:/usr/bin:/bin
@@ -236,15 +238,8 @@ else
     echo "✓ systemd service installed and started"
 fi
 
-# ── 9. Firewall ────────────────────────────────────────────────────────
-if $CONTAINER_MODE; then
-    nsenter --target 1 --mount -- firewall-cmd --add-port=8787/tcp --permanent 2>/dev/null || true
-    nsenter --target 1 --mount -- firewall-cmd --reload 2>/dev/null || true
-else
-    firewall-cmd --add-port=8787/tcp --permanent 2>/dev/null || true
-    firewall-cmd --reload 2>/dev/null || true
-fi
-echo "✓ firewall configured"
+# ── 9. Network exposure ───────────────────────────────────────────────
+echo "✓ dispatcher restricted to loopback (configure a TLS reverse proxy for remote access)"
 
 # ── 10. Environment for users ─────────────────────────────────────────
 grep -q "CELLN_ROOT" "${HOST}/etc/environment" 2>/dev/null || \
