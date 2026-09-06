@@ -161,7 +161,7 @@ pub(crate) fn prove(base: ExecutionRequest, motes: &Path, tools: &Path, root: &P
         .arg("--listen")
         .arg(address.to_string())
         .arg("--token-file")
-        .arg(token)
+        .arg(&token)
         .arg("--mote-store")
         .arg(motes)
         .arg("--tool-store")
@@ -338,6 +338,46 @@ pub(crate) fn prove(base: ExecutionRequest, motes: &Path, tools: &Path, root: &P
     let audit = server.terminal(&request, "Failed");
     assert_eq!(audit["execution"]["watchdogStopped"], true);
     assert_eq!(crate::cells::live_count(root), 0);
+    // Optional full external-controller proof. The operator explicitly opts
+    // into a local executable; ordinary CI never creates a Kubernetes cluster.
+    // It receives only this isolated fixture's address/token and pinned request.
+    if let Some(proof) = std::env::var_os("CELLN_SYMPOZIUM_PROOF") {
+        let mut reference = request.clone();
+        reference.capabilities.timeout_ms = 15000;
+        reference.capabilities.egress.clear();
+        reference.capabilities.workspace = celln_spec::WorkspaceAccess::ReadOnly;
+        reference.execution.lane = celln_spec::RequestedLane::Tool;
+        reference.invocation.as_mut().unwrap().args = vec!["silent".into()];
+        reference.inputs = vec![celln_spec::ExecutionInput {
+            name: "data".into(),
+            hash: celln_manifest::Hash::of(b"first-input").0,
+            media_type: "text/plain".into(),
+            bytes: 11,
+        }];
+        server.save(
+            "external-reference",
+            &serde_json::to_value(reference).unwrap(),
+        );
+        let status = Command::new("timeout")
+            .args(["--signal=TERM", "--kill-after=10s", "600s"])
+            .arg(proof)
+            .env("CELLN_ROUTER_URL", format!("http://{}", server.address))
+            .env("CELLN_TOKEN_FILE", &token)
+            .env("CELLN_PROOF_ROOT", root)
+            .env("CELLN_PROOF_BINARY", &binary)
+            .env(
+                "CELLN_PROOF_REQUEST",
+                server.evidence.join("external-reference.json"),
+            )
+            .env("CELLN_PROOF_EVIDENCE", server.evidence.join("sympozium"))
+            .status()
+            .expect("start explicitly configured external proof");
+        assert!(
+            status.success(),
+            "external Sympozium proof failed: {status}"
+        );
+        assert_eq!(crate::cells::live_count(root), 0);
+    }
     request.id = "http-revoked-tool".into();
     request.capabilities.timeout_ms = 15000;
     request.invocation.as_mut().unwrap().args = vec!["silent".into()];
