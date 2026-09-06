@@ -93,6 +93,7 @@ pub(crate) fn launch_declared(
 ) -> Result<(LaunchOutcome, ResolvedBundle), String> {
     super::check_supported_authority(request)?;
     authorize(request, state_root)?;
+    let inputs = super::inputs::resolve(request, state_root)?;
     let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
     let local_agent = local_agent_constraint(&resolved.program_hash, state_root)?;
     if resolved.format.as_deref() != Some("celln.warm-static-v1") {
@@ -120,8 +121,13 @@ pub(crate) fn launch_declared(
             "force_agent_lane": local_agent || request.execution.lane == celln_spec::RequestedLane::Agent,
             "allow_fetch": !request.capabilities.egress.is_empty(),
             "report_output_limit": request.capabilities.output_bytes,
+            "workspace_access": request.capabilities.workspace,
+            "inputs": inputs,
         }))
         .map_err(|e| e.to_string())?;
+        if run.len() > warden::MAX_INVOCATION_BYTES {
+            return Err("invocation exceeds bounded delivery channel".into());
+        }
         let key = format!(
             "{}:{}",
             resolved.bundle_hash, request.capabilities.memory_bytes
@@ -162,7 +168,7 @@ mod tests {
             "mote": { "hash": mote.0 },
             "tools": [{ "alias": "/tools/program", "hash": program.0 }],
             "invocation": { "alias": "/tools/program", "args": ["substrate"] },
-            "capabilities": { "workspace": "none", "timeoutMs": 8000, "memoryBytes": 268435456, "outputBytes": 1024 },
+            "capabilities": { "workspace": "read-only", "timeoutMs": 8000, "memoryBytes": 268435456, "outputBytes": 1024 },
             "execution": { "lane": "agent", "requireHardwareIsolation": true }
         })).unwrap()
     }
@@ -329,7 +335,7 @@ mod tests {
                 "/tools/program",
                 &program_bytes,
                 false,
-                celln_manifest::Author::Agent,
+                celln_manifest::Author::Host,
             )
             .unwrap();
         let toolfs = work.path().join("toolfs");
@@ -361,7 +367,10 @@ mod tests {
         )
         .unwrap();
         let mut base = std::fs::read(&initrd).unwrap();
-        base.extend(file_archive("substrate-marker", b"selected-substrate-A\n"));
+        base.extend(file_archive(
+            "celln/work/substrate-marker",
+            b"selected-substrate-A\n",
+        ));
         let motes = work.path().join("motes");
         let tools = work.path().join("tools");
         let store = Store::open(&motes).unwrap();
@@ -398,6 +407,7 @@ mod tests {
         let cold_elapsed = cold_started.elapsed();
         for arg in ["first", "second"] {
             let mut req = request(&bundle_hash, &program_hash);
+            req.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
             req.invocation.as_mut().unwrap().args = vec!["warm".into(), arg.into()];
             let started = std::time::Instant::now();
             let (outcome, _) = launch_declared(&req, &motes, &tools, &state).unwrap();
@@ -411,6 +421,70 @@ mod tests {
                 preparations + 1
             );
             eprintln!("PASS: warm {arg}, private scratch, distinct args; cold={cold_elapsed:?}, warm={:?}", started.elapsed());
+        }
+
+        for (access, name) in [
+            (celln_spec::WorkspaceAccess::None, "none"),
+            (celln_spec::WorkspaceAccess::ReadOnly, "read-only"),
+            (celln_spec::WorkspaceAccess::ReadWrite, "read-write"),
+        ] {
+            let mut req = request(&bundle_hash, &program_hash);
+            req.capabilities.workspace = access;
+            // Host-authored manifest tool: this genuinely exercises the
+            // tool lane, not an agent-authored tool narrowed back to agent.
+            req.execution.lane = celln_spec::RequestedLane::Tool;
+            req.invocation.as_mut().unwrap().args = vec!["workspace".into(), name.into()];
+            let (outcome, _) = launch_declared(&req, &motes, &tools, &state).unwrap();
+            assert!(outcome.succeeded(), "{name}: {outcome:?}");
+            assert_eq!(
+                outcome.output.as_deref(),
+                Some(format!("workspace:{name}\n").as_bytes())
+            );
+            eprintln!("PASS: guest workspace {name}, root reads and scratch execution denied");
+        }
+        let mut fetch = request(&bundle_hash, &program_hash);
+        fetch.capabilities.egress = vec!["https://example.com".into()];
+        fetch.invocation.as_mut().unwrap().args = vec!["fetch-grant".into()];
+        let (outcome, _) = launch_declared(&fetch, &motes, &tools, &state).unwrap();
+        assert!(outcome.succeeded(), "{outcome:?}");
+        assert_eq!(
+            outcome.output.as_deref(),
+            Some(b"fetch-grant:host-refused-http\n".as_slice())
+        );
+        eprintln!("PASS: strict helper grant reaches host broker, which refuses plaintext HTTP");
+        let input_store = Store::open(state.join("inputs")).unwrap();
+        let first = input_store.put(b"first-input").unwrap();
+        let second = input_store.put(b"second-input").unwrap();
+        std::fs::write(
+            state.join("trusted-inputs.json"),
+            serde_json::to_vec(&json!({
+                "apiVersion": "celln.dev/v1alpha1", "hashes": [first.0, second.0]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        for (hash, data) in [(first, "first-input"), (second, "second-input")] {
+            let mut req = request(&bundle_hash, &program_hash);
+            req.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
+            req.inputs.push(celln_spec::ExecutionInput {
+                name: "data".into(),
+                hash: hash.0.clone(),
+                media_type: "text/plain".into(),
+                bytes: data.len() as u64,
+            });
+            req.invocation.as_mut().unwrap().args = vec!["inputs".into(), data.into()];
+            let (outcome, _) = launch_declared(&req, &motes, &tools, &state).unwrap();
+            assert!(outcome.succeeded(), "{outcome:?}");
+            assert_eq!(outcome.input_hashes, vec![hash.0]);
+            assert_eq!(
+                outcome.output.as_deref(),
+                Some(format!("inputs:{data}\n").as_bytes())
+            );
+            assert_eq!(
+                super::super::warm::PREPARATIONS.load(std::sync::atomic::Ordering::SeqCst),
+                preparations + 1
+            );
+            eprintln!("PASS: immutable named input {data} delivered on same warm mote");
         }
 
         // Stop a real running guest without refreshing the end-to-end timer.

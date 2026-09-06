@@ -12,6 +12,8 @@
 pub mod egress;
 pub mod ratchet;
 pub mod vmm;
+/// Maximum one-shot invocation data, including bounded immutable inputs.
+pub const MAX_INVOCATION_BYTES: usize = 1 << 20;
 
 pub use ratchet::{Phase, Ratchet, Verb};
 pub use vmm::{Vmm, VmmError};

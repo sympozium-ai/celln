@@ -533,6 +533,9 @@ fn run_execution(
         return;
     }
     let started_at = crate::dispatch::now_rfc3339();
+    if let Err(error) = crate::dispatch::inputs::resolve(&request, &root) {
+        return fail_execution(&executions, &request.id, error);
+    }
     let assay_root = root.join("assay");
 
     // Declared launch consumes operator-pinned substrate bytes. Forge remains
@@ -596,9 +599,7 @@ fn run_execution(
         resolved: ResolvedExecution {
             mote,
             tools: vec![program_hash],
-            // No input provider exists yet. Never echo requested hashes as
-            // evidence that their bytes were resolved or delivered.
-            inputs: Vec::new(),
+            inputs: outcome.input_hashes,
         },
         output: stored_output,
         started_at,
@@ -770,6 +771,12 @@ mod tests {
     fn unsupported_forge_authority_is_refused_without_side_effects() {
         let mut request = request_with_egress(&[]);
         request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
+        request.inputs.push(celln_spec::ExecutionInput {
+            name: "oversized".into(),
+            hash: celln_manifest::Hash::of(b"data").0,
+            media_type: "text/plain".into(),
+            bytes: 65537,
+        });
         let work = tempfile::tempdir().unwrap();
         let root = work.path().join("must-not-be-created");
         let executions: Executions = Arc::new(Mutex::new(HashMap::new()));
@@ -800,11 +807,7 @@ mod tests {
         let registry = executions.lock().unwrap();
         let record = &registry[&request.id].value;
         assert_eq!(record.phase, "Refused");
-        assert!(record
-            .reason
-            .as_deref()
-            .unwrap()
-            .contains("workspace delivery"));
+        assert!(record.reason.as_deref().unwrap().contains("input budget"));
         assert!(record.receipt.is_none());
         assert!(!execution_is_active(record));
         assert!(!root.exists());
@@ -814,6 +817,12 @@ mod tests {
     fn http_unsupported_authority_returns_422_without_reserving_capacity() {
         let mut request = request_with_egress(&[]);
         request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadOnly;
+        request.inputs.push(celln_spec::ExecutionInput {
+            name: "oversized".into(),
+            hash: celln_manifest::Hash::of(b"data").0,
+            media_type: "text/plain".into(),
+            bytes: 65537,
+        });
         let work = tempfile::tempdir().unwrap();
         let root = work.path().join("unused");
         let state = State {
@@ -842,7 +851,7 @@ mod tests {
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();
         assert!(response.starts_with("HTTP/1.1 422"), "{response}");
-        assert!(response.contains("workspace delivery"));
+        assert!(response.contains("input budget"));
         assert!(state.executions.lock().unwrap().is_empty());
         assert!(!root.exists());
     }
@@ -851,6 +860,7 @@ mod tests {
     fn receipt_phase_tracks_exit_and_output_storage_independently() {
         let work = tempfile::tempdir().unwrap();
         let mut outcome = crate::dispatch::LaunchOutcome {
+            input_hashes: Vec::new(),
             cell_id: "cell".into(),
             output: Some(vec![]),
             denial: None,

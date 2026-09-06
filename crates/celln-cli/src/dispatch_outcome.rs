@@ -17,8 +17,11 @@ pub(super) fn parse_report(
         exit_code: None,
         signal: None,
         timed_out,
+        input_hashes: Vec::new(),
     };
     let mut terminal = false;
+    let mut inputs_seen = false;
+    let mut output_seen = false;
     // An old pilot must not accept a workload's imitation of the new frames.
     // Negotiate at the first supervisor startup, before it reads any request
     // or executes a workload; later imitations cannot repair this check.
@@ -35,7 +38,12 @@ pub(super) fn parse_report(
             continue;
         }
         match serde_json::from_str::<Frame>(json) {
+            Ok(Frame::Inputs { hashes }) if !inputs_seen && !output_seen && hashes.len() <= 16 => {
+                inputs_seen = true;
+                result.input_hashes = hashes;
+            }
             Ok(Frame::Output { bytes }) => {
+                output_seen = true;
                 let output = result.output.as_mut().expect("output buffer");
                 let remaining = limit.saturating_sub(output.len());
                 output.extend(bytes.into_iter().take(remaining));
@@ -63,6 +71,9 @@ pub(super) fn parse_report(
         result.denial = Some("guest execution timed out".into());
     } else if invalid || !terminal || !shutdown {
         result.denial = Some("missing, ambiguous, or incomplete pilot execution report".into());
+    }
+    if invalid {
+        result.input_hashes.clear();
     }
     result
 }
@@ -105,6 +116,35 @@ mod tests {
         assert!(!failed.succeeded());
         assert_eq!(failed.exit_code, Some(7));
         assert_eq!(failed.output.unwrap(), b"failure");
+    }
+
+    #[test]
+    fn input_acknowledgement_is_single_and_precedes_workload_output() {
+        let ack = || Frame::Inputs {
+            hashes: vec![celln_manifest::Hash::of(b"data").0],
+        };
+        let valid = parse_report(
+            &console(&[ack(), Frame::Exit { code: 0 }]),
+            "cell".into(),
+            10,
+            false,
+            true,
+        );
+        assert!(valid.succeeded());
+        assert_eq!(valid.input_hashes.len(), 1);
+        for frames in [
+            vec![ack(), ack(), Frame::Exit { code: 0 }],
+            vec![
+                Frame::Output { bytes: vec![1] },
+                ack(),
+                Frame::Exit { code: 0 },
+            ],
+            vec![Frame::Exit { code: 0 }, ack()],
+        ] {
+            let invalid = parse_report(&console(&frames), "cell".into(), 10, false, true);
+            assert!(!invalid.succeeded());
+            assert!(invalid.input_hashes.is_empty());
+        }
     }
 
     #[test]

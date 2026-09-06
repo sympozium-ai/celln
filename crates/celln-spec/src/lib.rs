@@ -495,7 +495,7 @@ impl ExecutionRequest {
                 problems.push(ExecutionProblem {
                     code: ExecutionProblemCode::InvalidInputName,
                     field: format!("{prefix}.name"),
-                    message: "must be a non-empty lowercase name containing only letters, numbers, dots, underscores, or hyphens".into(),
+                    message: "must be a 1–64 byte lowercase name containing only letters, numbers, dots, underscores, or hyphens, other than . or ..".into(),
                 });
             }
             if !is_immutable_hash(&input.hash) {
@@ -708,6 +708,8 @@ fn is_immutable_hash(value: &str) -> bool {
 
 fn is_input_name(value: &str) -> bool {
     !value.is_empty()
+        && value.len() <= 64
+        && !matches!(value, "." | "..")
         && value.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
         })

@@ -54,16 +54,18 @@ job runs the guest proof when KVM is available.
 
 The transport schema describes more authority than the runtime currently
 delivers. Node admission, HTTP submission, direct bundle resolution and launch
-refuse inputs, read-only/read-write workspace requests, tool closures and
-multiple tools. HTTP returns 422 with `reason: "unsupported"` and a diagnostic
+refuse tool closures, multiple tools and input requests outside the bounded
+provider described in [Dispatcher inputs](DISPATCH_INPUTS.md).
+HTTP returns 422 with `reason: "unsupported"` and a diagnostic
 before reserving capacity or starting model, store or VM work. The worker
 also checks before forging, for callers that bypass HTTP. These are temporary
 runtime restrictions, not removals from the versioned schema.
 
-Receipts contain no input hashes until a provider actually resolves and delivers
-the bytes. `workspace: "none"` means no caller workspace is delivered; it does
-not claim that all guest scratch filesystems are unwritable. Delivery and guest
-enforcement proofs remain in #3/#7; closure loading remains in #6.
+Receipts record input hashes only after host resolution and matching pilot
+acknowledgement of staged bytes. Dispatcher workspace modes are now enforced
+by Landlock, including truncation and execution denial; `none` grants no
+filesystem workspace. This does not change the legacy CLI/closure policy.
+Secret providers and live withdrawal remain in #7; closure loading remains in #6.
 
 This completes the outcome and unsupported-input/closure refusal slices of #13.
 Declared execution now forks an operator-pinned warm substrate with a separate

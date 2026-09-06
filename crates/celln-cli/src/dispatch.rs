@@ -13,6 +13,8 @@ use std::path::Path;
 #[path = "dispatch_substrate.rs"]
 mod substrate;
 pub(crate) use substrate::launch_declared;
+#[path = "dispatch_inputs.rs"]
+pub(crate) mod inputs;
 #[cfg(target_os = "linux")]
 #[path = "dispatch_warm.rs"]
 mod warm;
@@ -66,12 +68,7 @@ pub struct ResolvedBundle {
 /// resolved provenance. Remove each refusal only with its delivery proof.
 pub(crate) fn check_supported_authority(request: &ExecutionRequest) -> Result<(), String> {
     celln_control::check().map_err(|e| e.to_string())?;
-    if !request.inputs.is_empty() {
-        return Err("unsupported authority: input delivery is not implemented".into());
-    }
-    if request.capabilities.workspace != celln_spec::WorkspaceAccess::None {
-        return Err("unsupported authority: workspace delivery is not implemented".into());
-    }
+    inputs::validate(request)?;
     if request.tools.iter().any(|tool| tool.closure.is_some()) {
         return Err("unsupported authority: tool closure delivery is not implemented".into());
     }
@@ -165,6 +162,8 @@ pub fn resolve_bundle(
 /// one. The dispatcher builds the receipt from this after the cell is gone.
 #[derive(Debug)]
 pub struct LaunchOutcome {
+    /// Verified inputs acknowledged as staged by pilot, not just requested.
+    pub input_hashes: Vec<String>,
     pub cell_id: String,
     /// Bounded workload bytes, including failure output; may be empty.
     pub output: Option<Vec<u8>>,
@@ -309,6 +308,7 @@ pub fn launch(
     if request.mote.is_some() {
         return Err("declared execution requires the pinned substrate launcher".into());
     }
+    let inputs = inputs::resolve(request, state_root)?;
     if !Path::new("/dev/kvm").exists() {
         return Err("no /dev/kvm — cannot seal a cell on this host".to_owned());
     }
@@ -349,6 +349,8 @@ pub fn launch(
             "allow_fetch": !request.capabilities.egress.is_empty(),
             "report_output_limit": request.capabilities.output_bytes,
             "force_agent_lane": matches!(request.execution.lane, RequestedLane::Agent),
+            "workspace_access": request.capabilities.workspace,
+            "inputs": inputs,
         }))
         .map_err(|error| error.to_string())?,
     )
@@ -405,6 +407,9 @@ fn run_prepared(
     invocation: &[u8],
     state_root: &Path,
 ) -> Result<LaunchOutcome, String> {
+    if invocation.len() > warden::MAX_INVOCATION_BYTES {
+        return Err("invocation exceeds bounded delivery channel".into());
+    }
     if request.capabilities.memory_bytes > 0 {
         cfg.mem_size = request.capabilities.memory_bytes as usize;
     }
@@ -477,6 +482,13 @@ fn run_cell(
     );
     if let Some(reason) = celln_control::current().and_then(|c| c.reason()) {
         outcome.denial = Some(reason.to_string());
+    }
+    let expected: Vec<_> = request.inputs.iter().map(|i| i.hash.clone()).collect();
+    if outcome.input_hashes != expected {
+        outcome.input_hashes.clear();
+        outcome
+            .denial
+            .get_or_insert_with(|| "input delivery report mismatch".into());
     }
     if let Some(record) = record.as_mut() {
         crate::cells::finish(state_root, record, "kvm", outcome.denial.clone());
@@ -574,14 +586,14 @@ mod tests {
             media_type: "text/plain".into(),
             bytes: 4,
         });
-        cases.push((input, "input delivery"));
+        cases.push((input, "inputs require"));
         for access in [
             celln_spec::WorkspaceAccess::ReadOnly,
             celln_spec::WorkspaceAccess::ReadWrite,
         ] {
             let mut workspace = base.clone();
             workspace.capabilities.workspace = access;
-            cases.push((workspace, "workspace delivery"));
+            assert!(check_supported_authority(&workspace).is_ok());
         }
         let mut closure = base.clone();
         closure.tools[0].closure = Some(celln_spec::ImmutableRef {

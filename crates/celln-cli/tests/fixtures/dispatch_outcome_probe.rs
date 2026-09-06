@@ -10,7 +10,40 @@ unsafe extern "C" {
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("silent") => {}
-        Some("substrate") => print!("{}", std::fs::read_to_string("/substrate-marker").unwrap()),
+        Some("fetch-grant") => {
+            let result = std::process::Command::new("/pilot-fetch")
+                .arg("http://example.com/").output().unwrap();
+            assert_eq!(result.status.code(), Some(1));
+            assert!(String::from_utf8_lossy(&result.stderr).contains("CELLN_FETCH_ERROR:"));
+            println!("fetch-grant:host-refused-http");
+        }
+        Some("workspace") => {
+            let access = std::env::args().nth(2).unwrap();
+            let marker = "/celln/work/substrate-marker";
+            assert_eq!(std::fs::read(marker).is_ok(), access != "none");
+            assert_eq!(std::fs::write("/celln/work/scratch", b"scratch").is_ok(), access == "read-write");
+            assert_eq!(std::fs::OpenOptions::new().write(true).truncate(true).open(marker).is_ok(), access == "read-write");
+            for forbidden in ["/celln/manifest.json", "/pilot", "/dev/console"] {
+                assert!(std::fs::read(forbidden).is_err(), "read {forbidden}");
+            }
+            if access == "read-write" {
+                std::fs::copy("/tools/program", "/celln/work/copied-program").unwrap();
+                assert!(std::process::Command::new("/celln/work/copied-program").arg("silent").status().is_err());
+            }
+            println!("workspace:{access}");
+        }
+        Some("inputs") => {
+            let expected = std::env::args().nth(2).unwrap();
+            assert_eq!(std::fs::read_to_string("/celln/inputs/data").unwrap(), expected);
+            assert!(std::fs::write("/celln/inputs/data", b"mutated").is_err());
+            assert!(std::fs::OpenOptions::new().write(true).truncate(true).open("/celln/inputs/data").is_err());
+            assert!(std::fs::rename("/celln/inputs/data", "/celln/work/moved").is_err());
+            assert!(std::fs::hard_link("/celln/inputs/data", "/celln/work/linked").is_err());
+            assert!(std::fs::read("/celln/inputs/unrequested").is_err());
+            assert!(std::process::Command::new("/celln/inputs/data").status().is_err());
+            println!("inputs:{expected}");
+        }
+        Some("substrate") => print!("{}", std::fs::read_to_string("/celln/work/substrate-marker").unwrap()),
         Some("warm") => {
             // Try the supervisor-only PIO port after exec: it must fault,
             // proving pilot revoked the I/O bitmap grant before the workload.
