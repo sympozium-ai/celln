@@ -33,6 +33,16 @@ fn signed_closure_on_real_kvm() {
         eprintln!("SKIP: no kernel");
         return;
     };
+    for tool in ["rustc", "ldd", "gcc", "cpio", "mke2fs", "debugfs"] {
+        if Command::new("sh")
+            .args(["-c", "command -v \"$1\"", "check", tool])
+            .output()
+            .map_or(true, |out| !out.status.success())
+        {
+            eprintln!("SKIP: missing {tool}");
+            return;
+        }
+    }
     let work = tempfile::tempdir().unwrap();
     let Some(runtime) = super::super::tests::test_runtime_root(work.path()) else {
         return;
