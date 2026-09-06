@@ -10,6 +10,10 @@ use celln_store::Store;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[path = "dispatch_substrate.rs"]
+mod substrate;
+pub(crate) use substrate::launch_declared;
+
 /// The serializable substrate descriptor stored under `ExecutionRequest.mote`.
 /// Each referenced object is resolved by content hash before the VMM is given
 /// any bytes. The in-guest pilot remains responsible for confirming that the
@@ -19,6 +23,8 @@ use std::path::Path;
 struct MoteBundle {
     #[serde(rename = "apiVersion")]
     api_version: String,
+    #[serde(default)]
+    format: Option<String>,
     kernel: String,
     initrd: String,
     toolfs: String,
@@ -42,6 +48,14 @@ pub struct ResolvedBundle {
     pub kernel_hash: String,
     pub initrd_hash: String,
     pub toolfs_hash: String,
+    #[serde(skip)]
+    kernel_bytes: Vec<u8>,
+    #[serde(skip)]
+    initrd_bytes: Vec<u8>,
+    #[serde(skip)]
+    toolfs_bytes: Vec<u8>,
+    #[serde(skip)]
+    format: Option<String>,
 }
 
 /// Runtime support is narrower than the transport schema. Do not silently
@@ -120,13 +134,17 @@ pub fn resolve_bundle(
     tool_store
         .get(&Hash(requested_tool.hash.clone()))
         .map_err(|error| format!("declared program cannot be resolved: {error}"))?;
-    for hash in [&bundle.kernel, &bundle.initrd, &bundle.toolfs] {
+    let read_object = |hash: &str| {
         mote_store
-            .get(&Hash(hash.clone()))
-            .map_err(|error| format!("mote bundle object cannot be resolved: {error}"))?;
-    }
+            .get(&Hash(hash.to_owned()))
+            .map_err(|error| format!("mote bundle object cannot be resolved: {error}"))
+    };
 
     Ok(ResolvedBundle {
+        format: bundle.format,
+        kernel_bytes: read_object(&bundle.kernel)?,
+        initrd_bytes: read_object(&bundle.initrd)?,
+        toolfs_bytes: read_object(&bundle.toolfs)?,
         bundle_hash: mote.hash.clone(),
         program_hash: requested_tool.hash.clone(),
         kernel_hash: bundle.kernel,
@@ -279,9 +297,12 @@ pub fn launch(
     assay_root: &Path,
     state_root: &Path,
 ) -> Result<LaunchOutcome, String> {
-    use warden::vmm::boot::{BootConfig, LinuxCell};
+    use warden::vmm::boot::BootConfig;
 
     check_supported_authority(request)?;
+    if request.mote.is_some() {
+        return Err("declared execution requires the pinned substrate launcher".into());
+    }
     if !Path::new("/dev/kvm").exists() {
         return Err("no /dev/kvm — cannot seal a cell on this host".to_owned());
     }
@@ -361,9 +382,21 @@ pub fn launch(
     let kernel = BootConfig::host_kernel()
         .ok_or_else(|| "no readable /boot/vmlinuz-* with matching /lib/modules".to_owned())?;
     let payload = std::fs::read(&toolfs).map_err(|error| error.to_string())?;
-    let mut cfg = BootConfig::new(&kernel)
+    let cfg = BootConfig::new(&kernel)
         .with_pmem(payload.len())
         .with_initrd(&initrd);
+    run_prepared(request, alias, cfg, payload, state_root)
+}
+
+#[cfg(target_os = "linux")]
+fn run_prepared(
+    request: &ExecutionRequest,
+    alias: &str,
+    mut cfg: warden::vmm::boot::BootConfig,
+    payload: Vec<u8>,
+    state_root: &Path,
+) -> Result<LaunchOutcome, String> {
+    use warden::vmm::boot::LinuxCell;
     if request.capabilities.memory_bytes > 0 {
         cfg.mem_size = request.capabilities.memory_bytes as usize;
     }
@@ -790,7 +823,7 @@ mod tests {
     /// already-built guest pilot binaries. `None` (with an explanatory
     /// `eprintln!`) if the guest pilot binaries haven't been built.
     #[cfg(target_os = "linux")]
-    fn test_runtime_root(work: &Path) -> Option<std::path::PathBuf> {
+    pub(super) fn test_runtime_root(work: &Path) -> Option<std::path::PathBuf> {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."); // crates/celln-cli -> repo root
         let repo_root = repo_root.canonicalize().expect("repo root resolves");
         let pilot_dir = repo_root.join("target/x86_64-unknown-linux-musl/release");
@@ -829,123 +862,6 @@ mod tests {
         )
         .expect("copy pilot-fetch");
         Some(runtime_root)
-    }
-
-    /// Full pipeline, on real hardware: resolve a declared program from a
-    /// content-addressed store, seal it into a cell, boot it, and check the
-    /// output pilot reports. Not run by default — needs /dev/kvm, the
-    /// `x86_64-unknown-linux-musl` target, and a host kernel with matching
-    /// `/lib/modules` (same requirement `make test-kvm`/`acceptance-kvm`
-    /// have). Run explicitly with:
-    ///   cargo test -p celln-cli -- --ignored launch_actually_boots_and_runs_the_resolved_program
-    #[test]
-    #[ignore]
-    #[cfg(target_os = "linux")]
-    fn launch_actually_boots_and_runs_the_resolved_program() {
-        use std::process::Command;
-
-        if !Path::new("/dev/kvm").exists() {
-            eprintln!("skipping: no /dev/kvm on this runner");
-            return;
-        }
-
-        // ── build a tiny static-musl payload, the same shape `celln agent`
-        // would forge, but written here instead of asked of a model ──
-        let work = tempdir().expect("work dir");
-        let src = work.path().join("main.rs");
-        std::fs::write(
-            &src,
-            r#"fn main() { println!("hello from an execution request"); }"#,
-        )
-        .expect("write source");
-        let program_out = work.path().join("program-bin");
-        let rustc = Command::new("rustc")
-            .args([
-                "--edition=2021",
-                "-O",
-                "--target",
-                "x86_64-unknown-linux-musl",
-                "-o",
-            ])
-            .arg(&program_out)
-            .arg(&src)
-            .status();
-        match rustc {
-            Ok(status) if status.success() => {}
-            _ => {
-                eprintln!("skipping: rustc --target x86_64-unknown-linux-musl unavailable");
-                return;
-            }
-        }
-        let program_bytes = std::fs::read(&program_out).expect("read compiled program");
-
-        let Some(runtime_root) = test_runtime_root(work.path()) else {
-            return;
-        };
-
-        // ── a mote bundle and matching tool, resolvable exactly like a real
-        // control plane would declare them ──
-        let motes = tempdir().expect("mote store");
-        let tools = tempdir().expect("tool store");
-        let tool_store = Store::open(tools.path()).expect("open tool store");
-        let tool_hash = tool_store.put(&program_bytes).expect("store program");
-        let mote_store = Store::open(motes.path()).expect("open mote store");
-        let kernel_hash = mote_store.put(b"kernel-placeholder").expect("store kernel");
-        let initrd_hash = mote_store.put(b"initrd-placeholder").expect("store initrd");
-        let toolfs_hash = mote_store.put(b"toolfs-placeholder").expect("store toolfs");
-        let bundle = json!({
-            "apiVersion": "celln.dev/v1alpha1",
-            "kernel": kernel_hash.0,
-            "initrd": initrd_hash.0,
-            "toolfs": toolfs_hash.0,
-            "invocation": { "alias": "/agent/program", "toolHash": tool_hash.0 }
-        });
-        let mote_hash = mote_store
-            .put(&serde_json::to_vec(&bundle).expect("bundle serializes"))
-            .expect("store bundle");
-
-        let request: ExecutionRequest = serde_json::from_value(json!({
-            "apiVersion": "celln.dev/v1alpha1",
-            "id": "launch-smoke-test",
-            "workload": { "id": "smoke-test", "caller": "test:launch" },
-            "mote": { "hash": mote_hash.0 },
-            "tools": [{ "alias": "/agent/program", "hash": tool_hash.0 }],
-            "invocation": { "alias": "/agent/program", "args": [] },
-            "capabilities": { "workspace": "none", "timeoutMs": 20000, "memoryBytes": 268435456, "outputBytes": 65536 },
-            "execution": { "lane": "tool", "requireHardwareIsolation": true }
-        }))
-        .expect("request parses");
-
-        let resolved =
-            resolve_bundle(&request, motes.path(), tools.path()).expect("bundle resolves");
-        assert_eq!(resolved.program_hash, tool_hash.0);
-
-        let assay_root = work.path().join("assay");
-        let state_root = work.path().join("state");
-        std::fs::create_dir_all(&state_root).unwrap();
-
-        let outcome = launch(
-            &request,
-            "/agent/program",
-            &[],
-            &program_bytes,
-            &runtime_root,
-            &assay_root,
-            &state_root,
-        )
-        .expect("cell launches and runs");
-
-        assert!(
-            outcome.denial.is_none(),
-            "pilot denied it: {:?}",
-            outcome.denial
-        );
-        let output = outcome.output.expect("program produced output");
-        let output = String::from_utf8(output).expect("output is utf8");
-        assert!(
-            output.contains("hello from an execution request"),
-            "unexpected output: {output:?}"
-        );
     }
 
     /// Full forge-from-task pipeline, on real hardware: a real,

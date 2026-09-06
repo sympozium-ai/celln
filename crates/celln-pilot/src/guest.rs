@@ -551,6 +551,9 @@ struct RunRequest {
     /// The host may request less authority than the manifest permits.
     #[serde(default)]
     force_agent_lane: bool,
+    /// Bind the selected sealed file to the host's declared content identity.
+    #[serde(default)]
+    expected_hash: Option<String>,
 }
 
 /// One cell can be asked to run several tools. Each invocation is hash-checked
@@ -577,6 +580,8 @@ struct RunFile {
     report_output_limit: Option<usize>,
     #[serde(default)]
     force_agent_lane: bool,
+    #[serde(default)]
+    expected_hash: Option<String>,
 }
 
 impl RunFile {
@@ -603,6 +608,7 @@ impl RunFile {
                 allow_fetch: self.allow_fetch,
                 report_output_limit: self.report_output_limit,
                 force_agent_lane: self.force_agent_lane,
+                expected_hash: self.expected_hash,
             }],
             _ => Vec::new(),
         }
@@ -999,6 +1005,20 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
         return;
     };
 
+    if req
+        .expected_hash
+        .as_deref()
+        .is_some_and(|expected| expected != hash.0)
+    {
+        report(&format!("pilot_run_{}", req.alias), "hash-mismatch");
+        if req.report_output_limit.is_some() {
+            emit(Frame::Failed {
+                reason: "declared program hash mismatch".into(),
+            });
+        }
+        return;
+    }
+
     // Anything the agent wrote demotes this invocation, per the laundering ban.
     let input = if req.agent_authored_input {
         Input::File(Lane::Data)
@@ -1120,6 +1140,7 @@ mod tests {
             allow_fetch: false,
             report_output_limit: None,
             force_agent_lane: false,
+            expected_hash: None,
         };
         let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
         assert!(

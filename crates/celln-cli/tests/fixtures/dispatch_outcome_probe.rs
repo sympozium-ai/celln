@@ -8,6 +8,7 @@ unsafe extern "C" {
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("silent") => {}
+        Some("substrate") => print!("{}", std::fs::read_to_string("/substrate-marker").unwrap()),
         Some("failed") => {
             println!("failure detail");
             std::process::exit(7);
