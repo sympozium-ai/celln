@@ -43,6 +43,31 @@ false. Evidence is retained under a unique `target/kubernetes-proof/run.*` path.
 Docker and Podman providers are supported; the script never reuses an existing
 cluster or edits the user's Kubernetes context or host kernel/cgroup settings.
 
+## External Sympozium controller proof
+
+An explicit `CELLN_SYMPOZIUM_PROOF` executable extends the real-KVM fixture
+before local revocation. The fixture passes its isolated loopback URL, test
+credential file, pinned request and evidence directory. It does not pass a
+production credential or existing cluster context. The external process has a
+600-second bound and a 10-second termination grace period.
+
+Sympozium's `test/integration/test-celln-real-controller.sh` creates its own
+Kind/Podman cluster and kubeconfig, installs the real CRDs, builds and runs the
+production controller, and submits actual AgentRuns. It verifies immutable
+execution, outcomes, guest restrictions, refusal, timeout and deletion-driven
+cancellation, retaining statuses, dispatcher records, audits and binary/revision
+metadata. No model account is needed for this static reference program.
+
+```sh
+CELLN_KIND_BIN=/absolute/path/to/kind \
+CELLN_SYMPOZIUM_PROOF=/absolute/path/to/sympozium/test/integration/test-celln-real-controller.sh \
+make conformance-kvm
+```
+
+Opting in runs the specified local script with the user's permissions; inspect
+it first. Ordinary `make ci` and `make conformance-kvm` do not create this cluster.
+External evidence lives in the conformance run's `sympozium/` subdirectory.
+
 ## Remaining scope
 
 These proofs cover the one-node milestone, not fresh external Sympozium
