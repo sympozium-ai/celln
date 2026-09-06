@@ -132,14 +132,20 @@ pub(crate) fn launch_declared(
             "{}:{}",
             resolved.bundle_hash, request.capabilities.memory_bytes
         );
+        let mut initrd_bytes = resolved.initrd_bytes.clone();
+        while initrd_bytes.len() % 4 != 0 {
+            initrd_bytes.push(0);
+        }
+        initrd_bytes.extend(file_archive("celln/dispatch-warm", b"pio-v1\n"));
+        let identity = super::SubstrateIdentity {
+            kernel: resolved.kernel_hash.clone(),
+            initrd: celln_manifest::Hash::of(&initrd_bytes).0,
+            toolfs: resolved.toolfs_hash.clone(),
+            invocation: celln_manifest::Hash::of(&run).0,
+        };
         let mut cell = super::warm::fork(key, vec![resolved.program_hash.clone()], || {
             // The shared template contains no request args, credentials or
             // egress grant. Only enable the post-fork invocation channel.
-            let mut initrd_bytes = resolved.initrd_bytes.clone();
-            while initrd_bytes.len() % 4 != 0 {
-                initrd_bytes.push(0);
-            }
-            initrd_bytes.extend(file_archive("celln/dispatch-warm", b"pio-v1\n"));
             std::fs::write(&kernel, &resolved.kernel_bytes).map_err(|e| e.to_string())?;
             std::fs::write(&initrd, &initrd_bytes).map_err(|e| e.to_string())?;
             let mut cfg = warden::vmm::boot::BootConfig::new(kernel)
@@ -149,7 +155,9 @@ pub(crate) fn launch_declared(
             Ok((cfg, resolved.toolfs_bytes.clone()))
         })?;
         cell.set_invocation(&run).map_err(|e| e.to_string())?;
-        let outcome = super::run_cell(request, &invocation.alias, cell, state_root)?;
+        let mut outcome = super::run_cell(request, &invocation.alias, cell, state_root)?;
+        outcome.substrate = Some(identity);
+        super::validate_executed_tool(&mut outcome, &resolved.program_hash);
         Ok((outcome, resolved))
     }
 }
@@ -397,6 +405,17 @@ mod tests {
         )
         .unwrap();
         assert!(outcome.succeeded(), "{outcome:?}");
+        assert_eq!(outcome.execution.as_ref().unwrap().tool, program_hash.0);
+        assert_eq!(outcome.execution.as_ref().unwrap().lane, "agent");
+        let identity = outcome.substrate.as_ref().unwrap();
+        assert_eq!(identity.kernel, kernel_hash.0);
+        assert_eq!(identity.toolfs, toolfs_hash.0);
+        let mut loaded_initrd = base.clone();
+        while loaded_initrd.len() % 4 != 0 {
+            loaded_initrd.push(0);
+        }
+        loaded_initrd.extend(file_archive("celln/dispatch-warm", b"pio-v1\n"));
+        assert_eq!(identity.initrd, Hash::of(&loaded_initrd).0);
         assert_eq!(
             outcome.output.as_deref(),
             Some(b"selected-substrate-A\n".as_slice())
@@ -441,6 +460,11 @@ mod tests {
             req.invocation.as_mut().unwrap().args = vec!["workspace".into(), name.into()];
             let (outcome, _) = launch_declared(&req, &motes, &tools, &state).unwrap();
             assert!(outcome.succeeded(), "{name}: {outcome:?}");
+            assert_eq!(outcome.execution.as_ref().unwrap().lane, "tool");
+            assert_eq!(
+                outcome.execution.as_ref().unwrap().workspace.as_deref(),
+                Some(name)
+            );
             assert_eq!(
                 outcome.output.as_deref(),
                 Some(format!("workspace:{name}\n").as_bytes())
@@ -452,6 +476,14 @@ mod tests {
         fetch.invocation.as_mut().unwrap().args = vec!["fetch-grant".into()];
         let (outcome, _) = launch_declared(&fetch, &motes, &tools, &state).unwrap();
         assert!(outcome.succeeded(), "{outcome:?}");
+        assert_eq!(
+            (
+                outcome.broker.requests,
+                outcome.broker.denied,
+                outcome.broker.response_bytes
+            ),
+            (1, 1, 0)
+        );
         assert_eq!(
             outcome.output.as_deref(),
             Some(b"fetch-grant:host-refused-http\n".as_slice())
@@ -555,6 +587,7 @@ mod tests {
             outcome.denial.as_deref(),
             Some("declared program hash mismatch")
         );
+        assert!(outcome.execution.is_none());
         assert!(outcome.output.as_ref().map_or(true, Vec::is_empty));
         assert_eq!(crate::cells::live_count(&state), 0);
         eprintln!("PASS: declared tool mismatch refused by actual guest");

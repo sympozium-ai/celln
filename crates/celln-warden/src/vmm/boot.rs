@@ -833,6 +833,7 @@ pub struct LinuxCell {
     /// Host-owned egress capability, absent unless explicitly enabled.
     http: Option<HttpBroker>,
     fetch_request: Vec<u8>,
+    fetch_activity: (u64, u64, u64), // attempts, denied, successful response bytes
     fetch_response: VecDeque<u8>,
     /// Per-cell, one-shot invocation data. Never captured in a mote.
     invocation: Option<VecDeque<u8>>,
@@ -978,6 +979,7 @@ impl LinuxCell {
             serial: Serial::default(),
             http: None,
             fetch_request: Vec::new(),
+            fetch_activity: (0, 0, 0),
             fetch_response: VecDeque::new(),
             invocation: None,
             pci_cf8: 0,
@@ -1052,6 +1054,7 @@ impl LinuxCell {
     }
 
     fn dispatch_fetch(&mut self) {
+        self.fetch_activity.0 = self.fetch_activity.0.saturating_add(1);
         let request = std::str::from_utf8(&self.fetch_request)
             .map(str::trim)
             .map(str::to_owned)
@@ -1064,14 +1067,25 @@ impl LinuxCell {
             )),
         };
         let bytes = match body {
-            Ok(body) => body,
-            Err(e) => format!("CELLN_FETCH_ERROR:{e}").into_bytes(),
+            Ok(body) => {
+                self.fetch_activity.2 = self.fetch_activity.2.saturating_add(body.len() as u64);
+                body
+            }
+            Err(e) => {
+                self.fetch_activity.1 = self.fetch_activity.1.saturating_add(1);
+                format!("CELLN_FETCH_ERROR:{e}").into_bytes()
+            }
         };
         // Length framing makes response bytes opaque: HTML, newlines and NULs
         // cross as data, not as a second control protocol.
         self.fetch_response
             .extend((bytes.len() as u32).to_le_bytes());
         self.fetch_response.extend(bytes);
+    }
+
+    /// Host-observed broker counters. No URLs, headers or response values.
+    pub fn fetch_activity(&self) -> (u64, u64, u64) {
+        self.fetch_activity
     }
 
     /// Stop as soon as the guest signals it is doing userspace work, and
@@ -1328,6 +1342,7 @@ impl LinuxCell {
                 },
                 http: None,
                 fetch_request: Vec::new(),
+                fetch_activity: (0, 0, 0),
                 fetch_response: VecDeque::new(),
                 invocation: None,
                 pci_cf8: 0,

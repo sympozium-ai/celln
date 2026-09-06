@@ -736,7 +736,12 @@ fn child_error(error_fd: i32, error: io::Error) -> ! {
 /// lookup. `execveat(AT_EMPTY_PATH)` binds the exec to this exact file
 /// description even if its old name is replaced between verification and
 /// execution.
-fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<ExitStatus> {
+fn exec_open_file(
+    file: &File,
+    req: &RunRequest,
+    confine: bool,
+    grant: Option<pilot::dispatch_report::ExecutionGrant>,
+) -> io::Result<ExitStatus> {
     let capture = if req.report_output_limit.is_some() {
         let mut fds = [-1; 2];
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -877,6 +882,13 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
     };
     unsafe { libc::close(error_pipe[0]) };
     let read_error = (read < 0).then(io::Error::last_os_error);
+    // EOF on the CLOEXEC error pipe acknowledges successful child setup and
+    // exec. Publish before forwarding output, never on an errno/setup failure.
+    if read == 0 && req.report_output_limit.is_some() {
+        if let Some(grant) = grant {
+            emit(Frame::Started { grant });
+        }
+    }
 
     let mut capture_error = None;
     if let Some((mut reader, writer, null)) = capture {
@@ -1152,6 +1164,17 @@ fn stage_inputs(req: &RunRequest) -> io::Result<()> {
 }
 
 fn run_one(manifest: &Manifest, req: &RunRequest) {
+    if req.report_output_limit.is_some() && unsafe { libc::syscall(libc::SYS_syslog, 6, 0, 0) } != 0
+    {
+        // SYSLOG_ACTION_CONSOLE_OFF: kernel trap diagnostics can otherwise
+        // interleave with a supervisor JSON frame on the shared serial tty.
+        // Preserve printk's ring buffer, but reserve the dispatcher console
+        // for pilot. Workload capabilities cannot re-enable kernel logging.
+        emit(Frame::Failed {
+            reason: "exclusive report console unavailable".into(),
+        });
+        return;
+    }
     if stage_inputs(req).is_err() {
         emit(Frame::Failed {
             reason: "input delivery refused".into(),
@@ -1229,7 +1252,20 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
             // The host slices on them so a cell can be piped like any process.
             println!("CELLN:out-begin");
             let confine = lane != Lane::Tool;
-            let status = exec_open_file(&executable, req, confine);
+            let grant = pilot::dispatch_report::ExecutionGrant {
+                tool: hash.0.clone(),
+                lane: lane.to_string(),
+                workspace: req.workspace_access.map(|access| {
+                    match access {
+                        WorkspaceAccess::None => "none",
+                        WorkspaceAccess::ReadOnly => "read-only",
+                        WorkspaceAccess::ReadWrite => "read-write",
+                    }
+                    .to_owned()
+                }),
+                fetch: req.allow_fetch,
+            };
+            let status = exec_open_file(&executable, req, confine, Some(grant));
             println!("CELLN:out-end");
 
             if req.report_output_limit.is_some() {
@@ -1320,7 +1356,8 @@ mod tests {
             workspace_access: None,
             inputs: Vec::new(),
         };
-        let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
+        let status =
+            exec_open_file(&verified, &request, false, None).expect("executes verified fd");
         assert!(
             status.success(),
             "the opened /bin/true bytes must run, not replacement /bin/false"

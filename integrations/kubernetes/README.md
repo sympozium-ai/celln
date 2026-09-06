@@ -51,6 +51,11 @@ reports preflight readiness without exposing cache identities. See
 [input/workspace authority](../../docs/DISPATCH_INPUTS.md) for configuration,
 trust boundaries and compatibility requirements.
 
+For actual granted authority, selected lane, loaded substrate hashes and broker
+activity, opt into authenticated `GET /v1/executions/<id>/audit`. Its separately
+versioned [audit envelope](../../docs/DISPATCH_AUDIT.md) includes the unchanged
+terminal receipt, preserving existing strict receipt consumers.
+
 ## Exercise actual Celln cells on the KVM host
 
 The Kind proof is intentionally a preflight because its node lacks real Celln

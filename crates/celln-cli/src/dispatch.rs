@@ -162,6 +162,10 @@ pub fn resolve_bundle(
 /// one. The dispatcher builds the receipt from this after the cell is gone.
 #[derive(Debug)]
 pub struct LaunchOutcome {
+    pub execution: Option<pilot::dispatch_report::ExecutionGrant>,
+    pub substrate: Option<SubstrateIdentity>,
+    pub broker: BrokerActivity,
+    pub lifecycle: Vec<CellEvent>,
     /// Verified inputs acknowledged as staged by pilot, not just requested.
     pub input_hashes: Vec<String>,
     pub cell_id: String,
@@ -172,6 +176,32 @@ pub struct LaunchOutcome {
     pub exit_code: Option<i32>,
     pub signal: Option<i32>,
     pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubstrateIdentity {
+    pub kernel: String,
+    /// Exact loaded initrd including the fixed warm-dispatch marker.
+    pub initrd: String,
+    pub toolfs: String,
+    pub invocation: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerActivity {
+    pub requests: u64,
+    pub denied: u64,
+    pub response_bytes: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CellEvent {
+    pub phase: String,
+    pub at: String,
+    #[serde(skip)]
+    pub observed: std::time::Instant,
 }
 
 impl LaunchOutcome {
@@ -433,9 +463,29 @@ fn run_prepared(
         Hash::of(&payload),
         cfg.mem_size
     );
-    let mut cell = warm::fork(key, vec![program_hash], || Ok((cfg, payload)))?;
+    let identity = SubstrateIdentity {
+        kernel: kernel_hash.0,
+        initrd: initrd_hash.0,
+        toolfs: Hash::of(&payload).0,
+        invocation: Hash::of(invocation).0,
+    };
+    let mut cell = warm::fork(key, vec![program_hash.clone()], || Ok((cfg, payload)))?;
     cell.set_invocation(invocation).map_err(|e| e.to_string())?;
-    run_cell(request, alias, cell, state_root)
+    let mut outcome = run_cell(request, alias, cell, state_root)?;
+    outcome.substrate = Some(identity);
+    validate_executed_tool(&mut outcome, &program_hash);
+    Ok(outcome)
+}
+
+fn validate_executed_tool(outcome: &mut LaunchOutcome, expected: &str) {
+    if outcome
+        .execution
+        .as_ref()
+        .is_some_and(|grant| grant.tool != expected)
+    {
+        outcome.execution = None;
+        outcome.denial = Some("executed tool report mismatch".into());
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -472,6 +522,8 @@ fn run_cell(
             .collect();
         cell.enable_http_fetch(warden::egress::HttpPolicy::new(hosts));
     }
+    let running_at = now_rfc3339();
+    let running_observed = std::time::Instant::now();
     let report = match cell.run() {
         Ok(report) => report,
         Err(error) => {
@@ -489,16 +541,48 @@ fn run_cell(
         report.end == warden::vmm::boot::BootEnd::TimedOut,
         report.end == warden::vmm::boot::BootEnd::Shutdown,
     );
+    let (requests, denied, response_bytes) = cell.fetch_activity();
+    outcome.broker = BrokerActivity {
+        requests,
+        denied,
+        response_bytes,
+    };
     if let Some(reason) = celln_control::current().and_then(|c| c.reason()) {
         outcome.denial = Some(reason.to_string());
     }
     let expected: Vec<_> = request.inputs.iter().map(|i| i.hash.clone()).collect();
+    if let Some(grant) = &outcome.execution {
+        let workspace = serde_json::to_value(request.capabilities.workspace).unwrap();
+        if grant.workspace.as_deref() != workspace.as_str()
+            || grant.fetch != !request.capabilities.egress.is_empty()
+            || !matches!(grant.lane.as_str(), "agent" | "tool")
+            || (request.execution.lane == RequestedLane::Agent && grant.lane != "agent")
+        {
+            outcome.execution = None;
+            outcome.denial = Some("executed authority report mismatch".into());
+        }
+    } else if outcome.exit_code.is_some() || outcome.signal.is_some() {
+        outcome.denial = Some("missing pilot execution grant report".into());
+    }
     if outcome.input_hashes != expected {
         outcome.input_hashes.clear();
         outcome
             .denial
             .get_or_insert_with(|| "input delivery report mismatch".into());
     }
+    drop(cell);
+    outcome.lifecycle = vec![
+        CellEvent {
+            phase: "CellRunning".into(),
+            at: running_at,
+            observed: running_observed,
+        },
+        CellEvent {
+            phase: "Dissolved".into(),
+            at: now_rfc3339(),
+            observed: std::time::Instant::now(),
+        },
+    ];
     if let Some(record) = record.as_mut() {
         crate::cells::finish(state_root, record, "kvm", outcome.denial.clone());
     }
@@ -810,6 +894,7 @@ mod tests {
         .unwrap();
         assert!(!outcome.succeeded());
         assert_eq!(outcome.denial.as_deref(), Some("pilot exec setup failed"));
+        assert!(outcome.execution.is_none());
         // An agent artifact stays in the agent lane even if a later caller
         // asks for the tool lane. The spoof probe also attempts unshare.
         let assay_root = work.path().join("assay");
@@ -833,6 +918,8 @@ mod tests {
             &work.path().join("preserved-author"),
         )
         .unwrap();
+        assert_eq!(outcome.execution.as_ref().unwrap().lane, "agent");
+        assert_eq!(outcome.execution.as_ref().unwrap().tool, hash.0);
         assert_eq!(outcome.exit_code, Some(9), "{outcome:?}");
         assert_eq!(
             assay::Assayer::open(&assay_root)
@@ -856,6 +943,7 @@ mod tests {
         .unwrap();
         assert!(!outcome.succeeded());
         assert_eq!(outcome.denial.as_deref(), Some("pilot refused execution"));
+        assert!(outcome.execution.is_none());
         eprintln!("PASS: exec setup failure, retained agent lane, and pilot refusal");
     }
 

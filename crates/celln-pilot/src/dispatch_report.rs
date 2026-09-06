@@ -3,11 +3,21 @@
 use serde::{Deserialize, Serialize};
 
 pub const PREFIX: &str = "CELLN:dispatch=";
-pub const PROTOCOL: &str = "CELLN:dispatch-protocol=4";
+pub const PROTOCOL: &str = "CELLN:dispatch-protocol=5";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionGrant {
+    pub tool: String,
+    pub lane: String,
+    pub workspace: Option<String>,
+    pub fetch: bool,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Frame {
+    Started { grant: ExecutionGrant },
     Inputs { hashes: Vec<String> },
     Output { bytes: Vec<u8> },
     Exit { code: i32 },
