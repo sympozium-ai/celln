@@ -728,6 +728,7 @@ const SNAPSHOT_MSRS: &[u32] = &[
     0x0000_0176, // IA32_SYSENTER_EIP
     0x0000_0010, // IA32_TSC
     0x0000_01a0, // IA32_MISC_ENABLE
+    0x0000_0da0, // IA32_XSS: supervisor XSAVE components used by XRSTORS
     0xc000_0080, // EFER
     0xc000_0081, // STAR
     0xc000_0082, // LSTAR
@@ -772,7 +773,8 @@ pub struct Mote {
     cpuid: kvm_bindings::CpuId,
     regs: kvm_bindings::kvm_regs,
     sregs: kvm_bindings::kvm_sregs,
-    fpu: kvm_bindings::kvm_fpu,
+    xsave: kvm_bindings::Xsave,
+    xsave_size: usize,
     xcrs: kvm_bindings::kvm_xcrs,
     lapic: kvm_bindings::kvm_lapic_state,
     events: kvm_bindings::kvm_vcpu_events,
@@ -826,6 +828,8 @@ pub struct LinuxCell {
     http: Option<HttpBroker>,
     fetch_request: Vec<u8>,
     fetch_response: VecDeque<u8>,
+    /// Per-cell, one-shot invocation data. Never captured in a mote.
+    invocation: Option<VecDeque<u8>>,
     /// The PCI configuration address latch (port 0xcf8).
     ///
     /// We emulate no PCI devices, but the kernel must still *detect* a type-1
@@ -969,6 +973,7 @@ impl LinuxCell {
             http: None,
             fetch_request: Vec::new(),
             fetch_response: VecDeque::new(),
+            invocation: None,
             pci_cf8: 0,
             revoke_trigger: None,
             stop_marker: None,
@@ -1019,6 +1024,24 @@ impl LinuxCell {
         self.http = Some(HttpBroker::new(policy));
     }
 
+    /// Deliver bounded data to pilot after a warm fork. Port 0x510 returns
+    /// little-endian u32 length followed by opaque JSON bytes, once only.
+    pub fn set_invocation(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
+        if bytes.is_empty() || bytes.len() > 65536 || self.invocation.is_some() {
+            return Err(VmmError::Backend(
+                "invalid or repeated invocation delivery".into(),
+            ));
+        }
+        let mut data: VecDeque<u8> = (bytes.len() as u32).to_le_bytes().into();
+        data.extend(bytes);
+        self.invocation = Some(data);
+        Ok(())
+    }
+
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.cfg.timeout = timeout;
+    }
+
     fn dispatch_fetch(&mut self) {
         let request = std::str::from_utf8(&self.fetch_request)
             .map(str::trim)
@@ -1060,7 +1083,29 @@ impl LinuxCell {
     /// Call after a run that stopped at a marker, so the vCPU is at an
     /// instruction boundary with no I/O completion outstanding.
     pub fn park(&self) -> Result<Mote, VmmError> {
+        if self.invocation.is_some() || self.http.is_some() {
+            return Err(VmmError::Backend(
+                "cannot park per-cell invocation or egress authority".into(),
+            ));
+        }
         let vcpu = &self.vcpu;
+        // KVM_GET_FPU is only the legacy subset. A real resumed Linux pilot
+        // needs extended XSAVE state and IA32_XSS as well. Allocate according
+        // to the VM capability, never the fixed 4096-byte legacy ioctl buffer.
+        // https://docs.kernel.org/virt/kvm/api.html#kvm-get-xsave2
+        let xsave_size = self.vm.check_extension_int(kvm_ioctls::Cap::Xsave2);
+        let base = std::mem::size_of::<kvm_bindings::kvm_xsave>();
+        if xsave_size < base as i32 {
+            return Err(VmmError::Unsupported(
+                "warm snapshots require KVM_CAP_XSAVE2".into(),
+            ));
+        }
+        let xsave_size = xsave_size as usize;
+        let mut xsave = kvm_bindings::Xsave::new((xsave_size - base).div_ceil(4))
+            .map_err(|e| VmmError::Backend(format!("allocating XSAVE: {e:?}")))?;
+        // SAFETY: buffer includes exactly the VM-reported extended area;
+        // this runtime never dynamically enables new host XSTATE features.
+        unsafe { vcpu.get_xsave2(&mut xsave) }.map_err(|e| kvm_err("get_xsave2", e))?;
         let ram = self
             ._mem
             .fd
@@ -1111,7 +1156,8 @@ impl LinuxCell {
             cpuid: self.cpuid.clone(),
             regs: vcpu.get_regs().map_err(|e| kvm_err("get_regs", e))?,
             sregs: vcpu.get_sregs().map_err(|e| kvm_err("get_sregs", e))?,
-            fpu: vcpu.get_fpu().map_err(|e| kvm_err("get_fpu", e))?,
+            xsave,
+            xsave_size,
             xcrs: vcpu.get_xcrs().map_err(|e| kvm_err("get_xcrs", e))?,
             lapic: vcpu.get_lapic().map_err(|e| kvm_err("get_lapic", e))?,
             events: vcpu
@@ -1231,15 +1277,26 @@ impl LinuxCell {
                 ..Default::default()
             };
             if let Ok(buf) = kvm_bindings::Msrs::from_entries(&[entry]) {
-                let _ = vcpu.set_msrs(&buf); // best effort, per MSR
+                if vcpu.set_msrs(&buf).map_err(|e| kvm_err("set_msrs", e))? != 1 {
+                    return Err(VmmError::Unsupported(format!(
+                        "cannot restore MSR {index:#x}"
+                    )));
+                }
             }
         }
         vcpu.set_sregs(&mote.sregs)
             .map_err(|e| kvm_err("set_sregs", e))?;
         vcpu.set_regs(&mote.regs)
             .map_err(|e| kvm_err("set_regs", e))?;
-        vcpu.set_fpu(&mote.fpu).map_err(|e| kvm_err("set_fpu", e))?;
-        let _ = vcpu.set_xcrs(&mote.xcrs);
+        vcpu.set_xcrs(&mote.xcrs)
+            .map_err(|e| kvm_err("set_xcrs", e))?;
+        if vm.check_extension_int(kvm_ioctls::Cap::Xsave2) != mote.xsave_size as i32 {
+            return Err(VmmError::Unsupported(
+                "XSAVE size changed since preparation".into(),
+            ));
+        }
+        // SAFETY: checked against this VM's required buffer size above.
+        unsafe { vcpu.set_xsave2(&mote.xsave) }.map_err(|e| kvm_err("set_xsave2", e))?;
         vcpu.set_lapic(&mote.lapic)
             .map_err(|e| kvm_err("set_lapic", e))?;
         vcpu.set_vcpu_events(&mote.events)
@@ -1263,6 +1320,7 @@ impl LinuxCell {
                 http: None,
                 fetch_request: Vec::new(),
                 fetch_response: VecDeque::new(),
+                invocation: None,
                 pci_cf8: 0,
                 revoke_trigger: None,
                 stop_marker: None,
@@ -1414,6 +1472,14 @@ impl LinuxCell {
                                 let v = self.serial.read(port);
                                 for b in data.iter_mut() {
                                     *b = v;
+                                }
+                            } else if port == 0x510 {
+                                for b in data.iter_mut() {
+                                    *b = self
+                                        .invocation
+                                        .as_mut()
+                                        .and_then(|q| q.pop_front())
+                                        .unwrap_or(0xff);
                                 }
                             } else if port == PILOT_FETCH_RX {
                                 for b in data.iter_mut() {
@@ -1630,6 +1696,28 @@ fn set_long_mode(vcpu: &VcpuFd) -> Result<(), VmmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invocation_is_bounded_one_shot_and_cannot_be_parked() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let mut cell = LinuxCell::boot(BootConfig::new(kernel)).unwrap();
+        assert!(cell.set_invocation(&[]).is_err());
+        assert!(cell.set_invocation(&vec![0; 65537]).is_err());
+        cell.set_invocation(b"{}").unwrap();
+        assert!(cell.set_invocation(b"replacement").is_err());
+        assert!(cell.park().is_err());
+        assert_eq!(
+            cell.invocation
+                .as_ref()
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            b"\x02\x00\x00\x00{}"
+        );
+    }
 
     fn kernel_or_skip() -> Option<PathBuf> {
         if !Path::new("/dev/kvm").exists() {

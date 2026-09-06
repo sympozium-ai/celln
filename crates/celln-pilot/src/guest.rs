@@ -953,7 +953,19 @@ fn main() {
 /// the manifest. A tool swapped after attestation hashes differently and never
 /// runs, which is the only reason a filesystem is safe to exec out of at all.
 fn run_requested(manifest: &Manifest) {
-    let Ok(bytes) = std::fs::read(RUN_REQUEST) else {
+    let bytes = if std::path::Path::new("/celln/dispatch-warm").exists() {
+        match warm_invocation() {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                emit(Frame::Failed {
+                    reason: "warm invocation unavailable".into(),
+                });
+                return;
+            }
+        }
+    } else if let Ok(bytes) = std::fs::read(RUN_REQUEST) {
+        bytes
+    } else {
         return; // nothing asked of this cell
     };
     let file: RunFile = match serde_json::from_slice(&bytes) {
@@ -984,6 +996,36 @@ fn run_requested(manifest: &Manifest) {
         }
         run_one(manifest, &req);
     }
+}
+
+/// One-shot host data, not executable authority. The I/O permission is revoked
+/// before parsing or executing, including on invalid lengths.
+fn warm_invocation() -> io::Result<Vec<u8>> {
+    const PORT: u16 = 0x510; // warden::vmm::boot invocation port
+    unsafe fn read_byte() -> u8 {
+        let byte: u8;
+        std::arch::asm!("in al, dx", in("dx") PORT, out("al") byte,
+            options(nomem, nostack, preserves_flags));
+        byte
+    }
+    if unsafe { libc::ioperm(PORT as libc::c_ulong, 1, 1) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let len = u32::from_le_bytes(unsafe { [read_byte(), read_byte(), read_byte(), read_byte()] })
+        as usize;
+    let result = if (1..=65536).contains(&len) {
+        Ok((0..len).map(|_| unsafe { read_byte() }).collect())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid invocation length",
+        ))
+    };
+    if unsafe { libc::ioperm(PORT as libc::c_ulong, 1, 0) } != 0 {
+        // Never continue if a workload could inherit the supervisor's grant.
+        finish(1);
+    }
+    result
 }
 
 fn run_one(manifest: &Manifest, req: &RunRequest) {

@@ -36,7 +36,7 @@ must govern future closure admission; closure loading remains unsupported.
 ```json
 {
   "apiVersion": "celln.dev/v1alpha1",
-  "format": "celln.static-v1",
+  "format": "celln.warm-static-v1",
   "kernel": "blake3:<kernel hash>",
   "initrd": "blake3:<base initrd hash>",
   "toolfs": "blake3:<tool filesystem hash>",
@@ -58,18 +58,22 @@ narrow the embedded grant.
 The approved base initrd is an uncompressed newc archive containing init,
 pilot, pilot-fetch, the reviewed manifest, and all modules needed by the pinned
 kernel. It must provide a normal `/celln` directory and no symlink/hardlink
-trickery involving `/celln/run.json`. The operator must review these properties
+trickery involving `/celln/dispatch-warm`. The operator must review these properties
 when approving the bundle, just as they review privileged init and pilot code.
 This is trusted boot code, not an untrusted filesystem ingestion format.
 
-Per-request invocation JSON is appended in a second newc archive. Only that
-fixed data path is generated: arguments, expected hash, output cap, egress bit
-and lane narrowing. No executable, module or manifest is overlaid. Kernel,
-toolfs and base-initrd identities are unchanged; the boot initrd is explicitly
-the declared base plus this invocation-data archive, not byte-identical to the
-base object alone. Future receipts should record the invocation digest too.
+Preparation appends a fixed `/celln/dispatch-warm` mode flag to the base initrd,
+boots once with sealed tools and no egress grant, and parks at init's
+`CELLN:mote=parked` boundary before pilot executes. Every execution forks this
+template, including the first. Per-request JSON arrives after the fork through
+PIO port `0x510`: four little-endian length bytes followed by at most 64 KiB of
+data. The stream is host-owned and one-shot. Pilot revokes the I/O bitmap grant
+before parsing or executing. No arguments, requested egress authority or output
+from one cell are snapshotted for another. No executable, module or manifest is
+overlaid. Future receipts should record the invocation digest too.
 
-Use pilot dispatch protocol 2, which enforces `expected_hash`. Pinning a bundle
+Use pilot dispatch protocol 3, which enforces `expected_hash` and implements the
+warm invocation channel. Pinning a bundle
 asserts its pilot implements that protocol and its boot code preserves the
 invocation seam. Host and pilot must be upgraded together. Legacy bundle
 descriptors can still be inspected by `resolve-file`, but cannot launch without
@@ -83,6 +87,15 @@ proves a marker unique to the declared initrd, a guest refusal of a mismatched
 tool, and invalid declared kernel refusal without host fallback. Ordinary tests
 prove separate trust admission and preservation of local authority.
 
-This does not complete #13 or the epic: warm mote forks, cancellation/deadlines,
+The process retains one warm template keyed by approved bundle hash and guest
+RAM size. Different arguments share it; a different identity evicts it. Trust
+policy, artifact integrity and local authority are rechecked even on cache hits.
+Requests still pay for hash-verified store reads, and a cache miss pays for
+preparation. Forge dispatch also prepares then forks, but its freshly generated
+substrate may miss the cache; deterministic forge substrate reuse is not claimed.
+The cache is not an aggregate memory scheduler (#5).
+
+This does not complete #13 or the epic: cancellation/deadlines,
 full provenance, input providers and external integration remain outstanding.
-Declared launch still boots per request until the warm-spawn slice lands.
+See [warm dispatch measurements](WARM_DISPATCH_MEASUREMENTS.md) for the current
+end-to-end numbers and guest isolation proof.

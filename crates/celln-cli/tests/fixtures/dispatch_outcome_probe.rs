@@ -3,12 +3,30 @@ use std::io::{self, Write};
 unsafe extern "C" {
     fn unshare(flags: i32) -> i32;
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
+    fn fork() -> i32;
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
 }
 
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("silent") => {}
         Some("substrate") => print!("{}", std::fs::read_to_string("/substrate-marker").unwrap()),
+        Some("warm") => {
+            // Try the supervisor-only PIO port after exec: it must fault,
+            // proving pilot revoked the I/O bitmap grant before the workload.
+            let child = unsafe { fork() };
+            assert!(child >= 0);
+            if child == 0 {
+                unsafe { std::arch::asm!("in al, dx", in("dx") 0x510u16, out("al") _, options(nomem, nostack)); }
+                std::process::exit(0);
+            }
+            let mut status = 0;
+            assert_eq!(unsafe { waitpid(child, &mut status, 0) }, child);
+            assert_eq!(status & 127, 11, "workload inherited invocation port");
+            assert!(!std::path::Path::new("/celln/work/prior-cell").exists());
+            std::fs::write("/celln/work/prior-cell", b"private cell state").unwrap();
+            println!("warm:{}", std::env::args().nth(2).unwrap());
+        }
         Some("failed") => {
             println!("failure detail");
             std::process::exit(7);
