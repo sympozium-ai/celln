@@ -66,7 +66,7 @@ not claim that all guest scratch filesystems are unwritable. Delivery and guest
 enforcement proofs remain in #3/#7; closure loading remains in #6.
 
 This completes the outcome and unsupported-input/closure refusal slices of #13.
-Declared substrate consumption/authentication, warm spawning and end-to-end
-cancellation remain separate work. In particular, bundle resolution currently
-checks artifact integrity but launch still reconstructs the substrate; it is
-not yet proof of execution of the declared mote identity.
+Declared execution now consumes an operator-pinned substrate with a separate
+invocation-data archive; see [Declared substrates](DECLARED_SUBSTRATES.md) for
+the trust root, compatibility requirements and exact artifact semantics. Warm
+spawning and end-to-end cancellation remain separate work.

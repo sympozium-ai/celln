@@ -460,18 +460,11 @@ fn run_execution(
         return;
     }
     let started_at = crate::dispatch::now_rfc3339();
-    let runtime_root = match crate::agent::runtime_root() {
-        Ok(path) => path,
-        Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
-    };
     let assay_root = root.join("assay");
 
-    // Resolved authority for the receipt: (mote, program hash, alias, args,
-    // bytes to seal). The declared and forge paths converge here — from this
-    // point on, `launch` doesn't know or care which one produced the bytes.
-    let (mote, program_hash, alias, args, program_bytes) = if let Some(forge_request) =
-        &request.forge
-    {
+    // Declared launch consumes operator-pinned substrate bytes. Forge remains
+    // a separately identified host-prepared path, with no declared mote claim.
+    let (mote, program_hash, outcome) = if let Some(forge_request) = &request.forge {
         update_execution(&executions, &request.id, |record| {
             record.phase = "Forging".into()
         });
@@ -483,60 +476,40 @@ fn run_execution(
             Ok(forged) => forged,
             Err(error) => return fail_execution(&executions, &request.id, error),
         };
-        (
-            None,
-            forged.hash,
-            crate::agent::ALIAS.to_owned(),
-            Vec::new(),
-            forged.bytes,
-        )
+        let runtime_root = match crate::agent::runtime_root() {
+            Ok(path) => path,
+            Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
+        };
+        update_execution(&executions, &request.id, |record| {
+            record.phase = "Running".into()
+        });
+        let outcome = match crate::dispatch::launch(
+            &request,
+            crate::agent::ALIAS,
+            &[],
+            &forged.bytes,
+            &runtime_root,
+            &assay_root,
+            &root,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => return fail_execution(&executions, &request.id, error),
+        };
+        (None, forged.hash, outcome)
     } else {
         update_execution(&executions, &request.id, |record| {
             record.phase = "Resolving".into()
         });
-        let resolved =
-            match crate::dispatch::resolve_bundle(&request, &probe.mote_store, &probe.tool_store) {
-                Ok(resolved) => resolved,
-                Err(error) => return fail_execution(&executions, &request.id, error),
-            };
-        let tool_store = match Store::open(&probe.tool_store) {
-            Ok(store) => store,
-            Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
+        let (outcome, resolved) = match crate::dispatch::launch_declared(
+            &request,
+            &probe.mote_store,
+            &probe.tool_store,
+            &root,
+        ) {
+            Ok(result) => result,
+            Err(error) => return fail_execution(&executions, &request.id, error),
         };
-        let program_bytes =
-            match tool_store.get(&celln_manifest::Hash(resolved.program_hash.clone())) {
-                Ok(bytes) => bytes,
-                Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
-            };
-        // Presence already validated by celln_spec's own problems() — a
-        // declared request always has an invocation.
-        let invocation = request
-            .invocation
-            .as_ref()
-            .expect("declared request has an invocation");
-        (
-            Some(resolved.bundle_hash),
-            resolved.program_hash,
-            invocation.alias.clone(),
-            invocation.args.clone(),
-            program_bytes,
-        )
-    };
-
-    update_execution(&executions, &request.id, |record| {
-        record.phase = "Running".into()
-    });
-    let outcome = match crate::dispatch::launch(
-        &request,
-        &alias,
-        &args,
-        &program_bytes,
-        &runtime_root,
-        &assay_root,
-        &root,
-    ) {
-        Ok(outcome) => outcome,
-        Err(error) => return fail_execution(&executions, &request.id, error),
+        (Some(resolved.bundle_hash), resolved.program_hash, outcome)
     };
 
     let output = outcome.output.as_deref().filter(|bytes| !bytes.is_empty());
