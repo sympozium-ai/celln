@@ -149,6 +149,7 @@ fn enter_agent_lane(
     allow_fetch: bool,
     access: Option<WorkspaceAccess>,
     has_inputs: bool,
+    closure_members: Option<&BTreeMap<String, celln_manifest::closure::Member>>,
 ) -> io::Result<()> {
     if allow_fetch {
         // CAP_SYS_RAWIO also authorises legacy device-node interfaces that
@@ -228,10 +229,20 @@ fn enter_agent_lane(
         if let Some(access) = access {
             // Child-process libraries open /dev/null for unused standard
             // streams. This exact sink/source grants no console or host data.
-            add(
-                "/dev/null",
-                LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
-            )?;
+            if closure_members.is_none() {
+                add(
+                    "/dev/null",
+                    LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
+                )?;
+            }
+            if let Some(members) = closure_members {
+                for path in members.keys() {
+                    add(
+                        path,
+                        LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+                    )?;
+                }
+            }
             if allow_fetch {
                 add(
                     "/pilot-fetch",
@@ -579,6 +590,8 @@ struct InputData {
 
 #[derive(Deserialize)]
 struct RunRequest {
+    #[serde(default)]
+    closure_members: Option<BTreeMap<String, celln_manifest::closure::Member>>,
     /// Where the bytes live in the cell — normally on the sealed DAX mount.
     ///
     /// When `root` is set this is relative to *that* root, not to pilot's own
@@ -626,6 +639,8 @@ struct RunRequest {
 #[derive(Deserialize)]
 struct RunFile {
     #[serde(default)]
+    closure_members: Option<BTreeMap<String, celln_manifest::closure::Member>>,
+    #[serde(default)]
     runs: Vec<RunRequest>,
     #[serde(default)]
     root: Option<String>,
@@ -668,6 +683,7 @@ impl RunFile {
         }
         match (self.path, self.alias) {
             (Some(path), Some(alias)) => vec![RunRequest {
+                closure_members: self.closure_members,
                 path,
                 alias,
                 args: self.args,
@@ -693,7 +709,7 @@ impl RunFile {
 /// scratch. This gives each cell its own private tmpfs at a path the image
 /// already provides, so the read-only image stays shareable across every cell
 /// while the writes stay per-cell.
-fn mount_scratch(root: &str) -> io::Result<()> {
+fn mount_scratch(root: &str, strict: bool) -> io::Result<()> {
     let target = CString::new(format!("{root}/tmp"))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     let fstype = CString::new("tmpfs").expect("constant");
@@ -703,7 +719,11 @@ fn mount_scratch(root: &str) -> io::Result<()> {
             source.as_ptr(),
             target.as_ptr(),
             fstype.as_ptr(),
-            0,
+            if strict {
+                libc::MS_NOEXEC | libc::MS_NODEV | libc::MS_NOSUID
+            } else {
+                0
+            },
             std::ptr::null(),
         ) != 0
         {
@@ -721,6 +741,28 @@ fn open_and_hash(path: &str) -> io::Result<(File, Hash)> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok((file, Hash::of(&bytes)))
+}
+
+fn sealed_member_path(path: &str) -> bool {
+    if !celln_manifest::closure::canonical_path(path) {
+        return false;
+    }
+    let mut full = std::path::PathBuf::from("/tools");
+    let mut parts = path[1..].split('/').peekable();
+    while let Some(part) = parts.next() {
+        full.push(part);
+        let Ok(metadata) = std::fs::symlink_metadata(&full) else {
+            return false;
+        };
+        if parts.peek().is_some() {
+            if !metadata.is_dir() {
+                return false;
+            }
+        } else if !metadata.is_file() || metadata.len() > 512 * 1024 * 1024 {
+            return false;
+        }
+    }
+    true
 }
 
 fn child_error(error_fd: i32, error: io::Error) -> ! {
@@ -848,6 +890,7 @@ fn exec_open_file(
                 req.allow_fetch,
                 req.workspace_access,
                 !req.inputs.is_empty(),
+                req.closure_members.as_ref(),
             ) {
                 child_error(error_pipe[1], error);
             }
@@ -1073,11 +1116,17 @@ fn run_requested(manifest: &Manifest) {
     for req in invocations {
         if let Some(root) = req.root.clone() {
             if !mounted.contains(&root) {
-                match mount_scratch(&root) {
+                match mount_scratch(&root, req.workspace_access.is_some()) {
                     Ok(()) => report("pilot_scratch", "tmpfs"),
                     Err(e) => {
                         report("pilot_scratch", "failed");
                         eprintln!("pilot: tmpfs on {root}/tmp: {e}");
+                        if req.workspace_access.is_some() {
+                            emit(Frame::Failed {
+                                reason: "private closure workspace unavailable".into(),
+                            });
+                            continue;
+                        }
                     }
                 }
                 mounted.push(root);
@@ -1194,6 +1243,26 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
         Some(root) => format!("{root}{}", req.path),
         None => req.path.clone(),
     };
+    if let Some(members) = &req.closure_members {
+        // Verify each actual sealed member, not a host assertion about what
+        // the filesystem ought to contain. The mount is hardware read-only,
+        // so these paths cannot change between hashing and dynamic loading.
+        if req.root.as_deref() != Some("/tools")
+            || members.is_empty()
+            || members.len() > 256
+            || !members.contains_key(&req.path)
+            || members.iter().any(|(path, member)| {
+                !sealed_member_path(path)
+                    || open_and_hash(&format!("/tools{path}"))
+                        .map_or(true, |(_, h)| h.0 != member.hash)
+            })
+        {
+            emit(Frame::Failed {
+                reason: "sealed closure member mismatch".into(),
+            });
+            return;
+        }
+    }
     let Ok((executable, hash)) = open_and_hash(&host_view) else {
         report(&format!("pilot_run_{}", req.alias), "absent");
         if req.report_output_limit.is_some() {
@@ -1343,6 +1412,7 @@ mod tests {
         );
 
         let request = RunRequest {
+            closure_members: None,
             path: path.to_string_lossy().into_owned(),
             alias: "verified-fd".into(),
             args: Vec::new(),

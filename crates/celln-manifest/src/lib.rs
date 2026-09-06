@@ -373,3 +373,4 @@ mod tests {
         assert!(!m.verify_standin());
     }
 }
+pub mod closure;

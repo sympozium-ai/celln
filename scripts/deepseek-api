@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Never trace credentials, including when invoked with bash -x.
+set +x
 
 MODEL="deepseek-chat"
 PROMPT=""
@@ -21,22 +23,13 @@ if [[ -z "$PROMPT" ]]; then
   exit 1
 fi
 
-ESCAPED=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$PROMPT")
+PAYLOAD=$(jq -nc --arg model "$MODEL" --arg prompt "$PROMPT" \
+  '{model:$model,messages:[{role:"user",content:$prompt}],stream:false,temperature:0.7,max_tokens:4096}')
 
-PAYLOAD=$(cat <<EOF
-{
-  "model": "$MODEL",
-  "messages": [{"role": "user", "content": $ESCAPED}],
-  "stream": false,
-  "temperature": 0.7,
-  "max_tokens": 4096
-}
-EOF
-)
-
-RESPONSE=$(curl -s -w '\n%{http_code}' https://api.deepseek.com/v1/chat/completions \
+RESPONSE=$(printf 'Authorization: Bearer %s\n' "$DEEPSEEK_API_KEY" | \
+  env -u DEEPSEEK_API_KEY curl -sS -w '\n%{http_code}' https://api.deepseek.com/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+  -H @- \
   -d "$PAYLOAD" \
   --connect-timeout 10 \
   --max-time 120)
@@ -45,13 +38,8 @@ HTTP_CODE=$(echo "$RESPONSE" | tail -1)
 BODY=$(echo "$RESPONSE" | sed '$d')
 
 if [[ "$HTTP_CODE" != "200" ]]; then
-  echo "deepseek API returned HTTP $HTTP_CODE: $BODY" >&2
+  echo "deepseek API returned HTTP $HTTP_CODE" >&2
   exit 1
 fi
 
-python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-content = data['choices'][0]['message']['content']
-sys.stdout.write(content)
-" <<< "$BODY"
+jq -er '.choices[0].message.content | select(type == "string" and length > 0)' <<< "$BODY"

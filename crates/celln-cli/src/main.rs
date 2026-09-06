@@ -2,6 +2,7 @@
 
 mod agent;
 mod cells;
+mod closure_cli;
 mod config;
 mod dispatch;
 #[cfg(all(test, target_os = "linux"))]
@@ -61,6 +62,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Authenticate and admit precomposed dependency closures.
+    #[command(subcommand)]
+    Closure(ClosureCmd),
     /// Report what this machine can run.
     Doctor,
 
@@ -313,6 +317,19 @@ enum NodeCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum ClosureCmd {
+    /// Offline signing; write the signed descriptor to stdout (never the key).
+    Sign {
+        descriptor: PathBuf,
+        /// Exactly 32 raw private seed bytes; keep this file offline.
+        #[arg(long)]
+        key_file: PathBuf,
+    },
+    /// Verify against host policy and store a signed descriptor by content hash.
+    Admit { descriptor: PathBuf },
+}
+
 #[derive(clap::Args, Clone)]
 struct NodeProbeArgs {
     #[arg(long, env = "CELLN_NODE_NAME", default_value = "local")]
@@ -364,6 +381,11 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::Closure(ClosureCmd::Sign {
+            descriptor,
+            key_file,
+        }) => closure_cli::sign(descriptor, key_file),
+        Cmd::Closure(ClosureCmd::Admit { descriptor }) => closure_cli::admit(descriptor, &root),
         Cmd::Doctor => Ok(doctor(o)),
         Cmd::Dispatcher {
             listen,

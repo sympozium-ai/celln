@@ -146,6 +146,17 @@ pub fn shared_tool_count() -> usize {
     tool_registry().lock().map(|r| r.len()).unwrap_or(0)
 }
 
+/// Release cache-only page sets. Active VMMs and parked motes own strong
+/// handles, so neither execution nor a future fork can lose its backing memory.
+pub fn collect_unused_tools() -> usize {
+    let Ok(mut registry) = tool_registry().lock() else {
+        return 0;
+    };
+    let before = registry.len();
+    registry.retain(|_, map| Arc::strong_count(map) > 1);
+    before - registry.len()
+}
+
 /// The shared page-set for `hash`, creating it from `bytes` if this is the
 /// first cell to loan it. Other backends (e.g. [`super::boot::LinuxCell`]) go
 /// through here so every cell in the process maps one physical copy.
@@ -176,6 +187,7 @@ pub fn shared_tool_bytes(hash: &Hash, off: usize, len: usize) -> Option<Vec<u8>>
 
 /// A handle to one shared tool page-set: a host mapping every cell that loans
 /// this hash points at.
+#[derive(Clone)]
 pub struct SharedTool(Arc<HostMap>);
 
 impl SharedTool {
