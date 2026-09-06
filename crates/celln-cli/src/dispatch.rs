@@ -121,15 +121,30 @@ pub fn resolve_bundle(
 /// receipt is an immutable, versioned wire contract with no room for a human
 /// diagnostic, and a caller polling a pending execution needs a place to put
 /// one. The dispatcher builds the receipt from this after the cell is gone.
+#[derive(Debug)]
 pub struct LaunchOutcome {
     pub cell_id: String,
-    /// `Some` only when the program ran and produced bounded output.
+    /// Bounded workload bytes, including failure output; may be empty.
     pub output: Option<Vec<u8>>,
-    /// `Some` when pilot refused to run the resolved program (a safe policy
-    /// verdict, not a crash) or the cell produced no output block at all.
-    /// The receipt still reports `Failed` either way — this is the reason.
+    /// A refusal, nonzero exit, signal, timeout or protocol failure reason.
     pub denial: Option<String>,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub timed_out: bool,
 }
+
+impl LaunchOutcome {
+    pub fn succeeded(&self) -> bool {
+        self.exit_code == Some(0)
+            && self.signal.is_none()
+            && !self.timed_out
+            && self.denial.is_none()
+    }
+}
+
+#[path = "dispatch_outcome.rs"]
+mod outcome;
+use outcome::parse_report;
 
 /// What `forge` produced: the exact bytes now admitted into this node's
 /// attested manifest, and their content hash.
@@ -253,13 +268,17 @@ pub fn launch(
     // Admit the bytes into this node's own attested manifest so pilot's exec
     // gate has an entry to check against. For a declared request the hash
     // this computes lines up with the request's own declared hash by
-    // construction — `resolve_bundle` already proved that. For a forged
-    // request, `forge` already admitted it upstream of this call; admitting
-    // again here is a harmless no-op (assay dedups by hash).
+    // construction — `resolve_bundle` already proved that. Preserve any entry
+    // already admitted upstream, including its authorship and proof.
     let mut assayer = assay::Assayer::open(assay_root).map_err(|error| error.to_string())?;
-    assayer
-        .admit_verified(alias, program_bytes, false)
-        .map_err(|error| error.to_string())?;
+    // Forge has already recorded agent authorship and its proof. Re-admitting
+    // those bytes as Host would silently promote them back to the tool lane.
+    // Existing provenance is authoritative; a requested lane can only narrow it.
+    if assayer.manifest().get(&Hash::of(program_bytes)).is_none() {
+        assayer
+            .admit_verified(alias, program_bytes, false)
+            .map_err(|error| error.to_string())?;
+    }
 
     let work = crate::agent::tempdir().map_err(|error| error.to_string())?;
     let work = work.path();
@@ -280,6 +299,8 @@ pub fn launch(
             "args": args,
             "agent_authored_input": matches!(request.execution.lane, RequestedLane::Agent),
             "allow_fetch": !request.capabilities.egress.is_empty(),
+            "report_output_limit": request.capabilities.output_bytes,
+            "force_agent_lane": matches!(request.execution.lane, RequestedLane::Agent),
         }))
         .map_err(|error| error.to_string())?,
     )
@@ -377,45 +398,17 @@ pub fn launch(
         }
     };
 
-    let mut denied: Option<String> = None;
-    for line in report.console.lines() {
-        let Some(rest) = line.strip_prefix("CELLN:pilot_run_") else {
-            continue;
-        };
-        let Some((key, value)) = rest.split_once('=') else {
-            continue;
-        };
-        if !key.ends_with("_exit") && (value.starts_with("refused") || value == "denied") {
-            denied = Some(value.to_owned());
-        }
+    let outcome = parse_report(
+        &report.console,
+        cell_id,
+        request.capabilities.output_bytes as usize,
+        report.end == warden::vmm::boot::BootEnd::TimedOut,
+        report.end == warden::vmm::boot::BootEnd::Shutdown,
+    );
+    if let Some(record) = record.as_mut() {
+        crate::cells::finish(state_root, record, "kvm", outcome.denial.clone());
     }
-
-    let output_cap = request.capabilities.output_bytes.max(1) as usize;
-    match crate::agent::slice_output(&report.console) {
-        Some(text) => {
-            if let Some(record) = record.as_mut() {
-                crate::cells::finish(state_root, record, "kvm", None);
-            }
-            let mut bytes = text.into_bytes();
-            bytes.truncate(output_cap);
-            Ok(LaunchOutcome {
-                cell_id,
-                output: Some(bytes),
-                denial: None,
-            })
-        }
-        None => {
-            let reason = denied.unwrap_or_else(|| "program produced no output".to_owned());
-            if let Some(record) = record.as_mut() {
-                crate::cells::refuse(state_root, record, "kvm", reason.clone());
-            }
-            Ok(LaunchOutcome {
-                cell_id,
-                output: None,
-                denial: Some(reason),
-            })
-        }
-    }
+    Ok(outcome)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -567,6 +560,144 @@ mod tests {
         // 1969-12-31T23:59:59Z — one second before the epoch, the standard
         // edge case for a from-scratch civil calendar conversion.
         assert_eq!(rfc3339_utc(-1), "1969-12-31T23:59:59Z");
+    }
+
+    #[test]
+    #[ignore = "requires KVM, guest kernel, musl and built pilot binaries"]
+    #[cfg(target_os = "linux")]
+    fn dispatch_outcomes_on_real_kvm() {
+        use std::process::Command;
+        if !Path::new("/dev/kvm").exists() || warden::vmm::boot::BootConfig::host_kernel().is_none()
+        {
+            eprintln!("skipping: KVM or readable matching kernel unavailable");
+            return;
+        }
+        let work = tempdir().unwrap();
+        let Some(runtime) = test_runtime_root(work.path()) else {
+            return;
+        };
+        let binary = work.path().join("outcome-probe");
+        let source =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dispatch_outcome_probe.rs");
+        assert!(Command::new("rustc")
+            .args([
+                "--edition=2021",
+                "-O",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "-o"
+            ])
+            .arg(&binary)
+            .arg(source)
+            .status()
+            .unwrap()
+            .success());
+        let bytes = std::fs::read(binary).unwrap();
+        let mut request: ExecutionRequest =
+            serde_json::from_str(include_str!("../../../examples/execution/forge-task.json"))
+                .unwrap();
+        request.capabilities.timeout_ms = 8000;
+        request.capabilities.output_bytes = 1024;
+        request.capabilities.egress.clear();
+        for (mode, code, signal, timeout) in [
+            ("silent", Some(0), None, false),
+            ("failed", Some(7), None, false),
+            ("signal", None, Some(6), false),
+            ("spoof", Some(9), None, false),
+            ("flood", Some(0), None, false),
+            ("timeout", None, None, true),
+        ] {
+            let state = work.path().join(format!("state-{mode}"));
+            std::fs::create_dir_all(&state).unwrap();
+            let outcome = launch(
+                &request,
+                "/agent/program",
+                &[mode.into()],
+                &bytes,
+                &runtime,
+                &work.path().join("assay"),
+                &state,
+            )
+            .unwrap();
+            assert_eq!(outcome.exit_code, code, "{mode}: {outcome:?}");
+            assert_eq!(outcome.signal, signal, "{mode}: {outcome:?}");
+            assert_eq!(outcome.timed_out, timeout, "{mode}: {outcome:?}");
+            assert_eq!(outcome.succeeded(), code == Some(0), "{mode}: {outcome:?}");
+            let output = outcome.output.as_deref().unwrap();
+            match mode {
+                "silent" => assert!(output.is_empty()),
+                "failed" => assert_eq!(output, b"failure detail\n"),
+                "spoof" => assert!(String::from_utf8_lossy(output).contains("CELLN:dispatch=")),
+                "flood" => assert_eq!(output.len(), 1024),
+                "timeout" => assert!(String::from_utf8_lossy(output).contains("before timeout")),
+                _ => {}
+            }
+            assert_eq!(
+                crate::cells::live_count(&state),
+                0,
+                "{mode} left a live record"
+            );
+            eprintln!("PASS: {mode}, exit={code:?}, signal={signal:?}, timeout={timeout}");
+        }
+        let outcome = launch(
+            &request,
+            "/invalid",
+            &[],
+            b"not executable",
+            &runtime,
+            &work.path().join("assay"),
+            &work.path().join("invalid-state"),
+        )
+        .unwrap();
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.denial.as_deref(), Some("pilot exec setup failed"));
+        // An agent artifact stays in the agent lane even if a later caller
+        // asks for the tool lane. The spoof probe also attempts unshare.
+        let assay_root = work.path().join("assay");
+        let mut assayer = assay::Assayer::open(&assay_root).unwrap();
+        let hash = assayer
+            .admit_verified_authored(
+                "/agent/program",
+                &bytes,
+                false,
+                celln_manifest::Author::Agent,
+            )
+            .unwrap();
+        request.execution.lane = RequestedLane::Tool;
+        let outcome = launch(
+            &request,
+            "/agent/program",
+            &["spoof".into()],
+            &bytes,
+            &runtime,
+            &assay_root,
+            &work.path().join("preserved-author"),
+        )
+        .unwrap();
+        assert_eq!(outcome.exit_code, Some(9), "{outcome:?}");
+        assert_eq!(
+            assay::Assayer::open(&assay_root)
+                .unwrap()
+                .manifest()
+                .get(&hash)
+                .unwrap()
+                .author,
+            celln_manifest::Author::Agent
+        );
+        assayer.revoke(&hash);
+        let outcome = launch(
+            &request,
+            "/agent/program",
+            &["silent".into()],
+            &bytes,
+            &runtime,
+            &assay_root,
+            &work.path().join("refused-state"),
+        )
+        .unwrap();
+        assert!(!outcome.succeeded());
+        assert_eq!(outcome.denial.as_deref(), Some("pilot refused execution"));
+        eprintln!("PASS: exec setup failure, retained agent lane, and pilot refusal");
     }
 
     /// A runtime root the launch pipeline can build an initrd/toolfs from,

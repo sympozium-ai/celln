@@ -21,13 +21,14 @@
 //! it never inherits tool-lane authority.
 
 use celln_manifest::{resolve_exec_lane, Hash, Input, Lane, Manifest};
+use pilot::dispatch_report::{emit, Frame};
 use pilot::{exec, ExecOutcome};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 
@@ -544,6 +545,12 @@ struct RunRequest {
     /// host-authored; guest arguments cannot cause pilot to retain raw-I/O.
     #[serde(default)]
     allow_fetch: bool,
+    /// Opt-in framed dispatcher output; absent keeps the legacy console ABI.
+    #[serde(default)]
+    report_output_limit: Option<usize>,
+    /// The host may request less authority than the manifest permits.
+    #[serde(default)]
+    force_agent_lane: bool,
 }
 
 /// One cell can be asked to run several tools. Each invocation is hash-checked
@@ -566,6 +573,10 @@ struct RunFile {
     agent_authored_input: bool,
     #[serde(default)]
     allow_fetch: bool,
+    #[serde(default)]
+    report_output_limit: Option<usize>,
+    #[serde(default)]
+    force_agent_lane: bool,
 }
 
 impl RunFile {
@@ -590,6 +601,8 @@ impl RunFile {
                 agent_authored_input: self.agent_authored_input,
                 root: self.root,
                 allow_fetch: self.allow_fetch,
+                report_output_limit: self.report_output_limit,
+                force_agent_lane: self.force_agent_lane,
             }],
             _ => Vec::new(),
         }
@@ -647,6 +660,21 @@ fn child_error(error_fd: i32, error: io::Error) -> ! {
 /// description even if its old name is replaced between verification and
 /// execution.
 fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<ExitStatus> {
+    let capture = if req.report_output_limit.is_some() {
+        let mut fds = [-1; 2];
+        if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Some(unsafe {
+            (
+                File::from_raw_fd(fds[0]),
+                File::from_raw_fd(fds[1]),
+                File::open("/dev/null")?,
+            )
+        })
+    } else {
+        None
+    };
     let argv_strings: Vec<CString> = std::iter::once(req.path.as_str())
         .chain(req.args.iter().map(String::as_str))
         .map(|arg| CString::new(arg).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput)))
@@ -706,6 +734,21 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
     }
     if pid == 0 {
         unsafe { libc::close(error_pipe[0]) };
+        if let Some((reader, writer, null)) = &capture {
+            // Do not leave stdin as an O_RDWR console handle either: a
+            // workload could write control-looking bytes through fd 0.
+            unsafe {
+                if libc::dup2(null.as_raw_fd(), 0) < 0
+                    || libc::dup2(writer.as_raw_fd(), 1) < 0
+                    || libc::dup2(writer.as_raw_fd(), 2) < 0
+                {
+                    child_error(error_pipe[1], io::Error::last_os_error());
+                }
+                libc::close(reader.as_raw_fd());
+                libc::close(writer.as_raw_fd());
+                libc::close(null.as_raw_fd());
+            }
+        }
         if let Some(root) = &req.root {
             if let Err(error) = enter_root(root) {
                 child_error(error_pipe[1], error);
@@ -752,6 +795,35 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
     unsafe { libc::close(error_pipe[0]) };
     let read_error = (read < 0).then(io::Error::last_os_error);
 
+    let mut capture_error = None;
+    if let Some((mut reader, writer, null)) = capture {
+        drop(writer);
+        drop(null);
+        let mut remaining = req.report_output_limit.unwrap_or(0);
+        let mut chunk = [0; 256];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let count = count.min(remaining);
+                    if count != 0 {
+                        emit(Frame::Output {
+                            bytes: chunk[..count].to_vec(),
+                        });
+                        remaining -= count;
+                    }
+                    // Drain beyond the bound so a verbose workload can still
+                    // terminate and report its real exit status.
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    capture_error = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+
     let mut raw_status = 0;
     loop {
         let waited = unsafe { libc::waitpid(pid, &mut raw_status, 0) };
@@ -764,6 +836,9 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
         }
     }
     if let Some(error) = read_error {
+        return Err(error);
+    }
+    if let Some(error) = capture_error {
         return Err(error);
     }
     if read == errno_bytes.len() as isize {
@@ -782,6 +857,7 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
 
 fn main() {
     report("pilot", "alive");
+    println!("{}", pilot::dispatch_report::PROTOCOL);
 
     let manifest: Manifest = match std::fs::read(MANIFEST) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
@@ -915,6 +991,11 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
     };
     let Ok((executable, hash)) = open_and_hash(&host_view) else {
         report(&format!("pilot_run_{}", req.alias), "absent");
+        if req.report_output_limit.is_some() {
+            emit(Frame::Failed {
+                reason: "executable absent".into(),
+            });
+        }
         return;
     };
 
@@ -928,11 +1009,21 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
     match exec(manifest, &hash, input) {
         ExecOutcome::Denied(e) => {
             report(&format!("pilot_run_{}", req.alias), "denied");
+            if req.report_output_limit.is_some() {
+                emit(Frame::Failed {
+                    reason: "pilot refused execution".into(),
+                });
+            }
             for line in e.to_json().lines() {
                 println!("CELLN:explain {line}");
             }
         }
         ExecOutcome::Run { lane, .. } => {
+            let lane = if req.force_agent_lane {
+                Lane::Data
+            } else {
+                lane
+            };
             report(
                 &format!("pilot_run_{}", req.alias),
                 &format!("permitted:{lane}"),
@@ -944,6 +1035,20 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
             let confine = lane != Lane::Tool;
             let status = exec_open_file(&executable, req, confine);
             println!("CELLN:out-end");
+
+            if req.report_output_limit.is_some() {
+                emit(match &status {
+                    Ok(s) => match s.code() {
+                        Some(code) => Frame::Exit { code },
+                        None => Frame::Signal {
+                            signal: s.signal().unwrap_or(0),
+                        },
+                    },
+                    Err(_) => Frame::Failed {
+                        reason: "pilot exec setup failed".into(),
+                    },
+                });
+            }
 
             match status {
                 Ok(s) => report(
@@ -1013,6 +1118,8 @@ mod tests {
             agent_authored_input: false,
             root: None,
             allow_fetch: false,
+            report_output_limit: None,
+            force_agent_lane: false,
         };
         let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
         assert!(
