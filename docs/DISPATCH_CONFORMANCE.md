@@ -74,6 +74,10 @@ The optional external proof covers the actual Sympozium controller, not just an
 HTTP client substitute. A complete acceptance run requires passing summaries
 for both repositories on the intended clean revisions. Secret leases/live provider
 withdrawal, distributed revocation and multi-node scheduling are not claimed.
-Unsupported closures still refuse; their eventual implementation needs its own
-conformance extension. Contributor PR #25 was superseded by merged #64, with
+The [trusted-closure extension](TRUSTED_CLOSURES.md) now proves signed closure
+delivery, guest member verification and replacement attempts, executable scratch
+mapping denial, DAX revocation, cache collection and static/shared-page
+comparisons. With the external hook enabled, it also runs a signed-closure
+AgentRun through a second isolated Kind cluster. Unsupported closure combinations
+still refuse. Contributor PR #25 was superseded by merged #64, with
 its attribution retained.

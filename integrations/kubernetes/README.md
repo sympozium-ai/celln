@@ -76,6 +76,9 @@ The real-KVM fixture starts a separate loopback dispatcher process and submits
 silent success, nonzero exit, output spoofing, broker refusal, all workspace modes,
 immutable input delivery, denied input/closure authority, cancellation, deadline,
 capacity pressure and locally revoked-tool cases through the public HTTP API.
+The signed-closure fixture additionally validates a real dynamic workload,
+authenticated closure audit provenance, hostile library replacement attempts,
+and shared-page retention/collection; see the [closure acceptance record](../../docs/TRUSTED_CLOSURES_ACCEPTANCE.md).
 It validates receipts/audits and reservation release and retains requests/results,
 audit records, binary identity and revision/dirty/environment metadata under
 `target/dispatch-conformance/`. These fixtures do not call a model or mutate

@@ -1,0 +1,497 @@
+{
+  "controllerClosure": {
+    "suite": "sympozium-real-controller-celln-kvm",
+    "status": "passed",
+    "revision": "88a432cad3c976978b4d62f01244ea8b66b6471e",
+    "dirty": false,
+    "controllerSha256": "bb4d81a6d73fa479da7abd76e34a5281f0cef7a8a811981606f13806ffe0f345",
+    "kind": "kind v0.33.0 go1.26.7 linux/amd64",
+    "cases": [
+      "signed-closure"
+    ]
+  },
+  "nativeClosure": {
+    "additionalToolAllocations": 0,
+    "closure": "blake3:8191400ef2cca2af8cd8505339f826778d543b47f2a9f4b5b71a404f59c9b2f5",
+    "daxRevocationKilledGuest": true,
+    "dependencyRevocationDenied": true,
+    "executableScratchMappingDenied": true,
+    "liveForkSurvivedEviction": true,
+    "materialisationMicros": 1003526,
+    "memberMismatchDenied": true,
+    "members": {
+      "/bin/program": {
+        "dependencies": [
+          "/lib64/ld-linux-x86-64.so.2",
+          "/lib64/libc.so.6",
+          "/lib64/libgcc_s.so.1"
+        ],
+        "hash": "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183"
+      },
+      "/lib64/ld-linux-x86-64.so.2": {
+        "dependencies": [],
+        "hash": "blake3:d7f70e3bf8867805e3456d4a21623ad07c345076a6c64439cb4e731a3e121541"
+      },
+      "/lib64/libc.so.6": {
+        "dependencies": [],
+        "hash": "blake3:63a42174f3226dcbf4416f186c34da12643ca46da4dbb7a30d8f5f35cdb9a5e4"
+      },
+      "/lib64/libgcc_s.so.1": {
+        "dependencies": [],
+        "hash": "blake3:b69e42521beba7959bea17be219b67241af5c0724e4b17107416247821cd4fc2"
+      }
+    },
+    "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "publisherWithdrawalDenied": true,
+    "replacementDenied": true,
+    "runs": [
+      {
+        "elapsedMicros": 3034136,
+        "workspace": "none"
+      },
+      {
+        "elapsedMicros": 138634,
+        "workspace": "read-only"
+      },
+      {
+        "elapsedMicros": 166697,
+        "workspace": "read-write"
+      }
+    ],
+    "sharedToolBytes": 33554432,
+    "signatureForgeryDenied": true,
+    "simultaneousForks": 8,
+    "status": "passed",
+    "symlinkMemberDenied": true,
+    "toolfsBytes": 33554432,
+    "unusedPagesCollected": true,
+    "warmPreparations": 1
+  },
+  "staticComparison": {
+    "additionalToolAllocations": 0,
+    "coldExecutionMicros": 3143424,
+    "materialisationMicros": 867996,
+    "programBytes": 4895192,
+    "sharedToolBytes": 33554432,
+    "simultaneousForks": 8,
+    "warmExecutionMicros": [
+      181809,
+      127255
+    ]
+  },
+  "dispatcher": {
+    "binary": "blake3:c1a42f13157c66177458b14e2f4eb1d122ea1d65efc2177b371d59f39ce1dc9f",
+    "cases": [
+      "silent",
+      "failed",
+      "spoof",
+      "fetch-grant",
+      "workspace-none",
+      "workspace-read-only",
+      "workspace-read-write",
+      "immutable-input",
+      "unapproved-input",
+      "unsupported-closure",
+      "cancel",
+      "deadline",
+      "aggregate-memory",
+      "revoked-tool",
+      "audit",
+      "authentication"
+    ],
+    "dirty": false,
+    "host": "Linux 7.1.12-200.fc44.x86_64 x86_64 GNU/Linux",
+    "revision": "b43133f8550e581b37c6caf6679a0e89c96483dc",
+    "status": "passed",
+    "suite": "dispatcher-real-kvm"
+  },
+  "noKvm": {
+    "suite": "celln-kubernetes-conformance",
+    "status": "passed",
+    "revision": "b43133f8550e581b37c6caf6679a0e89c96483dc",
+    "dirty": false,
+    "provider": "podman",
+    "kind": "kind v0.33.0 go1.26.7 linux/amd64",
+    "runtime": "podman version 5.8.4",
+    "binarySha256": "486028b1fb2e6eb8eae03a9c16b1d3df2f19459ea30029d4bcf23b38136a832e",
+    "cases": [
+      {
+        "name": "unsupported_hardware",
+        "status": "passed",
+        "evidence": {
+          "verdict": "refused",
+          "request_id": "celln-conformance-unsupported",
+          "node": {
+            "node_name": "celln-conformance-1262092-control-plane",
+            "kvm": false,
+            "cpu_virtualization": true,
+            "guest_kernel": false,
+            "mote_store": false,
+            "tool_store": false,
+            "live_cells": 0,
+            "max_cells": 1,
+            "memory_bytes": 268435456,
+            "egress_slots": 0
+          },
+          "reason": "unsupported"
+        }
+      }
+    ]
+  },
+  "controllerStatic": {
+    "suite": "sympozium-real-controller-celln-kvm",
+    "status": "passed",
+    "revision": "88a432cad3c976978b4d62f01244ea8b66b6471e",
+    "dirty": false,
+    "controllerSha256": "bb4d81a6d73fa479da7abd76e34a5281f0cef7a8a811981606f13806ffe0f345",
+    "kind": "kind v0.33.0 go1.26.7 linux/amd64",
+    "cases": [
+      "silent",
+      "failed",
+      "spoof",
+      "inputs",
+      "workspace-none",
+      "workspace-read-only",
+      "workspace-read-write",
+      "unsupported",
+      "unapproved-input",
+      "timeout",
+      "delete-cancel"
+    ]
+  },
+  "closureRequest": {
+    "apiVersion": "sympozium.ai/v1alpha1",
+    "kind": "AgentRun",
+    "metadata": {
+      "name": "proof-closure",
+      "namespace": "celln-proof"
+    },
+    "spec": {
+      "agentRef": "reference",
+      "agentId": "reference",
+      "sessionKey": "proof-closure",
+      "model": {
+        "provider": "openai",
+        "model": "unused",
+        "authSecretRef": ""
+      },
+      "backend": "celln",
+      "timeout": "15s",
+      "celln": {
+        "mote": {
+          "hash": "blake3:88b7a73e8bfd17a5cb37edc96bcf35e7b9e66d550bb5697a4d036c08370f2ba6"
+        },
+        "tools": [
+          {
+            "alias": "/closure/program",
+            "closure": {
+              "hash": "blake3:8191400ef2cca2af8cd8505339f826778d543b47f2a9f4b5b71a404f59c9b2f5"
+            },
+            "hash": "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183"
+          }
+        ],
+        "inputs": [],
+        "invocation": {
+          "alias": "/closure/program",
+          "args": [
+            "read-write",
+            "/lib64/libc.so.6"
+          ]
+        },
+        "lane": "tool",
+        "capabilities": {
+          "egress": [],
+          "memoryBytes": 268435456,
+          "outputBytes": 4096,
+          "workspace": "read-write"
+        }
+      }
+    }
+  },
+  "closureStatus": {
+    "apiVersion": "sympozium.ai/v1alpha1",
+    "kind": "AgentRun",
+    "metadata": {
+      "creationTimestamp": "2026-09-06T14:49:55Z",
+      "generation": 2,
+      "name": "proof-closure",
+      "namespace": "celln-proof",
+      "resourceVersion": "604",
+      "uid": "f45a910d-94f4-4859-a4c5-1280daa37083"
+    },
+    "spec": {
+      "agentId": "reference",
+      "agentRef": "reference",
+      "backend": "celln",
+      "celln": {
+        "capabilities": {
+          "memoryBytes": 268435456,
+          "outputBytes": 4096,
+          "workspace": "read-write"
+        },
+        "invocation": {
+          "alias": "/closure/program",
+          "args": [
+            "read-write",
+            "/lib64/libc.so.6"
+          ]
+        },
+        "lane": "tool",
+        "mote": {
+          "hash": "blake3:88b7a73e8bfd17a5cb37edc96bcf35e7b9e66d550bb5697a4d036c08370f2ba6"
+        },
+        "tools": [
+          {
+            "alias": "/closure/program",
+            "closure": {
+              "hash": "blake3:8191400ef2cca2af8cd8505339f826778d543b47f2a9f4b5b71a404f59c9b2f5"
+            },
+            "hash": "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183"
+          }
+        ]
+      },
+      "cleanup": "delete",
+      "mode": "task",
+      "model": {
+        "authSecretRef": "",
+        "model": "unused",
+        "provider": "openai"
+      },
+      "sessionKey": "proof-closure",
+      "timeout": "15s",
+      "useContext": true
+    },
+    "status": {
+      "cellnActionId": "proof-closure-f45a910d-94f4-4859-a4c5-1280daa37083",
+      "cellnReceipt": "{\"apiVersion\":\"celln.dev/v1alpha1\",\"requestId\":\"proof-closure-f45a910d-94f4-4859-a4c5-1280daa37083\",\"phase\":\"succeeded\",\"node\":\"local\",\"startedAt\":\"2026-09-06T14:49:56Z\",\"completedAt\":\"2026-09-06T14:49:57Z\",\"cellId\":\"1952614afda6\",\"resolved\":{\"mote\":\"blake3:88b7a73e8bfd17a5cb37edc96bcf35e7b9e66d550bb5697a4d036c08370f2ba6\",\"tools\":[\"blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183\"],\"inputs\":[]},\"output\":{\"hash\":\"blake3:f457eeebec2390b8ad82b49caf47bd99d914cc7cb95ee6da7108aa167f3226cb\",\"mediaType\":\"application/octet-stream\",\"bytes\":53}}",
+      "cellnRequest": "{\"apiVersion\":\"celln.dev/v1alpha1\",\"id\":\"proof-closure-f45a910d-94f4-4859-a4c5-1280daa37083\",\"workload\":{\"id\":\"reference\",\"caller\":\"sympozium:celln-proof/proof-closure\"},\"mote\":{\"hash\":\"blake3:88b7a73e8bfd17a5cb37edc96bcf35e7b9e66d550bb5697a4d036c08370f2ba6\"},\"tools\":[{\"alias\":\"/closure/program\",\"hash\":\"blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183\",\"closure\":{\"hash\":\"blake3:8191400ef2cca2af8cd8505339f826778d543b47f2a9f4b5b71a404f59c9b2f5\"}}],\"invocation\":{\"alias\":\"/closure/program\",\"args\":[\"read-write\",\"/lib64/libc.so.6\"]},\"capabilities\":{\"workspace\":\"read-write\",\"timeoutMs\":15000,\"memoryBytes\":268435456,\"outputBytes\":4096},\"execution\":{\"lane\":\"tool\",\"requireHardwareIsolation\":true}}",
+      "completedAt": "2026-09-06T14:50:01Z",
+      "phase": "Succeeded",
+      "result": "closure:read-write:dynamic-loader:replacement-denied\n",
+      "startedAt": "2026-09-06T14:49:56Z"
+    }
+  },
+  "closureAudit": {
+    "apiVersion": "celln.dev/audit-v1alpha1",
+    "requestId": "proof-closure-f45a910d-94f4-4859-a4c5-1280daa37083",
+    "caller": "sympozium:celln-proof/proof-closure",
+    "workload": "reference",
+    "node": "local",
+    "events": [
+      {
+        "sequence": 0,
+        "at": "2026-09-06T14:49:56Z",
+        "phase": "Admitting"
+      },
+      {
+        "sequence": 1,
+        "at": "2026-09-06T14:49:56Z",
+        "phase": "Resolving"
+      },
+      {
+        "sequence": 2,
+        "at": "2026-09-06T14:49:56Z",
+        "phase": "CellRunning"
+      },
+      {
+        "sequence": 3,
+        "at": "2026-09-06T14:49:57Z",
+        "phase": "Dissolved"
+      },
+      {
+        "sequence": 4,
+        "at": "2026-09-06T14:49:57Z",
+        "phase": "Succeeded"
+      }
+    ],
+    "execution": {
+      "cellId": "1952614afda6",
+      "substrate": {
+        "closure": {
+          "hash": "blake3:8191400ef2cca2af8cd8505339f826778d543b47f2a9f4b5b71a404f59c9b2f5",
+          "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+          "toolfs": "blake3:75a38b72b4e08d34e6955c934f473b32dc635c60c14e003764af748751559f84",
+          "members": {
+            "/bin/program": {
+              "hash": "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183",
+              "dependencies": [
+                "/lib64/ld-linux-x86-64.so.2",
+                "/lib64/libc.so.6",
+                "/lib64/libgcc_s.so.1"
+              ]
+            },
+            "/lib64/ld-linux-x86-64.so.2": {
+              "hash": "blake3:d7f70e3bf8867805e3456d4a21623ad07c345076a6c64439cb4e731a3e121541",
+              "dependencies": []
+            },
+            "/lib64/libc.so.6": {
+              "hash": "blake3:63a42174f3226dcbf4416f186c34da12643ca46da4dbb7a30d8f5f35cdb9a5e4",
+              "dependencies": []
+            },
+            "/lib64/libgcc_s.so.1": {
+              "hash": "blake3:b69e42521beba7959bea17be219b67241af5c0724e4b17107416247821cd4fc2",
+              "dependencies": []
+            }
+          }
+        },
+        "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+        "initrd": "blake3:1a61fe3fe04aae89d85313cc7aa11c3f515d02f90c7da4f8aa2bb04dd5a67e50",
+        "toolfs": "blake3:75a38b72b4e08d34e6955c934f473b32dc635c60c14e003764af748751559f84",
+        "invocation": "blake3:a55d5423fa5c712461184dfbcdf99ea991897b20a3c54dcacae037f50b9122e9"
+      },
+      "pilot": {
+        "tool": "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183",
+        "lane": "tool",
+        "workspace": "read-write",
+        "fetch": false
+      },
+      "granted": {
+        "workspace": "read-write",
+        "egress": [],
+        "timeoutMs": 15000,
+        "memoryBytes": 268435456,
+        "outputBytes": 4096
+      },
+      "inputs": [],
+      "broker": {
+        "requests": 0,
+        "denied": 0,
+        "responseBytes": 0
+      },
+      "exitCode": 0,
+      "signal": null,
+      "watchdogStopped": false
+    },
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha1",
+      "requestId": "proof-closure-f45a910d-94f4-4859-a4c5-1280daa37083",
+      "phase": "succeeded",
+      "node": "local",
+      "cellId": "1952614afda6",
+      "resolved": {
+        "mote": "blake3:88b7a73e8bfd17a5cb37edc96bcf35e7b9e66d550bb5697a4d036c08370f2ba6",
+        "tools": [
+          "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183"
+        ],
+        "inputs": []
+      },
+      "output": {
+        "hash": "blake3:f457eeebec2390b8ad82b49caf47bd99d914cc7cb95ee6da7108aa167f3226cb",
+        "mediaType": "application/octet-stream",
+        "bytes": 53
+      },
+      "startedAt": "2026-09-06T14:49:56Z",
+      "completedAt": "2026-09-06T14:49:57Z"
+    }
+  },
+  "closureFinalNode": {
+    "availability_is_advisory": true,
+    "configured_egress_slots": 1,
+    "configured_memory_bytes": 268435456,
+    "node": {
+      "cpu_virtualization": true,
+      "egress_slots": 1,
+      "guest_kernel": true,
+      "kvm": true,
+      "live_cells": 0,
+      "max_cells": 1,
+      "memory_bytes": 268435456,
+      "mote_store": true,
+      "node_name": "local",
+      "tool_store": true
+    },
+    "preflight_only": true,
+    "warm": [
+      {
+        "guest_memory_bytes": 268435456,
+        "mote": "blake3:88b7a73e8bfd17a5cb37edc96bcf35e7b9e66d550bb5697a4d036c08370f2ba6",
+        "tools": [
+          "blake3:80355b837b672bb5b195ab8363a31b57e021c775c91f84fe8e590e141123f183"
+        ]
+      }
+    ]
+  },
+  "closureJobs": {
+    "apiVersion": "v1",
+    "items": [],
+    "kind": "List",
+    "metadata": {
+      "resourceVersion": ""
+    }
+  },
+  "staticJobs": {
+    "apiVersion": "v1",
+    "items": [],
+    "kind": "List",
+    "metadata": {
+      "resourceVersion": ""
+    }
+  },
+  "staticFinalNode": {
+    "availability_is_advisory": true,
+    "configured_egress_slots": 1,
+    "configured_memory_bytes": 268435456,
+    "node": {
+      "cpu_virtualization": true,
+      "egress_slots": 1,
+      "guest_kernel": true,
+      "kvm": true,
+      "live_cells": 0,
+      "max_cells": 2,
+      "memory_bytes": 268435456,
+      "mote_store": true,
+      "node_name": "conformance",
+      "tool_store": true
+    },
+    "preflight_only": true,
+    "warm": [
+      {
+        "guest_memory_bytes": 268435456,
+        "mote": "blake3:3f95aa61c30ee4fd711c8b00dad9732858a9262494a8d94b9789dfb8eb9745e8",
+        "tools": [
+          "blake3:db3b85eb607fa4e37628b60027ca7202d7b280bba7750315553682514474d0b6"
+        ]
+      }
+    ]
+  },
+  "apiVersion": "celln.dev/closure-acceptance-v1",
+  "date": "2026-09-06",
+  "mergedPrs": {
+    "celln": 68,
+    "sympozium": 425
+  },
+  "regressions": {
+    "makeCi": "passed",
+    "cellnVerify": "passed: hostile ring-0 writes refused and live revocation",
+    "fetchProof": "passed: real HTTPS through pilot broker",
+    "cliAcceptance": "passed: setup, agent lane, output and dissolved history",
+    "sympoziumRaceTests": "passed",
+    "closureCli": "passed: offline signing and policy admission",
+    "deepseek": {
+      "status": "passed",
+      "backend": "deepseek",
+      "model": "deepseek-chat",
+      "realApi": true,
+      "program": "blake3:5c220f88f87a5c5271beacb9d62f8d9667c754ec7d213dca23f8872607c1b60d",
+      "lane": "agent",
+      "reproduced": true,
+      "dissolved": true,
+      "elapsedSeconds": 4.33,
+      "credentialSource": "user-authorized shell configuration; value omitted"
+    },
+    "fullKvmSuite": {
+      "status": "passed",
+      "tests": 3
+    }
+  },
+  "binaries": {
+    "cellnDebugSha256": "a4e8d00102c448b1d3b8777593eebbf56e86a5c8ec9674b6954bf67663ab3b82",
+    "pilotMuslSha256": "72f9ef373d2b42758b4909f01c24e7d07ee00909cc7d459d03bcde4a5b0fd568"
+  },
+  "cleanup": {
+    "noRunningPodmanContainers": true,
+    "userKubeContext": "kubernetes-admin@kubernetes",
+    "existingWorktreesPreserved": true,
+    "temporaryPublisherPrivateSeedRemoved": true
+  }
+}
