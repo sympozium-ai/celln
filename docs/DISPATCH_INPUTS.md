@@ -61,8 +61,9 @@ separate stage-2 guarantee. Legacy non-dispatch CLI/image behavior is unchanged.
 
 ## Compatibility and evidence
 
-Dispatcher host and pilot must use protocol 4 together. Repin/rebuild declared
-bundles when upgrading from protocol 3; older reports cannot establish success.
+Dispatcher host and pilot must use protocol 5 together. Repin/rebuild declared
+bundles when upgrading from protocol 3/4; older reports cannot establish success.
+Protocol 5 adds an acknowledged execution grant; see [audit](DISPATCH_AUDIT.md).
 The invocation transport cap grows from 64 KiB to 1 MiB to accommodate JSON
 encoding of bounded input bytes; the raw input budget remains 64 KiB.
 

@@ -6,6 +6,8 @@
 //! real sealed cell, and returns a validated `ExecutionReceipt`.
 
 use crate::NodeProbeArgs;
+#[path = "dispatch_audit.rs"]
+mod audit;
 use anyhow::{bail, Context, Result};
 use celln_spec::{
     ExecutionOutput, ExecutionPhase, ExecutionReceipt, ExecutionRequest, ResolvedExecution,
@@ -93,6 +95,7 @@ struct Entry<T> {
     value: T,
     control: Option<celln_control::Control>,
     reservation: Option<Reservation>,
+    audit: Option<audit::Audit>,
 }
 
 impl<T> Entry<T> {
@@ -102,6 +105,7 @@ impl<T> Entry<T> {
             value,
             control: None,
             reservation: None,
+            audit: None,
         }
     }
 }
@@ -506,6 +510,7 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
             let mut entry = Entry::new(record.clone());
             entry.control = Some(control.clone());
             entry.reservation = Some(Reservation::for_request(&request));
+            entry.audit = Some(audit::Audit::new(&request, &state.probe.node_name));
             registry.insert(request.id.clone(), entry);
             drop(registry);
             let worker_executions = Arc::clone(&state.executions);
@@ -559,11 +564,29 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 }
                 entry.value.phase = "Cancelling".into();
                 entry.value.reason = Some("cancellation requested; cleanup pending".into());
+                if let Some(audit) = &mut entry.audit {
+                    audit.phase("Cancelling");
+                }
                 // Reservation remains live until the worker has unwound all
                 // subprocesses, VM handles and preparation state.
                 reply(&mut stream, 202, &entry.value)
             } else {
                 reply(&mut stream, 200, &entry.value)
+            }
+        }
+        ("GET", path) if path.starts_with("/v1/executions/") && path.ends_with("/audit") => {
+            let id = &path["/v1/executions/".len()..path.len() - "/audit".len()];
+            let registry = state
+                .executions
+                .lock()
+                .expect("dispatcher registry not poisoned");
+            match registry.get(id).and_then(|entry| entry.audit.as_ref()) {
+                Some(audit) => reply(&mut stream, 200, audit),
+                None => reply(
+                    &mut stream,
+                    404,
+                    &serde_json::json!({"error": "unknown execution audit"}),
+                ),
             }
         }
         ("GET", path) if path.starts_with("/v1/executions/") => {
@@ -609,6 +632,10 @@ fn update_execution(executions: &Executions, id: &str, f: impl FnOnce(&mut Execu
         }
         if !execution_is_active(&entry.value) {
             entry.at = Instant::now();
+        }
+        if let Some(audit) = &mut entry.audit {
+            audit.phase(&entry.value.phase);
+            audit.receipt = entry.value.receipt.clone();
         }
     }
 }
@@ -670,7 +697,7 @@ fn run_execution(
             Err(error) => return fail_execution(&executions, &request.id, error.to_string()),
         };
         update_execution(&executions, &request.id, |record| {
-            record.phase = "Running".into()
+            record.phase = "Preparing".into()
         });
         let outcome = match crate::dispatch::launch(
             &request,
@@ -701,6 +728,14 @@ fn run_execution(
         (Some(resolved.bundle_hash), resolved.program_hash, outcome)
     };
 
+    if let Some(audit) = executions
+        .lock()
+        .expect("dispatcher registry not poisoned")
+        .get_mut(&request.id)
+        .and_then(|entry| entry.audit.as_mut())
+    {
+        audit.executed(&request, &outcome);
+    }
     let output = outcome.output.as_deref().filter(|bytes| !bytes.is_empty());
     let (phase, stored_output, reason) = collect_result(&outcome, &root.join("outputs"));
     let receipt = ExecutionReceipt {
@@ -951,6 +986,64 @@ mod tests {
     }
 
     #[test]
+    fn audit_endpoint_is_authenticated_and_preserves_the_strict_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(dir.path());
+        let request = request_with_egress(&[]);
+        let mut entry = Entry::new(empty_record(&request.id));
+        entry.audit = Some(audit::Audit::new(&request, "test"));
+        state
+            .executions
+            .lock()
+            .unwrap()
+            .insert(request.id.clone(), entry);
+        let mut receipt: ExecutionReceipt = serde_json::from_str(include_str!(
+            "../../../examples/execution/succeeded-receipt.json"
+        ))
+        .unwrap();
+        receipt.request_id = request.id.clone();
+        update_execution(&state.executions, &request.id, |record| {
+            record.phase = "Succeeded".into();
+            record.receipt = Some(receipt.clone());
+        });
+        for (suffix, token, status) in [
+            ("/audit", "wrong", 401),
+            ("/audit", state.token.as_str(), 200),
+            ("", state.token.as_str(), 200),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            write!(
+                client,
+                "GET /v1/executions/{}{suffix} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n",
+                request.id
+            )
+            .unwrap();
+            handle(server, &state).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with(&format!("HTTP/1.1 {status}")));
+            if status == 200 {
+                let body: serde_json::Value =
+                    serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+                let decoded: ExecutionReceipt =
+                    serde_json::from_value(body["receipt"].clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(decoded).unwrap(),
+                    serde_json::to_value(&receipt).unwrap()
+                );
+                if suffix == "/audit" {
+                    assert_eq!(body["apiVersion"], "celln.dev/audit-v1alpha1");
+                    assert_eq!(body["events"][1]["phase"], "Succeeded");
+                } else {
+                    assert!(body.get("events").is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cancellation_is_authenticated_idempotent_and_reserves_until_cleanup() {
         let work = tempfile::tempdir().unwrap();
         let state = lifecycle_state(work.path());
@@ -1100,6 +1193,10 @@ mod tests {
     fn receipt_phase_tracks_exit_and_output_storage_independently() {
         let work = tempfile::tempdir().unwrap();
         let mut outcome = crate::dispatch::LaunchOutcome {
+            execution: None,
+            substrate: None,
+            broker: Default::default(),
+            lifecycle: Vec::new(),
             input_hashes: Vec::new(),
             cell_id: "cell".into(),
             output: Some(vec![]),
@@ -1255,6 +1352,7 @@ mod tests {
                 },
                 control: None,
                 reservation: None,
+                audit: None,
             },
         );
         registry.insert("fresh".into(), Entry::new(empty_record("fresh")));
@@ -1265,6 +1363,7 @@ mod tests {
                 value: empty_record("old-active"),
                 control: None,
                 reservation: None,
+                audit: None,
             },
         );
 

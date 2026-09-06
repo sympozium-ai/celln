@@ -5,6 +5,7 @@ unsafe extern "C" {
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn fork() -> i32;
     fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+    fn syscall(number: i64, ...) -> i64;
 }
 
 fn main() {
@@ -45,6 +46,10 @@ fn main() {
         }
         Some("substrate") => print!("{}", std::fs::read_to_string("/celln/work/substrate-marker").unwrap()),
         Some("warm") => {
+            // x86_64 SYS_syslog, SYSLOG_ACTION_CONSOLE_ON. The workload
+            // cannot restore kernel messages onto pilot's report console.
+            assert_eq!(unsafe { syscall(103, 7i32, 0i32, 0i32) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(1));
             // Try the supervisor-only PIO port after exec: it must fault,
             // proving pilot revoked the I/O bitmap grant before the workload.
             let child = unsafe { fork() };

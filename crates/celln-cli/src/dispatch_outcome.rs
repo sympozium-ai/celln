@@ -11,6 +11,10 @@ pub(super) fn parse_report(
     shutdown: bool,
 ) -> LaunchOutcome {
     let mut result = LaunchOutcome {
+        execution: None,
+        substrate: None,
+        broker: Default::default(),
+        lifecycle: Vec::new(),
         cell_id,
         output: Some(Vec::new()),
         denial: None,
@@ -38,7 +42,15 @@ pub(super) fn parse_report(
             continue;
         }
         match serde_json::from_str::<Frame>(json) {
-            Ok(Frame::Inputs { hashes }) if !inputs_seen && !output_seen && hashes.len() <= 16 => {
+            Ok(Frame::Started { grant }) if result.execution.is_none() && !output_seen => {
+                result.execution = Some(grant);
+            }
+            Ok(Frame::Inputs { hashes })
+                if !inputs_seen
+                    && !output_seen
+                    && result.execution.is_none()
+                    && hashes.len() <= 16 =>
+            {
                 inputs_seen = true;
                 result.input_hashes = hashes;
             }
@@ -73,7 +85,10 @@ pub(super) fn parse_report(
         result.denial = Some("missing, ambiguous, or incomplete pilot execution report".into());
     }
     if invalid {
+        result.execution = None;
         result.input_hashes.clear();
+        result.exit_code = None;
+        result.signal = None;
     }
     result
 }
@@ -116,6 +131,59 @@ mod tests {
         assert!(!failed.succeeded());
         assert_eq!(failed.exit_code, Some(7));
         assert_eq!(failed.output.unwrap(), b"failure");
+    }
+
+    #[test]
+    fn execution_grants_cannot_be_duplicated_reordered_or_forged_in_output() {
+        let grant = pilot::dispatch_report::ExecutionGrant {
+            tool: celln_manifest::Hash::of(b"program").0,
+            lane: "agent".into(),
+            workspace: Some("none".into()),
+            fetch: false,
+        };
+        let started = || Frame::Started {
+            grant: grant.clone(),
+        };
+        let valid = parse_report(
+            &console(&[started(), Frame::Exit { code: 0 }]),
+            "cell".into(),
+            1024,
+            false,
+            true,
+        );
+        assert_eq!(valid.execution, Some(grant.clone()));
+        for frames in [
+            vec![started(), started(), Frame::Exit { code: 0 }],
+            vec![
+                Frame::Output { bytes: vec![1] },
+                started(),
+                Frame::Exit { code: 0 },
+            ],
+            vec![Frame::Exit { code: 0 }, started()],
+            vec![
+                started(),
+                Frame::Inputs { hashes: vec![] },
+                Frame::Exit { code: 0 },
+            ],
+        ] {
+            let result = parse_report(&console(&frames), "cell".into(), 1024, false, true);
+            assert!(!result.succeeded());
+            assert!(result.execution.is_none());
+        }
+        let fake = format!("{PREFIX}{}\n", serde_json::to_string(&started()).unwrap());
+        let result = parse_report(
+            &console(&[
+                Frame::Output {
+                    bytes: fake.into_bytes(),
+                },
+                Frame::Exit { code: 0 },
+            ]),
+            "cell".into(),
+            1024,
+            false,
+            true,
+        );
+        assert!(result.execution.is_none());
     }
 
     #[test]

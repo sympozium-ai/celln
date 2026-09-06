@@ -72,9 +72,10 @@ before parsing or executing. No arguments, requested egress authority or output
 from one cell are snapshotted for another. No executable, module or manifest is
 overlaid. Future receipts should record the invocation digest too.
 
-Use pilot dispatch protocol 4, which enforces `expected_hash`, implements the
+Use pilot dispatch protocol 5, which enforces `expected_hash`, implements the
 warm invocation channel and acknowledges staged immutable inputs. Protocol 4
-also applies explicit workspace confinement to every dispatcher lane. Pinning a bundle
+also applies explicit workspace confinement to every dispatcher lane. Protocol 5
+adds the actual execution-grant acknowledgement described in [audit](DISPATCH_AUDIT.md). Pinning a bundle
 asserts its pilot implements that protocol and its boot code preserves the
 invocation seam. Host and pilot must be upgraded together. Legacy bundle
 descriptors can still be inspected by `resolve-file`, but cannot launch without
