@@ -56,9 +56,11 @@ skipped hardware proofs; the acceptance evidence above comes from real local KVM
 
 ## Deliberate boundaries
 
-The reference program is static: #6's closure implementation is not needed for
-this milestone and closures still refuse. Operator-pinned content is the trust
-root here; no asymmetric publisher-signature guarantee is claimed. Secret leases
+The reference program in this historical record is static. The subsequent
+[trusted-closure milestone](TRUSTED_CLOSURES_ACCEPTANCE.md) adds signed,
+precomposed closure dispatch and its own regression evidence; arbitrary closure
+combinations still refuse. Operator-pinned content is the trust root of this
+static proof; it does not claim asymmetric publisher authentication. Secret leases
 and live provider withdrawal (#7), OpenTelemetry/durable audit transport (#10),
 extended distributed conformance (#12), fleet revocation (#8), persistence (#9)
 and broad comparative benchmarks (#11) remain separate work. Guest-RAM accounting

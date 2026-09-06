@@ -90,8 +90,10 @@ existing cluster or upgraded legacy installer images.
 
 ## Boundaries and next work
 
-The static reference does not require dependency closures; unsupported closures
-still refuse. Secret-provider live withdrawal, distributed revocation, persistent
+The static reference does not require dependency closures. The subsequent
+[trusted-closure acceptance](TRUSTED_CLOSURES_ACCEPTANCE.md) adds signed,
+precomposed closure AgentRuns; unsupported combinations still refuse.
+Secret-provider live withdrawal, distributed revocation, persistent
 execution, multi-node scheduling and broader tracing remain outside this
 one-node milestone. See the acceptance record for the issue ownership.
 
