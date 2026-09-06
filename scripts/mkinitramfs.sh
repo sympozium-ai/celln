@@ -40,6 +40,9 @@ gcc -static -nostdlib -nostartfiles -ffreestanding -fno-stack-protector \
 # cannot be created without privilege, which is why init mounts devtmpfs.
 mkdir -p "$work/dev" "$work/tools" "$work/modules" "$work/proc" "$work/sys" \
          "$work/celln/tools" "$work/celln/work"
+if [ "${CELLN_WARM_DISPATCH:-0}" = 1 ]; then
+  printf 'pio-v1\n' > "$work/celln/dispatch-warm"
+fi
 # One mount point per additional sealed namespace; see mount_extra_tools().
 for i in 1 2 3 4 5 6 7; do mkdir -p "$work/tools$i"; done
 

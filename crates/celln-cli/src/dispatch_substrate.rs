@@ -95,8 +95,8 @@ pub(crate) fn launch_declared(
     authorize(request, state_root)?;
     let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
     let local_agent = local_agent_constraint(&resolved.program_hash, state_root)?;
-    if resolved.format.as_deref() != Some("celln.static-v1") {
-        return Err("unsupported declared mote format; expected celln.static-v1".into());
+    if resolved.format.as_deref() != Some("celln.warm-static-v1") {
+        return Err("unsupported declared mote format; expected celln.warm-static-v1".into());
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -111,7 +111,7 @@ pub(crate) fn launch_declared(
         let kernel = work.path().join("kernel");
         let initrd = work.path().join("initrd");
         if !resolved.initrd_bytes.starts_with(b"070701") {
-            return Err("unsupported initrd: celln.static-v1 requires uncompressed newc".into());
+            return Err("unsupported initrd: warm static format requires uncompressed newc".into());
         }
         let run = serde_json::to_vec(&serde_json::json!({
             "path": "/tools/program", "alias": invocation.alias,
@@ -122,23 +122,28 @@ pub(crate) fn launch_declared(
             "report_output_limit": request.capabilities.output_bytes,
         }))
         .map_err(|e| e.to_string())?;
-        let mut initrd_bytes = resolved.initrd_bytes.clone();
-        while initrd_bytes.len() % 4 != 0 {
-            initrd_bytes.push(0);
-        }
-        initrd_bytes.extend(file_archive("celln/run.json", &run));
-        std::fs::write(&kernel, &resolved.kernel_bytes).map_err(|e| e.to_string())?;
-        std::fs::write(&initrd, &initrd_bytes).map_err(|e| e.to_string())?;
-        let cfg = warden::vmm::boot::BootConfig::new(kernel)
-            .with_initrd(initrd)
-            .with_pmem(resolved.toolfs_bytes.len());
-        let outcome = super::run_prepared(
-            request,
-            &invocation.alias,
-            cfg,
-            resolved.toolfs_bytes.clone(),
-            state_root,
-        )?;
+        let key = format!(
+            "{}:{}",
+            resolved.bundle_hash, request.capabilities.memory_bytes
+        );
+        let mut cell = super::warm::fork(key, || {
+            // The shared template contains no request args, credentials or
+            // egress grant. Only enable the post-fork invocation channel.
+            let mut initrd_bytes = resolved.initrd_bytes.clone();
+            while initrd_bytes.len() % 4 != 0 {
+                initrd_bytes.push(0);
+            }
+            initrd_bytes.extend(file_archive("celln/dispatch-warm", b"pio-v1\n"));
+            std::fs::write(&kernel, &resolved.kernel_bytes).map_err(|e| e.to_string())?;
+            std::fs::write(&initrd, &initrd_bytes).map_err(|e| e.to_string())?;
+            let mut cfg = warden::vmm::boot::BootConfig::new(kernel)
+                .with_initrd(initrd)
+                .with_pmem(resolved.toolfs_bytes.len());
+            cfg.mem_size = request.capabilities.memory_bytes as usize;
+            Ok((cfg, resolved.toolfs_bytes.clone()))
+        })?;
+        cell.set_invocation(&run).map_err(|e| e.to_string())?;
+        let outcome = super::run_cell(request, &invocation.alias, cell, state_root)?;
         Ok((outcome, resolved))
     }
 }
@@ -227,7 +232,7 @@ mod tests {
         let bundle = store
             .put(
                 &serde_json::to_vec(&json!({
-                    "apiVersion": "celln.dev/v1alpha1", "format": "celln.static-v1",
+                    "apiVersion": "celln.dev/v1alpha1", "format": "celln.warm-static-v1",
                     "kernel": kernel.0, "initrd": initrd.0, "toolfs": toolfs.0,
                     "invocation": { "alias": "/tools/program", "toolHash": program.0 }
                 }))
@@ -277,6 +282,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[ignore = "needs real KVM, readable kernel, static pilot, and initramfs toolchain"]
     fn declared_substrate_on_real_kvm() {
+        let _proof = super::super::warm::PROOF_LOCK.lock().unwrap();
         use std::process::Command;
         if !Path::new("/dev/kvm").exists() {
             eprintln!("SKIP: no KVM");
@@ -364,13 +370,16 @@ mod tests {
         let initrd_hash = store.put(&base).unwrap();
         let toolfs_hash = store.put(&std::fs::read(toolfs).unwrap()).unwrap();
         let mut bundle = json!({
-            "apiVersion": "celln.dev/v1alpha1", "format": "celln.static-v1",
+            "apiVersion": "celln.dev/v1alpha1", "format": "celln.warm-static-v1",
             "kernel": kernel_hash.0, "initrd": initrd_hash.0, "toolfs": toolfs_hash.0,
             "invocation": { "alias": "/tools/program", "toolHash": program_hash.0 }
         });
         let bundle_hash = store.put(&serde_json::to_vec(&bundle).unwrap()).unwrap();
         let state = work.path().join("state");
         pin(&state, &bundle_hash);
+        let preparations =
+            super::super::warm::PREPARATIONS.load(std::sync::atomic::Ordering::SeqCst);
+        let cold_started = std::time::Instant::now();
         let (outcome, resolved) = launch_declared(
             &request(&bundle_hash, &program_hash),
             &motes,
@@ -386,6 +395,23 @@ mod tests {
         assert_eq!(resolved.initrd_hash, initrd_hash.0);
         assert_eq!(crate::cells::live_count(&state), 0);
         eprintln!("PASS: declared initrd marker and exact sealed tool execute");
+        let cold_elapsed = cold_started.elapsed();
+        for arg in ["first", "second"] {
+            let mut req = request(&bundle_hash, &program_hash);
+            req.invocation.as_mut().unwrap().args = vec!["warm".into(), arg.into()];
+            let started = std::time::Instant::now();
+            let (outcome, _) = launch_declared(&req, &motes, &tools, &state).unwrap();
+            assert!(outcome.succeeded(), "{outcome:?}");
+            assert_eq!(
+                outcome.output.as_deref(),
+                Some(format!("warm:{arg}\n").as_bytes())
+            );
+            assert_eq!(
+                super::super::warm::PREPARATIONS.load(std::sync::atomic::Ordering::SeqCst),
+                preparations + 1
+            );
+            eprintln!("PASS: warm {arg}, private scratch, distinct args; cold={cold_elapsed:?}, warm={:?}", started.elapsed());
+        }
 
         // A pinned bundle whose selected tool hash differs from the sealed
         // file must refuse in pilot, even if that actual file is manifest-admitted.

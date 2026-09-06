@@ -13,6 +13,9 @@ use std::path::Path;
 #[path = "dispatch_substrate.rs"]
 mod substrate;
 pub(crate) use substrate::launch_declared;
+#[cfg(target_os = "linux")]
+#[path = "dispatch_warm.rs"]
+mod warm;
 
 /// The serializable substrate descriptor stored under `ExecutionRequest.mote`.
 /// Each referenced object is resolved by content hash before the VMM is given
@@ -370,7 +373,8 @@ pub fn launch(
                 "CELLN_MANIFEST",
                 assay_root.join("manifest.json").display().to_string(),
             ),
-            ("CELLN_RUN_JSON", run_json.display().to_string()),
+            ("CELLN_WARM_DISPATCH", "1".into()),
+            ("CELLN_RUN_JSON", String::new()),
             (
                 "CELLN_PILOT_DIR",
                 runtime_root.join("pilot").display().to_string(),
@@ -385,7 +389,8 @@ pub fn launch(
     let cfg = BootConfig::new(&kernel)
         .with_pmem(payload.len())
         .with_initrd(&initrd);
-    run_prepared(request, alias, cfg, payload, state_root)
+    let invocation = std::fs::read(run_json).map_err(|e| e.to_string())?;
+    run_prepared(request, alias, cfg, payload, &invocation, state_root)
 }
 
 #[cfg(target_os = "linux")]
@@ -394,13 +399,38 @@ fn run_prepared(
     alias: &str,
     mut cfg: warden::vmm::boot::BootConfig,
     payload: Vec<u8>,
+    invocation: &[u8],
     state_root: &Path,
 ) -> Result<LaunchOutcome, String> {
-    use warden::vmm::boot::LinuxCell;
     if request.capabilities.memory_bytes > 0 {
         cfg.mem_size = request.capabilities.memory_bytes as usize;
     }
     cfg.timeout = std::time::Duration::from_millis(request.capabilities.timeout_ms.max(1));
+
+    let kernel_hash = Hash::of(&std::fs::read(&cfg.kernel).map_err(|e| e.to_string())?);
+    let initrd_hash = Hash::of(
+        &std::fs::read(cfg.initrd.as_ref().ok_or("initrd required")?).map_err(|e| e.to_string())?,
+    );
+    let key = format!(
+        "forge:{kernel_hash}:{initrd_hash}:{}:{}",
+        Hash::of(&payload),
+        cfg.mem_size
+    );
+    let mut cell = warm::fork(key, || Ok((cfg, payload)))?;
+    cell.set_invocation(invocation).map_err(|e| e.to_string())?;
+    run_cell(request, alias, cell, state_root)
+}
+
+#[cfg(target_os = "linux")]
+fn run_cell(
+    request: &ExecutionRequest,
+    alias: &str,
+    mut cell: warden::vmm::boot::LinuxCell,
+    state_root: &Path,
+) -> Result<LaunchOutcome, String> {
+    cell.set_timeout(std::time::Duration::from_millis(
+        request.capabilities.timeout_ms.max(1),
+    ));
 
     let name = truncate_for_description(&request.workload.id);
     let mut record = crate::cells::begin(
@@ -415,15 +445,6 @@ fn run_prepared(
         .map(|record| record.id.clone())
         .unwrap_or_default();
 
-    let mut cell = match LinuxCell::boot(cfg) {
-        Ok(cell) => cell,
-        Err(error) => {
-            if let Some(record) = record.as_mut() {
-                crate::cells::finish(state_root, record, "kvm", Some(error.to_string()));
-            }
-            return Err(error.to_string());
-        }
-    };
     if !request.capabilities.egress.is_empty() {
         let hosts: Vec<String> = request
             .capabilities
@@ -434,14 +455,6 @@ fn run_prepared(
             .collect();
         cell.enable_http_fetch(warden::egress::HttpPolicy::new(hosts));
     }
-    let toolfs_hash = Hash::of(&payload);
-    if let Err(error) = cell.seal_tool(&toolfs_hash, &payload) {
-        if let Some(record) = record.as_mut() {
-            crate::cells::finish(state_root, record, "kvm", Some(error.to_string()));
-        }
-        return Err(error.to_string());
-    }
-
     let report = match cell.run() {
         Ok(report) => report,
         Err(error) => {
@@ -684,6 +697,7 @@ mod tests {
     #[ignore = "requires KVM, guest kernel, musl and built pilot binaries"]
     #[cfg(target_os = "linux")]
     fn dispatch_outcomes_on_real_kvm() {
+        let _proof = super::warm::PROOF_LOCK.lock().unwrap();
         use std::process::Command;
         if !Path::new("/dev/kvm").exists() || warden::vmm::boot::BootConfig::host_kernel().is_none()
         {

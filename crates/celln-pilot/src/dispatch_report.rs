@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const PREFIX: &str = "CELLN:dispatch=";
-pub const PROTOCOL: &str = "CELLN:dispatch-protocol=2";
+pub const PROTOCOL: &str = "CELLN:dispatch-protocol=3";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
