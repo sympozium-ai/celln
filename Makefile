@@ -76,6 +76,12 @@ fetch-proof: ## prove a real cell fetches HTTPS through pilot (needs /dev/kvm + 
 	@$(CARGO) run --quiet -p celln-pilot --features kvm --bin celln-fetch-proof -- $(FETCH_URL)
 
 .PHONY: acceptance-kvm
+.PHONY: conformance-kvm
+conformance-kvm: ## production dispatcher HTTP and real guest conformance
+	@$(CARGO) build -p celln-cli
+	@$(CARGO) build --release --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch
+	@$(CARGO) test -p celln-cli on_real_kvm -- --ignored --nocapture
+
 acceptance-kvm: ## prove setup, agent cell, output, and ps on real KVM
 	@$(CARGO) build --quiet -p celln-cli
 	@./scripts/acceptance-agent-cell.sh

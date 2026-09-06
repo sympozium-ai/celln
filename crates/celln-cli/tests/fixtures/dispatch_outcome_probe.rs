@@ -19,6 +19,11 @@ fn main() {
             println!("fetch-grant:host-refused-http");
         }
         Some("workspace") => {
+            // Actual guest attempts, in both tool and agent lanes: ordinary
+            // socket creation and mount-namespace privilege must be denied.
+            assert_eq!(unsafe { syscall(41, 2i32, 1i32, 0i32) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(1));
+            assert_eq!(unsafe { unshare(0x0002_0000) }, -1);
             let access = std::env::args().nth(2).unwrap();
             let marker = "/celln/work/substrate-marker";
             assert_eq!(std::fs::read(marker).is_ok(), access != "none");

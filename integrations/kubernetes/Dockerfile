@@ -9,4 +9,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/celln/runtime /var/lib/celln
+COPY celln /usr/local/bin/celln
 ENTRYPOINT ["/usr/local/bin/celln"]

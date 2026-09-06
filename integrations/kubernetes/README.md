@@ -23,12 +23,18 @@ the host root filesystem, or an ambient network capability into a cell.
 ./integrations/kubernetes/prove.sh
 ```
 
-The script builds and loads the local image, deploys the DaemonSet, and writes the
-real node report and admission verdict below `target/kubernetes-proof/`. Results
-depend on that cluster's KVM, kernel and configured stores. An unavailable KVM
-boundary is `unsupported`, never silently downgraded. Prepare and authorize the
-requested artifacts before dispatching declared workloads; do not create
-placeholder files to imitate object availability.
+The script builds and loads the local image into a new disposable Kind cluster,
+runs an unprivileged Job without `/dev/kvm`, and requires exit 5 plus a structured
+`unsupported` refusal. It never deploys into your current Kubernetes context:
+kubeconfig is isolated and an existing cluster name is refused. Evidence is kept
+in a unique `target/kubernetes-proof/run.*` directory; the owned cluster is removed
+on exit unless `KEEP_CLUSTER=1` is explicitly set. This refreshes the useful
+unsupported-hardware harness originally contributed in PR #25.
+
+Docker or Podman can provide the containers. `KIND_EXPERIMENTAL_PROVIDER=podman`
+selects Podman; see the [Kind rootless requirements](https://kind.sigs.k8s.io/docs/user/rootless/).
+`CELLN_KIND_BIN` selects a project-local Kind executable. Missing tools/runtime
+fail explicitly; this proof never modifies host cgroup or kernel settings.
 
 The command emits JSON only. `verdict: accepted` means the node admitted the intent;
 it does not claim the request's workload was run. An accepted node now also requires
@@ -36,7 +42,7 @@ a readable loader-compatible guest kernel with matching modules. This remains
 preflight, not a proof that a particular guest boots. The versioned terminal result contract is
 [`examples/execution/succeeded-receipt.json`](../../examples/execution/succeeded-receipt.json);
 it binds a request, node, cell, resolved authority, and optional output to immutable
-BLAKE3 references. `celln dispatch serve` now executes requests and returns terminal
+BLAKE3 references. `celln dispatcher` now executes requests and returns terminal
 results through its authenticated execution endpoints. Declared requests fork an
 operator-pinned warm mote; forge requests build their program before preparing and
 forking a mote. Fresh external Sympozium integration acceptance remains tracked in #2.
@@ -58,10 +64,26 @@ terminal receipt, preserving existing strict receipt consumers.
 
 ## Exercise actual Celln cells on the KVM host
 
-The Kind proof is intentionally a preflight because its node lacks real Celln
-stores. The companion harness exercises the execution path the node will dispatch
-once provisioned: model-authored code is forged twice, sealed, and run in a real
-cell; bounded web tasks use the guest-only `/pilot-fetch` ABI.
+The Kind proof is intentionally an unsupported-hardware preflight. For actual
+production dispatcher HTTP → worker → KVM → receipt/audit conformance, run:
+
+```sh
+make conformance-kvm
+```
+
+The real-KVM fixture starts a separate loopback dispatcher process and submits
+silent success, nonzero exit, output spoofing, broker refusal, all workspace modes,
+immutable input delivery, denied input/closure authority, cancellation, deadline,
+capacity pressure and locally revoked-tool cases through the public HTTP API.
+It validates receipts/audits and reservation release and retains requests/results,
+audit records, binary identity and revision/dirty/environment metadata under
+`target/dispatch-conformance/`. These fixtures do not call a model or mutate
+operator state. Hardware prerequisites may skip; a skipped run is not evidence
+that isolation passed. The broader kernel sealing/hostile-guest proofs remain
+in `celln verify` and the warden suite.
+
+The companion benchmark harness exercises model-authored tasks: code is forged
+twice, sealed and run in a real cell; bounded web tasks use `/pilot-fetch`.
 
 ```sh
 ./scripts/benchmark-kubernetes-agents.sh --runs 10 --parallel 2

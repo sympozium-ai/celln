@@ -73,9 +73,14 @@ jobs:
           cargo test -p celln-warden --features kvm
           cargo run -p celln-cli -- verify --no-json
           make acceptance-kvm
-          cargo build --release --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch
-          cargo test -p celln-cli dispatch_outcomes_on_real_kvm -- --ignored --nocapture
-          cargo test -p celln-cli declared_substrate_on_real_kvm -- --ignored --nocapture
+          make conformance-kvm
+      - name: retain dispatcher conformance evidence
+        if: always() && steps.kvm.outputs.have == 'yes'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dispatcher-conformance
+          path: target/dispatch-conformance/
+          if-no-files-found: warn
       - name: no /dev/kvm on this runner
         if: steps.kvm.outputs.have == 'no'
         run: |
