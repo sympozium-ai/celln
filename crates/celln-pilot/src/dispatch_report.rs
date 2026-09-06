@@ -3,11 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 pub const PREFIX: &str = "CELLN:dispatch=";
-pub const PROTOCOL: &str = "CELLN:dispatch-protocol=3";
+pub const PROTOCOL: &str = "CELLN:dispatch-protocol=4";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Frame {
+    Inputs { hashes: Vec<String> },
     Output { bytes: Vec<u8> },
     Exit { code: i32 },
     Signal { signal: i32 },

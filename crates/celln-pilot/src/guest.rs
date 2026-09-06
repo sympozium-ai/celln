@@ -66,6 +66,7 @@ const LANDLOCK_ACCESS_FS_MAKE_FIFO: u64 = 1 << 10;
 const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
 const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
+const LANDLOCK_ACCESS_FS_TRUNCATE: u64 = 1 << 14;
 
 // Linux capability UAPI. The v3 capset layout has two 32-bit words and is the
 // current ABI even on 64-bit machines.
@@ -142,7 +143,13 @@ fn enter_root(root: &str) -> io::Result<()> {
 /// initramfs scratch dir; inside one it is the tmpfs the caller mounted over
 /// the image's own `/tmp`, because the image itself is read-only by hardware
 /// and nothing in it can be written to.
-fn enter_agent_lane(workspace: &str, exec_path: &str, allow_fetch: bool) -> io::Result<()> {
+fn enter_agent_lane(
+    workspace: &str,
+    exec_path: &str,
+    allow_fetch: bool,
+    access: Option<WorkspaceAccess>,
+    has_inputs: bool,
+) -> io::Result<()> {
     if allow_fetch {
         // CAP_SYS_RAWIO also authorises legacy device-node interfaces that
         // would bypass the ioperm argument filter. Pilot no longer needs them
@@ -162,7 +169,13 @@ fn enter_agent_lane(workspace: &str, exec_path: &str, allow_fetch: bool) -> io::
             return Err(io::Error::last_os_error());
         }
         let rules = LandlockRulesetAttr {
-            handled_access_fs: FS_ALL,
+            // Strict dispatch requires ABI 3; unsupported kernels fail closed.
+            handled_access_fs: FS_ALL
+                | if access.is_some() {
+                    LANDLOCK_ACCESS_FS_TRUNCATE
+                } else {
+                    0
+                },
         };
         let ruleset = libc::syscall(
             LANDLOCK_CREATE_RULESET,
@@ -209,29 +222,61 @@ fn enter_agent_lane(workspace: &str, exec_path: &str, allow_fetch: bool) -> io::
             exec_path,
             LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
         )?;
-        // pilot-fetch uses I/O ports to talk to the host broker, not sockets.
-        // On the stock guest kernel, Landlock only authorises execve from this
-        // initramfs when EXECUTE is granted on its root hierarchy; a rule for
-        // the binary or its directory still returns EACCES. The kernel also
-        // requires READ_FILE for this static execve. The image is immutable;
-        // write access remains limited to the workspace, and egress remains
-        // host-authorised by the broker.
-        // READ_DIR as well as READ_FILE: a real tool resolves its own runtime
-        // by walking directories (python locates `encodings` before it can
-        // start), and without it the interpreter dies before running anything.
-        // It grants no reach a READ_FILE on this hierarchy did not already —
-        // inside a chroot the hierarchy is the one image being lent.
-        add(
-            "/",
-            LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
-        )?;
-        add(workspace, FS_ALL)?;
+        // Static dispatch needs only the verified executable and, if lent,
+        // pilot-fetch. Do not inherit the legacy runtime's root-wide grant:
+        // interpreter/closure support needs its own explicit admission design.
+        if let Some(access) = access {
+            // Child-process libraries open /dev/null for unused standard
+            // streams. This exact sink/source grants no console or host data.
+            add(
+                "/dev/null",
+                LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE,
+            )?;
+            if allow_fetch {
+                add(
+                    "/pilot-fetch",
+                    LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE,
+                )?;
+            }
+            let read = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
+            match access {
+                WorkspaceAccess::None => {}
+                WorkspaceAccess::ReadOnly => add(workspace, read)?,
+                WorkspaceAccess::ReadWrite => add(
+                    workspace,
+                    (FS_ALL | LANDLOCK_ACCESS_FS_TRUNCATE)
+                        & !LANDLOCK_ACCESS_FS_EXECUTE
+                        & !LANDLOCK_ACCESS_FS_MAKE_CHAR
+                        & !LANDLOCK_ACCESS_FS_MAKE_BLOCK
+                        & !LANDLOCK_ACCESS_FS_MAKE_SOCK,
+                )?,
+            }
+        } else {
+            // Legacy closure/CLI requests retain their existing root policy.
+            add(
+                "/",
+                LANDLOCK_ACCESS_FS_EXECUTE
+                    | LANDLOCK_ACCESS_FS_READ_FILE
+                    | LANDLOCK_ACCESS_FS_READ_DIR,
+            )?;
+            add(workspace, FS_ALL)?;
+        }
+        if has_inputs {
+            add(
+                "/celln/inputs",
+                LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
+            )?;
+        }
         if libc::syscall(LANDLOCK_RESTRICT_SELF, ruleset, 0) != 0 {
             return Err(io::Error::last_os_error());
         }
         libc::close(ruleset);
-        let work =
-            CString::new(workspace).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let work = CString::new(if access == Some(WorkspaceAccess::None) {
+            "/"
+        } else {
+            workspace
+        })
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         if libc::chdir(work.as_ptr()) != 0 {
             return Err(io::Error::last_os_error());
         }
@@ -516,6 +561,22 @@ const TOOLS_DIR: &str = "/celln/tools";
 /// else regardless of how it arrived.
 const RUN_REQUEST: &str = "/celln/run.json";
 
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum WorkspaceAccess {
+    None,
+    ReadOnly,
+    ReadWrite,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InputData {
+    name: String,
+    hash: String,
+    data: Vec<u8>,
+}
+
 #[derive(Deserialize)]
 struct RunRequest {
     /// Where the bytes live in the cell — normally on the sealed DAX mount.
@@ -554,6 +615,10 @@ struct RunRequest {
     /// Bind the selected sealed file to the host's declared content identity.
     #[serde(default)]
     expected_hash: Option<String>,
+    #[serde(default)]
+    workspace_access: Option<WorkspaceAccess>,
+    #[serde(default)]
+    inputs: Vec<InputData>,
 }
 
 /// One cell can be asked to run several tools. Each invocation is hash-checked
@@ -582,6 +647,10 @@ struct RunFile {
     force_agent_lane: bool,
     #[serde(default)]
     expected_hash: Option<String>,
+    #[serde(default)]
+    workspace_access: Option<WorkspaceAccess>,
+    #[serde(default)]
+    inputs: Vec<InputData>,
 }
 
 impl RunFile {
@@ -609,6 +678,8 @@ impl RunFile {
                 report_output_limit: self.report_output_limit,
                 force_agent_lane: self.force_agent_lane,
                 expected_hash: self.expected_hash,
+                workspace_access: self.workspace_access,
+                inputs: self.inputs,
             }],
             _ => Vec::new(),
         }
@@ -760,13 +831,19 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
                 child_error(error_pipe[1], error);
             }
         }
-        if confine {
+        if confine || req.workspace_access.is_some() {
             let workspace = if req.root.is_some() {
                 "/tmp"
             } else {
                 WORKSPACE
             };
-            if let Err(error) = enter_agent_lane(workspace, &req.path, req.allow_fetch) {
+            if let Err(error) = enter_agent_lane(
+                workspace,
+                &req.path,
+                req.allow_fetch,
+                req.workspace_access,
+                !req.inputs.is_empty(),
+            ) {
                 child_error(error_pipe[1], error);
             }
         }
@@ -1013,7 +1090,7 @@ fn warm_invocation() -> io::Result<Vec<u8>> {
     }
     let len = u32::from_le_bytes(unsafe { [read_byte(), read_byte(), read_byte(), read_byte()] })
         as usize;
-    let result = if (1..=65536).contains(&len) {
+    let result = if (1..=warden::MAX_INVOCATION_BYTES).contains(&len) {
         Ok((0..len).map(|_| unsafe { read_byte() }).collect())
     } else {
         Err(io::Error::new(
@@ -1028,7 +1105,64 @@ fn warm_invocation() -> io::Result<Vec<u8>> {
     result
 }
 
+fn stage_inputs(req: &RunRequest) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if req.inputs.is_empty() {
+        return Ok(());
+    }
+    let bad = || io::Error::new(io::ErrorKind::InvalidInput, "invalid input delivery");
+    if req.root.is_some()
+        || !matches!(
+            req.workspace_access,
+            Some(WorkspaceAccess::ReadOnly | WorkspaceAccess::ReadWrite)
+        )
+        || req.inputs.len() > 16
+    {
+        return Err(bad());
+    }
+    let mut names = std::collections::BTreeSet::new();
+    let mut total = 0usize;
+    for input in &req.inputs {
+        if input.name.is_empty()
+            || input.name.len() > 64
+            || matches!(input.name.as_str(), "." | "..")
+            || !input.name.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
+            })
+            || !names.insert(&input.name)
+            || Hash::of(&input.data).0 != input.hash
+        {
+            return Err(bad());
+        }
+        total = total.checked_add(input.data.len()).ok_or_else(bad)?;
+        if total > 65536 {
+            return Err(bad());
+        }
+    }
+    std::fs::create_dir("/celln/inputs")?;
+    for input in &req.inputs {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o444)
+            .open(format!("/celln/inputs/{}", input.name))?;
+        file.write_all(&input.data)?;
+    }
+    Ok(())
+}
+
 fn run_one(manifest: &Manifest, req: &RunRequest) {
+    if stage_inputs(req).is_err() {
+        emit(Frame::Failed {
+            reason: "input delivery refused".into(),
+        });
+        return;
+    }
+    if req.report_output_limit.is_some() {
+        emit(Frame::Inputs {
+            hashes: req.inputs.iter().map(|i| i.hash.clone()).collect(),
+        });
+    }
     // Where pilot itself can read the bytes, which is not where the child will
     // exec them from: the child is chroot'ed, so its `/usr/bin/x` is pilot's
     // `/tools/usr/bin/x`. Open once before any chroot, hash that descriptor,
@@ -1183,6 +1317,8 @@ mod tests {
             report_output_limit: None,
             force_agent_lane: false,
             expected_hash: None,
+            workspace_access: None,
+            inputs: Vec::new(),
         };
         let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
         assert!(

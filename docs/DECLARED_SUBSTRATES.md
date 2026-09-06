@@ -66,14 +66,15 @@ Preparation appends a fixed `/celln/dispatch-warm` mode flag to the base initrd,
 boots once with sealed tools and no egress grant, and parks at init's
 `CELLN:mote=parked` boundary before pilot executes. Every execution forks this
 template, including the first. Per-request JSON arrives after the fork through
-PIO port `0x510`: four little-endian length bytes followed by at most 64 KiB of
+PIO port `0x510`: four little-endian length bytes followed by at most 1 MiB of
 data. The stream is host-owned and one-shot. Pilot revokes the I/O bitmap grant
 before parsing or executing. No arguments, requested egress authority or output
 from one cell are snapshotted for another. No executable, module or manifest is
 overlaid. Future receipts should record the invocation digest too.
 
-Use pilot dispatch protocol 3, which enforces `expected_hash` and implements the
-warm invocation channel. Pinning a bundle
+Use pilot dispatch protocol 4, which enforces `expected_hash`, implements the
+warm invocation channel and acknowledges staged immutable inputs. Protocol 4
+also applies explicit workspace confinement to every dispatcher lane. Pinning a bundle
 asserts its pilot implements that protocol and its boot code preserves the
 invocation seam. Host and pilot must be upgraded together. Legacy bundle
 descriptors can still be inspected by `resolve-file`, but cannot launch without

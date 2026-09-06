@@ -10,10 +10,13 @@
 use celln_manifest::Hash;
 use std::fs;
 use std::io;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("object exceeds the {0}-byte input limit")]
+    TooLarge(usize),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("object not found: {0}")]
@@ -87,11 +90,22 @@ impl Store {
 
     /// Fetch bytes by hash, verifying integrity on the way out.
     pub fn get(&self, hash: &Hash) -> Result<Vec<u8>, StoreError> {
+        self.get_bounded(hash, usize::MAX)
+    }
+
+    /// Bound allocation before reading an input, not after trusting its size.
+    pub fn get_bounded(&self, hash: &Hash, limit: usize) -> Result<Vec<u8>, StoreError> {
         let path = self.path_for(hash)?;
         if !path.exists() {
             return Err(StoreError::NotFound(hash.clone()));
         }
-        let bytes = fs::read(&path)?;
+        let mut bytes = Vec::new();
+        fs::File::open(&path)?
+            .take(limit.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > limit {
+            return Err(StoreError::TooLarge(limit));
+        }
         let actual = Hash::of(&bytes);
         if &actual != hash {
             return Err(StoreError::Integrity {
@@ -119,6 +133,25 @@ mod tests {
         let h = store.put(b"print(1+1)").unwrap();
         assert!(store.has(&h));
         assert_eq!(store.get(&h).unwrap(), b"print(1+1)");
+    }
+
+    #[test]
+    fn bounded_reads_accept_exact_size_and_refuse_excess_before_integrity() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let hash = store.put(b"data").unwrap();
+        assert_eq!(store.get_bounded(&hash, 4).unwrap(), b"data");
+        assert!(matches!(
+            store.get_bounded(&hash, 3),
+            Err(StoreError::TooLarge(3))
+        ));
+        fs::write(store.path_for(&hash).unwrap(), [0; 1024]).unwrap();
+        assert!(matches!(
+            store.get_bounded(&hash, 4),
+            Err(StoreError::TooLarge(4))
+        ));
+        let empty = store.put(b"").unwrap();
+        assert!(store.get_bounded(&empty, 0).unwrap().is_empty());
     }
 
     #[test]

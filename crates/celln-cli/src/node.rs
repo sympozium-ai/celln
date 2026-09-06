@@ -180,7 +180,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn unsupported_workspace_is_not_admitted_on_an_eligible_node() {
+    fn bounded_workspace_modes_are_admitted_on_an_eligible_node() {
         let mut request: ExecutionRequest =
             serde_json::from_str(include_str!("../../../examples/execution/forge-task.json"))
                 .unwrap();
@@ -198,13 +198,9 @@ mod tests {
         };
         assert!(matches!(admit(&request, &node), Admission::Accepted { .. }));
         request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadOnly;
-        assert!(matches!(
-            admit(&request, &node),
-            Admission::Refused {
-                reason: RefusalCode::Unsupported,
-                ..
-            }
-        ));
+        assert!(matches!(admit(&request, &node), Admission::Accepted { .. }));
+        request.capabilities.workspace = celln_spec::WorkspaceAccess::ReadWrite;
+        assert!(matches!(admit(&request, &node), Admission::Accepted { .. }));
     }
 
     #[test]

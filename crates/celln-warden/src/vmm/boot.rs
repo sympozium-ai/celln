@@ -1027,7 +1027,10 @@ impl LinuxCell {
     /// Deliver bounded data to pilot after a warm fork. Port 0x510 returns
     /// little-endian u32 length followed by opaque JSON bytes, once only.
     pub fn set_invocation(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
-        if bytes.is_empty() || bytes.len() > 65536 || self.invocation.is_some() {
+        if bytes.is_empty()
+            || bytes.len() > crate::MAX_INVOCATION_BYTES
+            || self.invocation.is_some()
+        {
             return Err(VmmError::Backend(
                 "invalid or repeated invocation delivery".into(),
             ));
@@ -1713,7 +1716,9 @@ mod tests {
         };
         let mut cell = LinuxCell::boot(BootConfig::new(kernel)).unwrap();
         assert!(cell.set_invocation(&[]).is_err());
-        assert!(cell.set_invocation(&vec![0; 65537]).is_err());
+        assert!(cell
+            .set_invocation(&vec![0; crate::MAX_INVOCATION_BYTES + 1])
+            .is_err());
         cell.set_invocation(b"{}").unwrap();
         assert!(cell.set_invocation(b"replacement").is_err());
         assert!(cell.park().is_err());
