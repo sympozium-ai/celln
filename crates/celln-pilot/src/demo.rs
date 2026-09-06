@@ -61,17 +61,16 @@ fn main() -> anyhow::Result<()> {
     // ---- beat 3: cold tool, still fast ----
     beat(
         3,
-        "cold tool, still fast — unseen package served Verified, Forged queued",
+        "cold tool, still honest — unseen package remains Verified",
     );
     let r = assayer.resolve("/usr/lib/leftpad", b"leftpad-upstream-bytes", false)?;
     note(&format!(
-        "resolve leftpad -> {} tier={} warm={} upgrade_queued={}",
-        r.hash, r.tier, r.warm, r.upgrade_queued
+        "resolve leftpad -> {} tier={} warm={}",
+        r.hash, r.tier, r.warm
     ));
     let bytes = assayer.fetch(&r.hash)?;
     cell.map_tool(&r.hash, &bytes)?;
-    assayer.run_one_rebuild();
-    note("background rebuild landed -> future cells get Forged");
+    note("no background upgrade claimed; Forged requires a real reproducible rebuild");
 
     // ---- beat 4: demote on exec ----
     beat(

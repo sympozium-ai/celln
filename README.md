@@ -208,7 +208,7 @@ tracking misses.
 ```sh
 $ celln run agent.toml
 ● sealing cell code-reviewer
-  + /usr/bin/python        tier=verified cold — verified now, forged queued
+  + /usr/bin/python        tier=verified cold — verified now
   ✔ /usr/bin/python permitted in the agent lane
   · cell sealed, 1 tool(s) lent read-only
   ✔ pilot: /usr/bin/python permitted:agent

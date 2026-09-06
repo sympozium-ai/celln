@@ -40,10 +40,25 @@ impl Store {
         Ok(Store { objects })
     }
 
+    /// The hex half of a `blake3:<hex>` hash, checked to be exactly 64 lower-
+    /// or upper-case hex characters.
+    ///
+    /// This check is what stands between a hash and a filesystem path
+    /// (`path_for` joins it under `objects/`): `PathBuf::join` replaces the
+    /// whole path when a joined component is itself absolute, so an
+    /// unvalidated `Hash` such as `blake3:/etc/passwd` would otherwise resolve
+    /// outside the store root entirely. `Hash` is a public newtype any caller
+    /// can construct directly (not only via `Hash::of`), so this validation
+    /// has to live here rather than in every caller.
     fn hex_of(hash: &Hash) -> Result<&str, StoreError> {
-        hash.0
+        let hex = hash
+            .0
             .strip_prefix("blake3:")
-            .ok_or_else(|| StoreError::BadHash(hash.0.clone()))
+            .ok_or_else(|| StoreError::BadHash(hash.0.clone()))?;
+        if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(StoreError::BadHash(hash.0.clone()));
+        }
+        Ok(hex)
     }
 
     fn path_for(&self, hash: &Hash) -> Result<PathBuf, StoreError> {
@@ -132,5 +147,36 @@ mod tests {
         let path = store.path_for(&h).unwrap();
         fs::write(&path, b"trojaned bytes").unwrap();
         assert!(matches!(store.get(&h), Err(StoreError::Integrity { .. })));
+    }
+
+    #[test]
+    fn a_hash_with_a_path_traversal_component_is_rejected_before_touching_disk() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        // `Hash` is a public newtype: nothing stops a caller from building one
+        // outside `Hash::of`, e.g. from untrusted request JSON.
+        let escaping = Hash("blake3:/etc/passwd".to_owned());
+        assert!(matches!(store.get(&escaping), Err(StoreError::BadHash(_))));
+        assert!(!store.has(&escaping));
+    }
+
+    #[test]
+    fn a_hash_with_a_traversal_segment_is_rejected() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let escaping = Hash("blake3:../../../../etc/passwd".to_owned());
+        assert!(matches!(store.get(&escaping), Err(StoreError::BadHash(_))));
+    }
+
+    #[test]
+    fn a_short_or_non_hex_hash_is_rejected() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        assert!(matches!(
+            store.get(&Hash("blake3:deadbeef".to_owned())),
+            Err(StoreError::BadHash(_))
+        ));
+        let not_hex = Hash(format!("blake3:{}", "z".repeat(64)));
+        assert!(matches!(store.get(&not_hex), Err(StoreError::BadHash(_))));
     }
 }
