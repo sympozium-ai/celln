@@ -114,8 +114,8 @@ fn agent_lane_has_no_linux_capabilities() {
     assert!(
         report
             .console
-            .contains("CELLN_CAPABILITY_DROP_OK unshare=EPERM"),
-        "unshare(CLONE_NEWNS), which seccomp allows, was not denied by missing CAP_SYS_ADMIN; \
+            .contains("CELLN_CAPABILITY_DROP_OK sets=empty bounding=empty unshare=EPERM"),
+        "capability sets were not empty or unshare(CLONE_NEWNS) was not denied; \
          console tail:\n{}",
         report.tail(40)
     );
