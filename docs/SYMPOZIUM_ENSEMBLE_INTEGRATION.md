@@ -51,16 +51,68 @@ an agent-to-agent, delegation, or shared-memory participant.
 - A source cell's output is harvested only after it has dissolved. The output reference has no path, tag, or arbitrary URL that the guest can reinterpret as code.
 - Egress remains the Celln pilot ABI: named HTTPS destinations only, brokered by the host. Ensemble shared memory does not add ambient network access.
 
-## What's proven today
+## Current Celln evidence (2026-09-06)
 
-- The Celln contract rejects a mutable ensemble handoff (`inputs[0].hash: latest`) and accepts the immutable `ensemble-handoff` example, in contract validation.
-- A running Celln dispatcher admits a `celln.dev/v1alpha1` `ExecutionRequest` against a node's real, live-probed capacity, resolves the declared mote/tool by content hash from an integrity-checked store, seals the exact resolved bytes into a real KVM cell, and returns a genuine `ExecutionReceipt` — verified end to end on real hardware, including through a deployed Kubernetes Service, not just `kind`.
-- Admission is synchronous and bounded: each accepted, non-terminal execution reserves one of the node's `max_cells` slots before forge or launch work begins. Once all slots are reserved, `POST /v1/executions` refuses immediately with HTTP 503, `reason: "at_capacity"`; it does not queue or overcommit the node.
-- Sympozium's controller dispatches `AgentRun.spec.backend: celln` directly (`internal/controller/agentrun_celln.go`), with the mutual-exclusivity and deadline-safety rules this document's "information-flow rules" require already enforced in code, not just described here.
-- The controller speaks the hash-pinned `celln.dev/v1alpha1` contract. An AgentRun task has no pre-declared, hash-pinned program to name, so it becomes a `forge: {task}` request: the dispatcher asks a model to write it, builds it twice and compares the bytes (the same reproducibility check `celln agent` runs), and admits whatever came back — real bytes, real hash, `author=agent` — before anything is sealed into a cell. The task string itself is never executable authority; the hash computed after compilation is. Verified end to end on real hardware: a real AgentRun, dispatched through Sympozium, produced a real `ExecutionReceipt` with `resolved.tools[]` naming the forged program's actual hash and `resolved.mote: null` (forge mode has no mote bundle to name).
+The implementation stack through [PR #64](https://github.com/sympozium-ai/celln/pull/64),
+revision `ae5562c9804430a4280dee1666f927a55b0ed782`, passed `make ci` and both
+real-KVM dispatcher suites from a clean worktree. These are branch results,
+not a claim that the stack has merged or that an external controller ran it.
 
-## What remains open
+- The production dispatcher was exercised over authenticated HTTP, executing
+  the operator-approved declared kernel/initrd/tool bytes from warm mote forks.
+  The earlier limitation of ignoring the declared kernel is fixed in this stack.
+- Silent success, nonzero failure, forged output markers, guest workspace
+  restrictions, immutable inputs and unsupported authority were tested.
+- Cancellation and end-to-end deadlines stopped execution and released cell,
+  aggregate guest-memory and egress-broker reservations. Guest-memory accounting
+  is not a total host-RSS bound.
+- Receipt/audit correlation records executed substrate identities, actual grants
+  and broker counters. Local tool revocation refuses a warm-cache execution.
+- An isolated Kind Job without KVM returned exit 5 and a structured unsupported
+  refusal. This is refusal evidence, not a successful Kubernetes-to-KVM proof.
 
-Two things, stated once rather than scattered: the guest still boots this host's own kernel rather than the mote bundle's declared one (kernel/initrd hashes are verified to exist, not booted from), and the run-creation UI doesn't yet gate the `celln` backend option on live dispatcher/provider availability, so a misconfigured node surfaces as a failed run rather than an unavailable choice.
+The commands, coverage and evidence format are in
+[`DISPATCH_CONFORMANCE.md`](DISPATCH_CONFORMANCE.md). Clean-revision local
+summaries are under `target/dispatch-conformance/1788692248178884672-1073720/`
+and `target/kubernetes-proof/run.xXZHr6/`; these paths are not hosted artifacts.
+Earlier reported Kubernetes/AgentRun demonstrations are historical only and
+do not establish compatibility with the current authenticated dispatcher.
 
-The run-creation UX also doesn't yet gate the `celln` backend option on live dispatcher/provider availability — it's always offered, and a misconfigured or disabled Celln surfaces as a failed run rather than an unavailable option. Both gaps are tracked, not hidden, and neither blocks using Celln for what it's for today: one bounded, sensitive, or high-risk computation, selected explicitly, per run.
+## External controller gap
+
+Read-only inspection of Sympozium main at
+`fa1bc53a828fae3ec644bdafdc9ed061135c6eb1` found the following in
+[`internal/controller/agentrun_celln.go`](https://github.com/sympozium-ai/sympozium/blob/fa1bc53a828fae3ec644bdafdc9ed061135c6eb1/internal/controller/agentrun_celln.go):
+
+- POST and polling requests carry no bearer token. Direct calls to the current
+  authenticated dispatcher therefore refuse; disabling authentication is not
+  an acceptable integration fix.
+- The request type supports forge only, not a predeclared immutable mote/tool/
+  input request. It cannot express the static pinned reference proof yet.
+- A `Succeeded` record is accepted without validating a complete receipt or
+  correlating its request identity. Only bounded output is persisted as the
+  result; selected receipt fields are logged, not retained as provenance.
+- Its backstop deadline fails the AgentRun locally without calling Celln's
+  cancellation endpoint. That path does not prove remote teardown.
+
+These findings are source inspection, not a fresh external runtime test. The
+controller integration must be repaired and tested before the epic's full-path
+acceptance can pass. No changes to Sympozium or an existing cluster are implied
+by this document.
+
+## Next acceptance run
+
+Use an isolated test environment and record both repository revisions, dirty
+flags, node prerequisites and binary/image identities. Provision the dispatcher
+token through operator configuration, never through task text. Submit one
+operator-pinned static program and bounded immutable input through the actual
+Sympozium controller using the versioned contract; retain the original request,
+AgentRun status, terminal receipt and authenticated audit.
+
+Check silent success and nonzero failure, unsupported authority refusal,
+cancellation and timeout teardown, guest denial attempts, exact identities and
+released reservations. A missing/invalid/mismatched receipt must not become
+success, and refusal must not fall back to a different backend. Repeat on the
+merged stack before closing [epic #2](https://github.com/sympozium-ai/celln/issues/2).
+Live availability gating for the UI and broader agent/ensemble integration
+remain separate from this first hermetic-action proof.
