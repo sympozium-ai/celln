@@ -21,7 +21,6 @@ of the design corpus in `docs/`.
 4. Tool code is unwritable from the guest side (stage-2 sealing).
 5. Authority only shrinks — the ratchet is host-enforced in `warden`.
 6. Compatibility is a feature — every ABI break is a silent latency tax.
-
 ## Working rules
 
 - **Never fake a hardware guarantee.** If a backend can't provide a property,

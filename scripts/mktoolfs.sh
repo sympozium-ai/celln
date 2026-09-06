@@ -32,6 +32,10 @@ command -v mke2fs >/dev/null 2>&1 || { echo "mke2fs not found (e2fsprogs)" >&2; 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/root"
+# Production sealed roots provide /tmp for pilot's per-cell scratch mount. The
+# tiny proof image must exercise that same chrooted path rather than executing
+# across the outer /tools mount.
+mkdir -m 1777 "$work/root/tmp"
 
 # The probe tool. Layout is shared with warden::vmm::boot::probe_tool and with
 # guest/init/init.c; the magic is what makes drift between the three fail loudly

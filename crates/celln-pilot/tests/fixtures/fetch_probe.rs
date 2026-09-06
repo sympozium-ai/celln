@@ -41,6 +41,14 @@ fn main() {
     );
     println!("CELLN_SECCOMP_BYPASSES_DENIED io_uring=EPERM x32_socket=EPERM");
 
+    for device in ["/dev/port", "/dev/mem", "/dev/kmem"] {
+        assert!(
+            std::fs::File::open(device).is_err(),
+            "raw-I/O device remained readable: {device}"
+        );
+    }
+    println!("CELLN_FETCH_RAW_DEVICES_OK inaccessible");
+
     let permissions = Command::new("/pilot-fetch")
         .arg("--prove-ioperm-scope")
         .output()

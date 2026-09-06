@@ -39,6 +39,18 @@ fn grant_broker_ports() -> std::io::Result<()> {
 }
 
 fn prove_ioperm_scope() -> std::io::Result<()> {
+    // The enclosing agent lane retains CAP_SYS_RAWIO only for this ABI, while
+    // seccomp must prevent it from widening the range or raising IOPL.
+    let denied = unsafe { libc::ioperm(FIRST_DENIED_PORT.into(), 1, 1) };
+    if denied != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+        return Err(std::io::Error::other(
+            "seccomp did not reject out-of-range ioperm",
+        ));
+    }
+    let iopl = unsafe { libc::iopl(3) };
+    if iopl != -1 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+        return Err(std::io::Error::other("seccomp did not reject iopl"));
+    }
     grant_broker_ports()?;
 
     // Exercise the actual direction of every operation in the ABI: request
@@ -76,6 +88,7 @@ fn prove_ioperm_scope() -> std::io::Result<()> {
         )));
     }
     println!("CELLN_FETCH_IOPERM_OK ports=0x500-0x502 denied=0x503:SIGSEGV");
+    println!("CELLN_FETCH_CAPABILITY_SCOPE_OK widen=EPERM iopl=EPERM");
     Ok(())
 }
 

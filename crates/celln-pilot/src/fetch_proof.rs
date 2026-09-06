@@ -2,9 +2,9 @@
 //!
 //! Run `cargo run -p celln-pilot --features kvm --bin celln-fetch-proof -- URL` on a
 //! KVM host. A pass means a program running *inside* a real cell invoked the
-//! guest-only `/pilot-fetch` client, proved that its three I/O ports work while
-//! the adjacent port is denied, and received a bounded HTTPS response from the
-//! host broker. It deliberately runs in the agent lane, which is the public
+//! guest-only `/pilot-fetch` client, proved that pilot's three-port broker works
+//! while the adjacent port is denied, and received a bounded HTTPS response
+//! from the host broker. It deliberately runs in the agent lane, which is the public
 //! `celln agent --allow-host` path and the one that must be able to execute the
 //! broker client without receiving authority over other guest code.
 
@@ -65,6 +65,7 @@ fn main() -> Result<()> {
         serde_json::to_vec(&serde_json::json!({
             "path": "/tools/program", "alias": "/probe", "args": [url],
             "agent_authored_input": true,
+            "allow_fetch": true,
         }))?,
     )?;
 
@@ -107,6 +108,12 @@ fn main() -> Result<()> {
         || !report
             .console
             .contains("CELLN_FETCH_IOPERM_OK ports=0x500-0x502 denied=0x503:SIGSEGV")
+        || !report
+            .console
+            .contains("CELLN_FETCH_CAPABILITY_SCOPE_OK widen=EPERM iopl=EPERM")
+        || !report
+            .console
+            .contains("CELLN_FETCH_RAW_DEVICES_OK inaccessible")
         || !report.console.contains("CELLN_FETCH_OK bytes=")
     {
         bail!(
@@ -115,7 +122,7 @@ fn main() -> Result<()> {
         );
     }
     println!(
-        "PASS: a real cell used only pilot-fetch ports 0x500-0x502 and fetched HTTPS through pilot"
+        "PASS: a real cell used only broker ports 0x500-0x502 and fetched HTTPS through pilot"
     );
     Ok(())
 }

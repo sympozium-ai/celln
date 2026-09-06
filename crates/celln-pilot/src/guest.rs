@@ -66,6 +66,32 @@ const LANDLOCK_ACCESS_FS_MAKE_BLOCK: u64 = 1 << 11;
 const LANDLOCK_ACCESS_FS_MAKE_SYM: u64 = 1 << 12;
 const LANDLOCK_ACCESS_FS_REFER: u64 = 1 << 13;
 
+// Linux capability UAPI. The v3 capset layout has two 32-bit words and is the
+// current ABI even on 64-bit machines.
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+const PR_CAP_AMBIENT: libc::c_int = 47;
+const PR_CAP_AMBIENT_CLEAR_ALL: libc::c_ulong = 4;
+const PR_CAP_AMBIENT_RAISE: libc::c_ulong = 2;
+const PR_SET_SECUREBITS: libc::c_int = 28;
+const SECBIT_NOROOT: libc::c_ulong = 1;
+const SECBIT_NOROOT_LOCKED: libc::c_ulong = 2;
+const CAPABILITY_WORDS: usize = 2;
+const CAP_SYS_RAWIO: usize = 17;
+
+#[repr(C)]
+struct CapUserHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CapUserData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
 const FS_ALL: u64 = LANDLOCK_ACCESS_FS_EXECUTE
     | LANDLOCK_ACCESS_FS_WRITE_FILE
     | LANDLOCK_ACCESS_FS_READ_FILE
@@ -115,7 +141,21 @@ fn enter_root(root: &str) -> io::Result<()> {
 /// initramfs scratch dir; inside one it is the tmpfs the caller mounted over
 /// the image's own `/tmp`, because the image itself is read-only by hardware
 /// and nothing in it can be written to.
-fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
+fn enter_agent_lane(workspace: &str, exec_path: &str, allow_fetch: bool) -> io::Result<()> {
+    if allow_fetch {
+        // CAP_SYS_RAWIO also authorises legacy device-node interfaces that
+        // would bypass the ioperm argument filter. Pilot no longer needs them
+        // after init hands off, so remove them before lending the one retained
+        // capability. With CAP_MKNOD absent from every resulting set, the
+        // workload cannot recreate them.
+        for path in ["/dev/port", "/dev/mem", "/dev/kmem"] {
+            match std::fs::remove_file(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
             return Err(io::Error::last_os_error());
@@ -195,7 +235,90 @@ fn enter_agent_lane(workspace: &str, exec_path: &str) -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    install_network_seccomp()
+    install_network_seccomp()?;
+    drop_agent_capabilities(allow_fetch)
+}
+
+/// Remove Linux capabilities from the agent-lane child before it can execute.
+///
+/// With no host-authorised fetch, no capability is retained. Fetch-enabled
+/// invocations retain only `CAP_SYS_RAWIO`, because the established
+/// `pilot-fetch` ABI acquires its three PIO ports after exec. The seccomp
+/// filter independently limits `ioperm` to exactly that range and rejects
+/// `iopl`; retaining the capability does not create a general port grant.
+/// Bounding-set drops happen first because they require `CAP_SETPCAP`.
+fn drop_agent_capabilities(allow_fetch: bool) -> io::Result<()> {
+    unsafe {
+        // UID 0 normally regains capabilities when executing an ordinary
+        // file. Disable and lock that compatibility rule before clearing the
+        // sets; no_new_privs alone is not a substitute for an empty set.
+        if libc::prctl(
+            PR_SET_SECUREBITS,
+            SECBIT_NOROOT | SECBIT_NOROOT_LOCKED,
+            0,
+            0,
+            0,
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Capability ABI v3 can represent 64 capability numbers. Kernels
+        // reject numbers above cap_last_cap with EINVAL; those are not valid
+        // bounding-set bits and can safely be skipped.
+        for capability in 0..(CAPABILITY_WORDS * u32::BITS as usize) {
+            if allow_fetch && capability == CAP_SYS_RAWIO {
+                continue;
+            }
+            if libc::prctl(libc::PR_CAPBSET_DROP, capability, 0, 0, 0) != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::EINVAL) {
+                    return Err(error);
+                }
+            }
+        }
+
+        if libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let header = CapUserHeader {
+            version: LINUX_CAPABILITY_VERSION_3,
+            pid: 0,
+        };
+        let mut narrowed = [
+            CapUserData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            },
+            CapUserData {
+                effective: 0,
+                permitted: 0,
+                inheritable: 0,
+            },
+        ];
+        if allow_fetch {
+            let bit = 1_u32 << CAP_SYS_RAWIO;
+            narrowed[0].effective = bit;
+            narrowed[0].permitted = bit;
+            narrowed[0].inheritable = bit;
+        }
+        if libc::syscall(
+            libc::SYS_capset,
+            &header as *const CapUserHeader,
+            narrowed.as_ptr(),
+        ) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        if allow_fetch
+            && libc::prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_RAISE, CAP_SYS_RAWIO, 0, 0) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 #[repr(C)]
@@ -261,6 +384,7 @@ fn install_network_seccomp() -> io::Result<()> {
         libc::SYS_io_uring_setup,
         libc::SYS_io_uring_enter,
         libc::SYS_io_uring_register,
+        libc::SYS_iopl,
     ];
     let mut filter = Vec::with_capacity(6 + denied.len() * 2);
     // Refuse outright if this call isn't in the x86 family. A 32-bit compat
@@ -317,6 +441,42 @@ fn install_network_seccomp() -> io::Result<()> {
             k: SECCOMP_RET_ERRNO | EPERM,
         });
     }
+    // `CAP_SYS_RAWIO` is retained only for the direct pilot-fetch PIO ABI.
+    // Validate all 64 bits of all three ioperm arguments: any other range or
+    // any attempt to revoke/change it is denied before the kernel sees it.
+    filter.push(SockFilter {
+        code: BPF_JMP_JEQ_K,
+        jt: 0,
+        jf: 13,
+        k: libc::SYS_ioperm as u32,
+    });
+    for (offset, expected, deny_skip) in [
+        (16, 0x500, 10),
+        (20, 0, 8),
+        (24, 3, 6),
+        (28, 0, 4),
+        (32, 1, 2),
+        (36, 0, 0),
+    ] {
+        filter.push(SockFilter {
+            code: BPF_LD_W_ABS,
+            jt: 0,
+            jf: 0,
+            k: offset,
+        });
+        filter.push(SockFilter {
+            code: BPF_JMP_JEQ_K,
+            jt: if deny_skip == 0 { 1 } else { 0 },
+            jf: deny_skip,
+            k: expected,
+        });
+    }
+    filter.push(SockFilter {
+        code: BPF_RET_K,
+        jt: 0,
+        jf: 0,
+        k: SECCOMP_RET_ERRNO | EPERM,
+    });
     filter.push(SockFilter {
         code: BPF_RET_K,
         jt: 0,
@@ -376,6 +536,10 @@ struct RunRequest {
     /// behaviour: exec `path` directly out of the sealed mount.
     #[serde(default)]
     root: Option<String>,
+    /// Host-authorised access to the bounded HTTPS fetch ABI. This bit is
+    /// host-authored; guest arguments cannot cause pilot to retain raw-I/O.
+    #[serde(default)]
+    allow_fetch: bool,
 }
 
 /// One cell can be asked to run several tools. Each invocation is hash-checked
@@ -396,6 +560,8 @@ struct RunFile {
     env: BTreeMap<String, String>,
     #[serde(default)]
     agent_authored_input: bool,
+    #[serde(default)]
+    allow_fetch: bool,
 }
 
 impl RunFile {
@@ -419,6 +585,7 @@ impl RunFile {
                 env: self.env,
                 agent_authored_input: self.agent_authored_input,
                 root: self.root,
+                allow_fetch: self.allow_fetch,
             }],
             _ => Vec::new(),
         }
@@ -546,7 +713,7 @@ fn exec_open_file(file: &File, req: &RunRequest, confine: bool) -> io::Result<Ex
             } else {
                 WORKSPACE
             };
-            if let Err(error) = enter_agent_lane(workspace, &req.path) {
+            if let Err(error) = enter_agent_lane(workspace, &req.path, req.allow_fetch) {
                 child_error(error_pipe[1], error);
             }
         }
@@ -841,6 +1008,7 @@ mod tests {
             env: BTreeMap::new(),
             agent_authored_input: false,
             root: None,
+            allow_fetch: false,
         };
         let status = exec_open_file(&verified, &request, false).expect("executes verified fd");
         assert!(

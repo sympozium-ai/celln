@@ -856,6 +856,7 @@ pub fn agent(request: AgentRequest<'_>, o: &Out) -> Result<u8> {
             "alias": ALIAS,
             "args": [],
             "agent_authored_input": true,
+            "allow_fetch": !allow_hosts.is_empty(),
         }))?,
     )?;
 
