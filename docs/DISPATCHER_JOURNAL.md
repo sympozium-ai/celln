@@ -73,5 +73,7 @@ corruption refusal, unavailable-persistence refusal and cache retention. Real
 TCP HTTP handler tests use an empty registry to check authenticated poll,
 audit, cancellation and POST retry: terminal state survives, interrupted claims
 refuse, changed bytes conflict, and no worker is registered. These do not by
-themselves prove deployed KVM node-loss recovery. The deployed image still needs
-updating and testing with fresh executions before that gate is claimed.
+themselves prove deployed KVM node-loss recovery. A subsequent actual terminal
+execution/owner-restart test is recorded in
+`docs/evidence/dispatcher-journal-restart-2026-09-07.md`; it verifies terminal
+retrieval and non-replay, not automatic recovery of interrupted work.

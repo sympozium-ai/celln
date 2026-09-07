@@ -1,0 +1,301 @@
+{
+  "scope": "completed real KVM execution retrieved after dispatcher owner node-container restart",
+  "source": "463356c",
+  "status": {
+    "cellnActionId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+    "cellnReceipt": "{\"apiVersion\":\"celln.dev/v1alpha1\",\"requestId\":\"journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5\",\"phase\":\"failed\",\"node\":\"celln-deployed-worker2\",\"startedAt\":\"2026-09-07T11:19:40Z\",\"completedAt\":\"2026-09-07T11:20:00Z\",\"cellId\":\"3643ebb82e76\",\"resolved\":{\"mote\":\"blake3:4d95a591956302f46253fa0cd5b67e7421ebcb1bcd948ab3c6121a3643968665\",\"tools\":[\"blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29\"],\"inputs\":[]},\"output\":{\"hash\":\"blake3:caf81f9ef224a3ee75e748da3374a132b9fdc6e365aff3ea9f810cb03f780c83\",\"mediaType\":\"application/octet-stream\",\"bytes\":24}}",
+    "cellnRequest": "{\"apiVersion\":\"celln.dev/v1alpha1\",\"id\":\"journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5\",\"workload\":{\"id\":\"reference\",\"caller\":\"sympozium:sympozium-system/journal-terminal-proof\"},\"mote\":{\"hash\":\"blake3:4d95a591956302f46253fa0cd5b67e7421ebcb1bcd948ab3c6121a3643968665\"},\"tools\":[{\"alias\":\"/harness\",\"hash\":\"blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29\",\"closure\":{\"hash\":\"blake3:e821ab9f24b37f5fd63053bb26b1f1dbeb58d344359e3d67ac8f30e1eebaa326\"}}],\"invocation\":{\"alias\":\"/harness\"},\"capabilities\":{\"workspace\":\"none\",\"timeoutMs\":20000,\"memoryBytes\":268435456,\"outputBytes\":65536},\"execution\":{\"lane\":\"tool\",\"requireHardwareIsolation\":true}}",
+    "completedAt": "2026-09-07T11:20:05Z",
+    "error": "Celln execution Failed: execution deadline exceeded",
+    "phase": "Failed",
+    "startedAt": "2026-09-07T11:19:40Z"
+  },
+  "auditBefore": {
+    "apiVersion": "celln.dev/audit-v1alpha1",
+    "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+    "caller": "sympozium:sympozium-system/journal-terminal-proof",
+    "workload": "reference",
+    "node": "celln-deployed-worker2",
+    "events": [
+      {
+        "sequence": 0,
+        "at": "2026-09-07T11:19:40Z",
+        "phase": "Admitting"
+      },
+      {
+        "sequence": 1,
+        "at": "2026-09-07T11:19:40Z",
+        "phase": "Resolving"
+      },
+      {
+        "sequence": 2,
+        "at": "2026-09-07T11:19:48Z",
+        "phase": "CellRunning"
+      },
+      {
+        "sequence": 3,
+        "at": "2026-09-07T11:20:00Z",
+        "phase": "Dissolved"
+      },
+      {
+        "sequence": 4,
+        "at": "2026-09-07T11:20:00Z",
+        "phase": "Failed"
+      }
+    ],
+    "execution": {
+      "cellId": "3643ebb82e76",
+      "substrate": {
+        "closure": {
+          "hash": "blake3:e821ab9f24b37f5fd63053bb26b1f1dbeb58d344359e3d67ac8f30e1eebaa326",
+          "publisher": "6fb173b3ea040b8a03b9406f0b75c6082e7e0bd927a1e36142551f0654c11bb8",
+          "toolfs": "blake3:e8efa4fe127f01256564a7f04608faa44cdafd86113ac4788707a55b45681b0b",
+          "members": {
+            "/add": {
+              "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+              "dependencies": []
+            },
+            "/harness": {
+              "hash": "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29",
+              "dependencies": [
+                "/add",
+                "/multiply",
+                "/pilot-fetch"
+              ]
+            },
+            "/multiply": {
+              "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+              "dependencies": []
+            },
+            "/pilot-fetch": {
+              "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e",
+              "dependencies": []
+            }
+          }
+        },
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "initrd": "blake3:f9c1ac97c1ab330b6128620778d283a22dbb96043f200be6bd99c2a1dc375f3a",
+        "toolfs": "blake3:e8efa4fe127f01256564a7f04608faa44cdafd86113ac4788707a55b45681b0b",
+        "invocation": "blake3:8b35bf04cf365b3a68d957a1761017f0aff2b3ec00a6abde6ff4fae07dc31fa4"
+      },
+      "pilot": {
+        "tool": "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29",
+        "lane": "tool",
+        "workspace": "none",
+        "fetch": false
+      },
+      "granted": {
+        "workspace": "none",
+        "egress": [],
+        "timeoutMs": 20000,
+        "memoryBytes": 268435456,
+        "outputBytes": 65536
+      },
+      "inputs": [],
+      "broker": {
+        "requests": 0,
+        "denied": 0,
+        "responseBytes": 0
+      },
+      "exitCode": null,
+      "signal": null,
+      "watchdogStopped": true
+    },
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha1",
+      "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+      "phase": "failed",
+      "node": "celln-deployed-worker2",
+      "cellId": "3643ebb82e76",
+      "resolved": {
+        "mote": "blake3:4d95a591956302f46253fa0cd5b67e7421ebcb1bcd948ab3c6121a3643968665",
+        "tools": [
+          "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29"
+        ],
+        "inputs": []
+      },
+      "output": {
+        "hash": "blake3:caf81f9ef224a3ee75e748da3374a132b9fdc6e365aff3ea9f810cb03f780c83",
+        "mediaType": "application/octet-stream",
+        "bytes": 24
+      },
+      "startedAt": "2026-09-07T11:19:40Z",
+      "completedAt": "2026-09-07T11:20:00Z"
+    }
+  },
+  "auditAfter": {
+    "apiVersion": "celln.dev/audit-v1alpha1",
+    "caller": "sympozium:sympozium-system/journal-terminal-proof",
+    "events": [
+      {
+        "at": "2026-09-07T11:19:40Z",
+        "phase": "Admitting",
+        "sequence": 0
+      },
+      {
+        "at": "2026-09-07T11:19:40Z",
+        "phase": "Resolving",
+        "sequence": 1
+      },
+      {
+        "at": "2026-09-07T11:19:48Z",
+        "phase": "CellRunning",
+        "sequence": 2
+      },
+      {
+        "at": "2026-09-07T11:20:00Z",
+        "phase": "Dissolved",
+        "sequence": 3
+      },
+      {
+        "at": "2026-09-07T11:20:00Z",
+        "phase": "Failed",
+        "sequence": 4
+      }
+    ],
+    "execution": {
+      "broker": {
+        "denied": 0,
+        "requests": 0,
+        "responseBytes": 0
+      },
+      "cellId": "3643ebb82e76",
+      "exitCode": null,
+      "granted": {
+        "egress": [],
+        "memoryBytes": 268435456,
+        "outputBytes": 65536,
+        "timeoutMs": 20000,
+        "workspace": "none"
+      },
+      "inputs": [],
+      "pilot": {
+        "fetch": false,
+        "lane": "tool",
+        "tool": "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29",
+        "workspace": "none"
+      },
+      "signal": null,
+      "substrate": {
+        "closure": {
+          "hash": "blake3:e821ab9f24b37f5fd63053bb26b1f1dbeb58d344359e3d67ac8f30e1eebaa326",
+          "members": {
+            "/add": {
+              "dependencies": [],
+              "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020"
+            },
+            "/harness": {
+              "dependencies": [
+                "/add",
+                "/multiply",
+                "/pilot-fetch"
+              ],
+              "hash": "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29"
+            },
+            "/multiply": {
+              "dependencies": [],
+              "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1"
+            },
+            "/pilot-fetch": {
+              "dependencies": [],
+              "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e"
+            }
+          },
+          "publisher": "6fb173b3ea040b8a03b9406f0b75c6082e7e0bd927a1e36142551f0654c11bb8",
+          "toolfs": "blake3:e8efa4fe127f01256564a7f04608faa44cdafd86113ac4788707a55b45681b0b"
+        },
+        "initrd": "blake3:f9c1ac97c1ab330b6128620778d283a22dbb96043f200be6bd99c2a1dc375f3a",
+        "invocation": "blake3:8b35bf04cf365b3a68d957a1761017f0aff2b3ec00a6abde6ff4fae07dc31fa4",
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "toolfs": "blake3:e8efa4fe127f01256564a7f04608faa44cdafd86113ac4788707a55b45681b0b"
+      },
+      "watchdogStopped": true
+    },
+    "node": "celln-deployed-worker2",
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha1",
+      "cellId": "3643ebb82e76",
+      "completedAt": "2026-09-07T11:20:00Z",
+      "node": "celln-deployed-worker2",
+      "output": {
+        "bytes": 24,
+        "hash": "blake3:caf81f9ef224a3ee75e748da3374a132b9fdc6e365aff3ea9f810cb03f780c83",
+        "mediaType": "application/octet-stream"
+      },
+      "phase": "failed",
+      "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+      "resolved": {
+        "inputs": [],
+        "mote": "blake3:4d95a591956302f46253fa0cd5b67e7421ebcb1bcd948ab3c6121a3643968665",
+        "tools": [
+          "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29"
+        ]
+      },
+      "startedAt": "2026-09-07T11:19:40Z"
+    },
+    "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+    "workload": "reference"
+  },
+  "exactRequestRetry": {
+    "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+    "phase": "Failed",
+    "reason": "execution deadline exceeded",
+    "output": "CELLN_LIFECYCLE_STARTED\n",
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha1",
+      "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+      "phase": "failed",
+      "node": "celln-deployed-worker2",
+      "cellId": "3643ebb82e76",
+      "resolved": {
+        "mote": "blake3:4d95a591956302f46253fa0cd5b67e7421ebcb1bcd948ab3c6121a3643968665",
+        "tools": [
+          "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29"
+        ],
+        "inputs": []
+      },
+      "output": {
+        "hash": "blake3:caf81f9ef224a3ee75e748da3374a132b9fdc6e365aff3ea9f810cb03f780c83",
+        "mediaType": "application/octet-stream",
+        "bytes": 24
+      },
+      "startedAt": "2026-09-07T11:19:40Z",
+      "completedAt": "2026-09-07T11:20:00Z"
+    }
+  },
+  "cancelAfterRestart": {
+    "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+    "phase": "Failed",
+    "reason": "execution deadline exceeded",
+    "output": "CELLN_LIFECYCLE_STARTED\n",
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha1",
+      "requestId": "journal-terminal-proof-647487df-40a5-49c8-8683-a2b82baf07b5",
+      "phase": "failed",
+      "node": "celln-deployed-worker2",
+      "cellId": "3643ebb82e76",
+      "resolved": {
+        "mote": "blake3:4d95a591956302f46253fa0cd5b67e7421ebcb1bcd948ab3c6121a3643968665",
+        "tools": [
+          "blake3:aba26600c0f9abf3f1f1daf249bb2107ede0afe9aadec6defc31fb4a4d0d3a29"
+        ],
+        "inputs": []
+      },
+      "output": {
+        "hash": "blake3:caf81f9ef224a3ee75e748da3374a132b9fdc6e365aff3ea9f810cb03f780c83",
+        "mediaType": "application/octet-stream",
+        "bytes": 24
+      },
+      "startedAt": "2026-09-07T11:19:40Z",
+      "completedAt": "2026-09-07T11:20:00Z"
+    }
+  },
+  "checks": {
+    "auditEqual": true,
+    "retryReceiptEqual": true,
+    "cancelEqual": true,
+    "dispatcherRestartCount": 1,
+    "liveCells": 0,
+    "warmTemplates": 0
+  }
+}
