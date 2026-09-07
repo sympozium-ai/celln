@@ -374,3 +374,4 @@ mod tests {
     }
 }
 pub mod closure;
+pub mod tool_schema;
