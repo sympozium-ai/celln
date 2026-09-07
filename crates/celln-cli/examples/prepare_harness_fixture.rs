@@ -12,9 +12,10 @@ mod linux {
     pub fn run() -> Result<()> {
         let args: Vec<_> = std::env::args().collect();
         ensure!(
-            args.len() == 4,
-            "usage: prepare_harness_fixture PACKAGE NEW_STATE_DIR CALLER"
+            args.len() == 4 || (args.len() == 5 && args[4] == "--tool-only"),
+            "usage: prepare_harness_fixture PACKAGE NEW_STATE_DIR CALLER [--tool-only]"
         );
+        let tool_only = args.len() == 5;
         let package = PathBuf::from(&args[1]);
         let root = PathBuf::from(&args[2]);
         fs::create_dir(&root).context("state directory must not already exist")?;
@@ -64,15 +65,17 @@ mod linux {
             "maxOutputTokens":512,"maxTotalOutputTokens":1536
         }))?;
         let grant_hash = Hash::of(&grant);
-        fs::create_dir(root.join("trusted-harness"))?;
-        fs::write(
-            root.join("trusted-harness").join(format!(
-                "{}.json",
-                grant_hash.0.trim_start_matches("blake3:")
-            )),
-            grant,
-        )?;
-        let request: ExecutionRequest = serde_json::from_value(json!({
+        if !tool_only {
+            fs::create_dir(root.join("trusted-harness"))?;
+            fs::write(
+                root.join("trusted-harness").join(format!(
+                    "{}.json",
+                    grant_hash.0.trim_start_matches("blake3:")
+                )),
+                grant,
+            )?;
+        }
+        let mut value = json!({
             "apiVersion":"celln.dev/v1alpha2", "id":"harness-deployed-proof",
             "workload":{"id":"harness-deployed-proof", "caller":args[3]},
             "mote":{"hash":mote.0},
@@ -84,7 +87,14 @@ mod linux {
             "capabilities":{"workspace":"none","egress":["https://api.deepseek.com"],
               "timeoutMs":180000,"memoryBytes":268435456,"outputBytes":65536},
             "execution":{"lane":"agent","requireHardwareIsolation":true}
-        }))?;
+        });
+        if tool_only {
+            value["apiVersion"] = json!("celln.dev/v1alpha1");
+            value.as_object_mut().unwrap().remove("harness");
+            value["capabilities"]["egress"] = json!([]);
+            value["execution"]["lane"] = json!("tool");
+        }
+        let request: ExecutionRequest = serde_json::from_value(value)?;
         ensure!(
             request.problems().is_empty(),
             "invalid request: {:?}",

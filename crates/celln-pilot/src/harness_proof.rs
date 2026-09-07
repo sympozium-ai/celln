@@ -25,10 +25,30 @@ fn main() -> Result<()> {
     );
     let work = std::env::temp_dir().join(format!("celln-harness-proof-{}", std::process::id()));
     std::fs::create_dir(&work)?;
-    std::fs::copy(
-        binaries.join("celln-harness-reference"),
-        work.join("harness"),
-    )?;
+    let lifecycle = std::env::args().any(|arg| arg == "--lifecycle-package-only");
+    if lifecycle {
+        ensure!(
+            Command::new("rustc")
+                .args([
+                    "--edition",
+                    "2021",
+                    "-O",
+                    "--target",
+                    "x86_64-unknown-linux-musl"
+                ])
+                .arg(root.join("crates/celln-pilot/tests/fixtures/lifecycle_tool.rs"))
+                .arg("-o")
+                .arg(work.join("harness"))
+                .status()?
+                .success(),
+            "lifecycle fixture compile failed"
+        );
+    } else {
+        std::fs::copy(
+            binaries.join("celln-harness-reference"),
+            work.join("harness"),
+        )?;
+    }
     std::fs::copy(binaries.join("pilot-fetch"), work.join("pilot-fetch"))?;
     for name in ["add", "multiply"] {
         let mut build = Command::new("rustc");
@@ -114,7 +134,7 @@ fn main() -> Result<()> {
             .success(),
         "initrd build failed"
     );
-    if std::env::args().any(|arg| arg == "--package-only") {
+    if lifecycle || std::env::args().any(|arg| arg == "--package-only") {
         println!("PACKAGED: {}", work.display());
         return Ok(());
     }
