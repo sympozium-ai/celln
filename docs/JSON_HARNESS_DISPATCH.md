@@ -111,10 +111,28 @@ CARGO_TARGET_DIR=target/validation cargo test -p celln-cli --bin celln \
 ```
 
 This explicitly billable test requires real KVM and a readable kernel; explicit
-execution fails rather than claiming success when hardware is unavailable. Do
-not set the reference-only controller hook for this test. Its state/grants are
+execution fails rather than claiming success when hardware is unavailable. Its state/grants are
 temporary; the [example request](../examples/execution/harness-json.json) records
 the proof identities, not installed authority on another host.
+
+The test also accepts an explicit `CELLN_HARNESS_CONTROLLER_HOOK` supporting
+the JSON contract. The paired Sympozium implementation at
+[`2dd256c`](https://github.com/sympozium-ai/sympozium/commit/2dd256cd20bf7cd822d5f108b493fc56febb4758)
+provides `test/integration/test-celln-harness-controller.sh`. Set
+`CELLN_CONTROLLER_KUBECONFIG` to the isolated test kubeconfig. For
+`kind-celln-deployed`, also set `CELLN_PAUSE_TEST_CONTROLLER=1`; the hook refuses
+unfinished runs or an unexpected controller, temporarily pauses that named test
+deployment, and restores it with UID/replica checks. Never use production config.
+
+On 2026-09-07 the [actual controller proof](https://github.com/sympozium-ai/sympozium/blob/2dd256cd20bf7cd822d5f108b493fc56febb4758/docs/evidence/celln-json-harness-controller-2026-09-07.json)
+passed with three additional real DeepSeek requests (six including direct
+dispatch): Kubernetes AgentRun → actual host controller → authenticated host
+dispatcher → JSON Harness in a warm-forked cell → uppercase/length → final
+answer. Sympozium persisted the exact binding and matching receipt/audit;
+zero Jobs and zero live cells were observed. Test namespace and temporary
+credential copy were removed and the test controller restored to 1/1 available.
+This is not deployed router or catalogue-selection proof. The linked record
+labels working-tree provenance and the tested controller binary exactly.
 
 ## Remaining product gates
 
