@@ -43,7 +43,7 @@
 [[image]]
 name = "python"
 tag = "docker.io/library/python:3.12-slim"
-ref = "docker.io/library/python@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217"
+ref = "docker.io/library/python@sha256:78387bc3881b8273120a12ebe6c1ab22b018ccc2c9adf565ae1ac9b536e184ea"
 about = "CPython 3.12 with its own OpenSSL, sqlite and glibc"
 default = true
 provides = [
@@ -54,7 +54,7 @@ provides = [
 [[image]]
 name = "curl"
 tag = "docker.io/curlimages/curl:latest"
-ref = "docker.io/curlimages/curl@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
+ref = "docker.io/curlimages/curl@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777"
 about = "curl and its TLS stack, musl-linked"
 default = true
 provides = [
