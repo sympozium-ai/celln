@@ -107,6 +107,22 @@ mod tests {
         assert!(crate::closure_policy::verify(&descriptor, root).is_err());
         assert!(build(&plan, &key, &root.join("refused"), builder, root).is_err());
         assert!(!root.join("refused").exists());
+        publishers.insert(source.publisher);
+        write_policy(vec![], &publishers);
+        // A trusted descriptor must not turn absent/corrupt store bytes into a
+        // published composition. Staging is removed on both failure paths.
+        let hash = Hash::of(b"/tools/tool").0;
+        let hex = hash.strip_prefix("blake3:").unwrap();
+        let blob = root.join("tools/objects").join(&hex[..2]).join(hex);
+        fs::write(&blob, b"corrupted member").unwrap();
+        let corrupt_output = root.join("corrupt-output");
+        assert!(build(&plan, &key, &corrupt_output, builder, root).is_err());
+        assert!(!corrupt_output.join("signed-closure.json").exists());
+        assert_eq!(fs::read_dir(&corrupt_output).unwrap().count(), 0);
+        fs::remove_file(&blob).unwrap();
+        let missing_output = root.join("missing-output");
+        assert!(build(&plan, &key, &missing_output, builder, root).is_err());
+        assert_eq!(fs::read_dir(&missing_output).unwrap().count(), 0);
     }
 }
 
