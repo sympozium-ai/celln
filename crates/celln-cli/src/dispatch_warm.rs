@@ -24,12 +24,12 @@ pub(crate) fn availability() -> Option<Vec<Availability>> {
 }
 static CACHE: OnceLock<Mutex<Cached>> = OnceLock::new();
 #[cfg(test)]
-pub(super) fn evict() {
+pub(crate) fn evict() {
     *CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
     warden::vmm::kvm::collect_unused_tools();
 }
 #[cfg(test)]
-pub(super) static PREPARATIONS: std::sync::atomic::AtomicUsize =
+pub(crate) static PREPARATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
 pub(crate) static PROOF_LOCK: Mutex<()> = Mutex::new(());

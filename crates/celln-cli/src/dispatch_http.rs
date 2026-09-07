@@ -13,11 +13,15 @@ mod audit;
 mod harness_tests;
 #[path = "dispatch_journal.rs"]
 mod journal;
+#[path = "dispatch_prewarm.rs"]
+mod prewarm;
 use anyhow::{bail, Context, Result};
 use celln_spec::{
     ExecutionOutput, ExecutionPhase, ExecutionReceipt, ExecutionRequest, ResolvedExecution,
 };
 use celln_store::Store;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use prewarm::prove_prewarm_on_kvm;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -201,6 +205,14 @@ fn current_node(
     let mut node = crate::node::NodeEligibility::from_probe(&state.probe, 0);
     let other = crate::cells::live_count_excluding_pid(&state.root, Some(std::process::id()));
     apply_reservations(&mut node, registry, other);
+    if let Some(reservation) = *state
+        .prewarm
+        .lock()
+        .expect("prewarm reservation not poisoned")
+    {
+        node.live_cells = node.live_cells.saturating_add(1);
+        node.memory_bytes = node.memory_bytes.saturating_sub(reservation.memory_bytes);
+    }
     node
 }
 
@@ -212,6 +224,7 @@ struct State {
     root: PathBuf,
     probe: NodeProbeArgs,
     executions: Executions,
+    prewarm: Mutex<Option<Reservation>>,
 }
 
 /// Reopen the path each time: projected Secrets replace symlinks during rotation.
@@ -336,6 +349,7 @@ pub fn serve(
         root,
         probe: probe.clone(),
         executions: Arc::new(Mutex::new(HashMap::new())),
+        prewarm: Mutex::new(None),
     });
     if non_loopback {
         eprintln!(
@@ -422,6 +436,9 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         }
     }
     match (method.as_str(), path.as_str()) {
+        ("POST", "/v1/artifacts/prewarm") => {
+            prewarm::handle(state, &mut stream, &mut reader, length)
+        }
         ("GET", "/v1/capabilities") => {
             let registry = state
                 .executions
@@ -1000,6 +1017,7 @@ mod tests {
                 egress_slots: 0,
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
+            prewarm: Mutex::new(None),
         }
     }
 
@@ -1511,6 +1529,7 @@ mod tests {
                 egress_slots: 0,
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
+            prewarm: Mutex::new(None),
         };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();

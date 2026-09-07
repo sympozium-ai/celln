@@ -192,6 +192,11 @@ pub(crate) fn check_members(
     tool_root: &Path,
     state_root: &Path,
 ) -> Result<serde_json::Value, String> {
+    validate_member_request(request)?;
+    check_members_validated(request, mote_root, tool_root, state_root)
+}
+
+pub(crate) fn validate_member_request(request: &ExecutionRequest) -> Result<(), String> {
     if !request.problems().is_empty()
         || request.harness.is_some()
         || request.forge.is_some()
@@ -205,7 +210,15 @@ pub(crate) fn check_members(
     {
         return Err("member check requires a valid closure request with no args, inputs, workspace, forge, harness or egress".into());
     }
-    super::check_supported_authority(request)?;
+    super::check_supported_authority(request)
+}
+
+fn check_members_validated(
+    request: &ExecutionRequest,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+) -> Result<serde_json::Value, String> {
     authorize(request, state_root)?;
     let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
     let closure = super::closure::resolve(request, &resolved, state_root)?
