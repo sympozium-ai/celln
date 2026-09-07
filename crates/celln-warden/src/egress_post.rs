@@ -13,6 +13,120 @@ pub struct JsonPostGrant {
     pub url: String,
     /// Operator-controlled file, read per request. Never delivered to guest.
     pub bearer_token_file: PathBuf,
+    /// Exact provider model alias; mandatory, never supplied as authority by guest.
+    pub model: String,
+    pub max_output_tokens: u64,
+    /// Sum of requested output ceilings, reserved before network I/O. Failed
+    /// or interrupted requests are not refunded because they may be billed.
+    pub max_total_output_tokens: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatRequest {
+    model: String,
+    max_tokens: u64,
+    stream: bool,
+    messages: Vec<ChatMessage>,
+    #[serde(default)]
+    tools: Option<Vec<ChatTool>>,
+    #[serde(default)]
+    tool_choice: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatMessage {
+    role: String,
+    // Text-only: no provider-fetched URLs or multimodal input objects.
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ChatToolCall>>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatTool {
+    #[serde(rename = "type")]
+    kind: String,
+    function: ChatFunction,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatFunction {
+    name: String,
+    description: String,
+    parameters: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatToolCall {
+    id: String,
+    #[serde(rename = "type")]
+    kind: String,
+    function: ChatFunctionCall,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+fn validate_chat(body: &serde_json::Value, grant: &JsonPostGrant) -> Result<u64, FetchDenied> {
+    let chat: ChatRequest = serde_json::from_value(body.clone())
+        .map_err(|_| refused("unsupported model request parameters"))?;
+    if grant.model.is_empty() || chat.model != grant.model {
+        return Err(refused("model not granted"));
+    }
+    if chat.max_tokens == 0
+        || chat.max_tokens > grant.max_output_tokens
+        || chat.max_tokens > grant.max_total_output_tokens
+    {
+        return Err(refused("model output token limit exceeded"));
+    }
+    if chat.stream
+        || chat.messages.is_empty()
+        || chat.messages.len() > 128
+        || chat.messages.iter().any(|m| {
+            !matches!(m.role.as_str(), "system" | "user" | "assistant" | "tool")
+                || (m.content.is_none() && m.tool_calls.is_none())
+                || (m.tool_calls.is_some() && m.role != "assistant")
+                || (m.tool_call_id.is_some() != (m.role == "tool"))
+                || m.tool_calls.as_ref().is_some_and(|calls| {
+                    calls.is_empty()
+                        || calls.len() > 16
+                        || calls.iter().any(|c| {
+                            c.kind != "function"
+                                || c.id.is_empty()
+                                || c.function.name.is_empty()
+                                || c.function.arguments.len() > 4096
+                        })
+                })
+        })
+        || chat.tools.as_ref().is_some_and(|tools| {
+            tools.is_empty()
+                || tools.len() > 16
+                || tools.iter().any(|t| {
+                    t.kind != "function"
+                        || t.function.name.is_empty()
+                        || t.function.description.len() > 4096
+                        || !t.function.parameters.is_object()
+                })
+        })
+        || chat
+            .tool_choice
+            .as_ref()
+            .is_some_and(|choice| !matches!(choice.as_str(), "auto" | "required" | "none"))
+    {
+        return Err(refused("unsupported model request parameters"));
+    }
+    Ok(chat.max_tokens)
 }
 
 #[derive(Deserialize)]
@@ -74,11 +188,22 @@ impl HttpBroker {
     pub(super) fn post_json(&mut self, raw: &str) -> Result<Vec<u8>, FetchDenied> {
         let request = parse(raw)?;
         let grant = self.grant_for(&request)?.clone();
+        let output_tokens = validate_chat(&request.body, &grant)?;
         if self.used >= self.policy.max_requests {
             return Err(FetchDenied::Budget);
         }
+        let reserved = self
+            .post_output_reserved
+            .get(&request.url)
+            .copied()
+            .unwrap_or(0);
+        let next = reserved
+            .checked_add(output_tokens)
+            .filter(|total| *total <= grant.max_total_output_tokens)
+            .ok_or_else(|| refused("model cumulative output budget exhausted"))?;
         let (host, ip) = self.authorize(&request.url)?;
         self.used += 1;
+        self.post_output_reserved.insert(request.url.clone(), next);
         let credential = credential_header(&grant.bearer_token_file)?;
         let mut body =
             tempfile::NamedTempFile::new().map_err(|_| refused("request staging failed"))?;
@@ -148,6 +273,150 @@ mod tests {
         serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST","url":"https://example.com/model","body":{"messages":[]}}).to_string()
     }
 
+    fn model_policy() -> HttpPolicy {
+        // .invalid plus an absent credential make accidental I/O visible:
+        // every refusal below must occur before DNS or credential access.
+        let mut policy = HttpPolicy::new(vec!["provider.invalid".into()]);
+        policy.json_posts.push(JsonPostGrant {
+            url: "https://provider.invalid/chat".into(),
+            bearer_token_file: "/must-not-be-read".into(),
+            model: "approved".into(),
+            max_output_tokens: 512,
+            max_total_output_tokens: 1024,
+        });
+        policy
+    }
+
+    fn chat_body() -> serde_json::Value {
+        serde_json::json!({"model":"approved","stream":false,"max_tokens":512,
+            "messages":[{"role":"user","content":"hello"}]})
+    }
+
+    #[test]
+    fn model_policy_rejects_escalations_before_io() {
+        let cases = [
+            ("model", serde_json::json!("other"), "model not granted"),
+            (
+                "max_tokens",
+                serde_json::json!(513),
+                "model output token limit exceeded",
+            ),
+            (
+                "max_tokens",
+                serde_json::json!(0),
+                "model output token limit exceeded",
+            ),
+            (
+                "max_tokens",
+                serde_json::json!(-1),
+                "unsupported model request parameters",
+            ),
+            (
+                "max_tokens",
+                serde_json::json!(1.5),
+                "unsupported model request parameters",
+            ),
+            (
+                "stream",
+                serde_json::json!(true),
+                "unsupported model request parameters",
+            ),
+            (
+                "n",
+                serde_json::json!(8),
+                "unsupported model request parameters",
+            ),
+            (
+                "max_completion_tokens",
+                serde_json::json!(9999),
+                "unsupported model request parameters",
+            ),
+            (
+                "temperature",
+                serde_json::json!(2),
+                "unsupported model request parameters",
+            ),
+            (
+                "messages",
+                serde_json::json!([{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com"}}]}]),
+                "unsupported model request parameters",
+            ),
+            (
+                "tools",
+                serde_json::json!([{"type":"web_search"}]),
+                "unsupported model request parameters",
+            ),
+        ];
+        for (field, value, reason) in cases {
+            let mut body = chat_body();
+            body[field] = value;
+            let mut broker = HttpBroker::new(model_policy());
+            let raw = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST","url":"https://provider.invalid/chat","body":body}).to_string();
+            assert_eq!(broker.fetch(&raw).unwrap_err(), refused(reason), "{field}");
+            assert_eq!(broker.used(), 0);
+            assert!(broker.post_output_reserved.is_empty());
+        }
+    }
+
+    #[test]
+    fn output_reservations_are_cumulative_and_overflow_safe() {
+        for reserved in [513, 1024, u64::MAX] {
+            let mut broker = HttpBroker::new(model_policy());
+            broker
+                .post_output_reserved
+                .insert("https://provider.invalid/chat".into(), reserved);
+            let raw = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST","url":"https://provider.invalid/chat","body":chat_body()}).to_string();
+            assert_eq!(
+                broker.fetch(&raw).unwrap_err(),
+                refused("model cumulative output budget exhausted")
+            );
+            assert_eq!(broker.used(), 0);
+        }
+    }
+
+    #[test]
+    fn failed_requests_do_not_refund_reserved_output() {
+        let mut policy = model_policy();
+        policy.allow_hosts = vec!["8.8.8.8".into()];
+        policy.json_posts[0].url = "https://8.8.8.8/chat".into();
+        policy.json_posts[0].max_total_output_tokens = 512;
+        let mut broker = HttpBroker::new(policy);
+        let raw = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST","url":"https://8.8.8.8/chat","body":chat_body()}).to_string();
+        // Literal IP authorization needs no DNS, then missing credentials fail
+        // before curl starts. No network request is made by this test.
+        assert_eq!(
+            broker.fetch(&raw).unwrap_err(),
+            refused("provider credential unavailable")
+        );
+        assert_eq!(broker.used(), 1);
+        assert_eq!(
+            broker.fetch(&raw).unwrap_err(),
+            refused("model cumulative output budget exhausted")
+        );
+        assert_eq!(broker.post_output_reserved["https://8.8.8.8/chat"], 512);
+    }
+
+    #[test]
+    fn text_and_function_results_fit_the_narrow_contract() {
+        let mut body = chat_body();
+        body["tools"] = serde_json::json!([{"type":"function","function":{"name":"add","description":"add integers","parameters":{"type":"object"}}}]);
+        body["tool_choice"] = "required".into();
+        body["messages"] = serde_json::json!([
+            {"role":"user","content":"add"},
+            {"role":"assistant","content":null,"tool_calls":[{"id":"call1","type":"function","function":{"name":"add","arguments":"{}"}}]},
+            {"role":"tool","tool_call_id":"call1","content":"42"}
+        ]);
+        assert_eq!(
+            validate_chat(&body, &model_policy().json_posts[0]).unwrap(),
+            512
+        );
+        for field in ["model", "max_tokens", "stream", "messages"] {
+            let mut missing = body.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(validate_chat(&missing, &model_policy().json_posts[0]).is_err());
+        }
+    }
+
     #[test]
     fn get_authority_does_not_imply_post_or_credentials() {
         let mut broker = HttpBroker::new(HttpPolicy::new(vec!["example.com".into()]));
@@ -164,6 +433,9 @@ mod tests {
         policy.json_posts.push(JsonPostGrant {
             url: "https://example.com/model".into(),
             bearer_token_file: "/not-read".into(),
+            model: "approved-model".into(),
+            max_output_tokens: 512,
+            max_total_output_tokens: 1536,
         });
         let broker = HttpBroker::new(policy);
         assert!(broker.grant_for(&parse(&wire()).unwrap()).is_ok());

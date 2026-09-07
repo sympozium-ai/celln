@@ -56,11 +56,16 @@ pub enum FetchDenied {
 pub struct HttpBroker {
     policy: HttpPolicy,
     used: usize,
+    post_output_reserved: std::collections::BTreeMap<String, u64>,
 }
 
 impl HttpBroker {
     pub fn new(policy: HttpPolicy) -> Self {
-        Self { policy, used: 0 }
+        Self {
+            policy,
+            used: 0,
+            post_output_reserved: Default::default(),
+        }
     }
 
     pub fn used(&self) -> usize {

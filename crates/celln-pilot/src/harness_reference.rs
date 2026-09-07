@@ -103,6 +103,24 @@ fn run() -> Result<()> {
         "CELLN_HARNESS_EVENT {}",
         json!({"type":"negative-checks","unselected":"EACCES","toolWrites":"denied"})
     );
+    for (field, value, reason) in [
+        ("model", json!("unapproved-model"), "model not granted"),
+        (
+            "max_tokens",
+            json!(513),
+            "model output token limit exceeded",
+        ),
+        ("n", json!(2), "unsupported model request parameters"),
+        (
+            "stream",
+            json!(true),
+            "unsupported model request parameters",
+        ),
+    ] {
+        let mut body = json!({"model":config.model,"stream":false,"max_tokens":512,"messages":[{"role":"user","content":"budget probe"}]});
+        body[field] = value;
+        prove_model_denial(&config.url, body, reason)?;
+    }
     let definitions: Vec<Value> = config.tools.iter().map(|t| json!({"type":"function","function":{
         "name":t.name,"description":t.description,"parameters":{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},"required":["args"],"additionalProperties":false}
     }})).collect();
@@ -135,13 +153,28 @@ fn run() -> Result<()> {
             .as_array()
             .cloned()
             .unwrap_or_default();
-        messages.push(message.clone());
+        // Provider responses can contain response-only extensions (e.g.
+        // reasoning metadata). Do not reflect arbitrary provider fields back
+        // into the host's deliberately narrow request contract.
+        let mut next_message = json!({"role":"assistant","content":message["content"]});
+        if !tool_calls.is_empty() {
+            next_message["tool_calls"] = json!(tool_calls.iter().map(|call| json!({
+                "id":call["id"],"type":call["type"],
+                "function":{"name":call["function"]["name"],"arguments":call["function"]["arguments"]}
+            })).collect::<Vec<_>>());
+        }
+        messages.push(next_message);
         if tool_calls.is_empty() {
             ensure!(
                 used.len() == config.tools.len(),
                 "model stopped before using lent tools"
             );
             let answer = message["content"].as_str().context("no final answer")?;
+            prove_model_denial(
+                &config.url,
+                json!({"model":config.model,"stream":false,"max_tokens":512,"messages":[{"role":"user","content":"budget probe"}]}),
+                "model cumulative output budget exhausted",
+            )?;
             println!(
                 "CELLN_HARNESS_EVENT {}",
                 json!({"type":"completed","answer":answer,"toolsUsed":used,"calls":calls})
@@ -191,6 +224,41 @@ fn run() -> Result<()> {
         }
     }
     bail!("model turn budget exhausted")
+}
+
+fn prove_model_denial(url: &str, body: Value, reason: &str) -> Result<()> {
+    let wire = serde_json::to_vec(
+        &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":url,"body":body}),
+    )?;
+    let mut child = Command::new("/pilot-fetch")
+        .arg("--json-stdin")
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .context("probe stdin")?
+        .write_all(&wire)?;
+    let mut error = String::new();
+    child
+        .stderr
+        .take()
+        .context("probe stderr")?
+        .take(4096)
+        .read_to_string(&mut error)?;
+    ensure!(
+        !child.wait()?.success()
+            && error.contains(&format!("CELLN_FETCH_ERROR:host fetch failed: {reason}")),
+        "model policy probe did not receive expected refusal: {reason}"
+    );
+    println!(
+        "CELLN_HARNESS_EVENT {}",
+        json!({"type":"model-denied","reason":reason})
+    );
+    Ok(())
 }
 
 fn main() {

@@ -34,6 +34,10 @@ now demonstrates a real model/tool/result loop inside a warm-forked cell with
 two separately hashed executables. This does not remove the baseline production
 gaps below or complete the deployed Harness acceptance gates.
 
+The prototype now also has [host-enforced model/parameter and output-reservation
+limits](HARNESS_MODEL_POLICY.md), with real guest escalation attempts. These
+are not yet bound to Sympozium runtime/model selection or tenant accounting.
+
 Baseline inspected: Celln `4b95a1c`, Sympozium `88a432c`, plus draft M0 router
 changes in [Celln #70](https://github.com/sympozium-ai/celln/pull/70) and ingress
 policy in [Sympozium #427](https://github.com/sympozium-ai/sympozium/pull/427).
