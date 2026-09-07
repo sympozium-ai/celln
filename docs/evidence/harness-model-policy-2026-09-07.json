@@ -1,0 +1,145 @@
+{
+  "events": [
+    {
+      "toolWrites": "denied",
+      "type": "negative-checks",
+      "unselected": "EACCES"
+    },
+    {
+      "reason": "model not granted",
+      "type": "model-denied"
+    },
+    {
+      "reason": "model output token limit exceeded",
+      "type": "model-denied"
+    },
+    {
+      "reason": "unsupported model request parameters",
+      "type": "model-denied"
+    },
+    {
+      "reason": "unsupported model request parameters",
+      "type": "model-denied"
+    },
+    {
+      "id": "1f55dba6-7a49-47b3-be4d-4ddf23d045f9",
+      "model": "deepseek-v4-flash",
+      "turn": 0,
+      "type": "model",
+      "usage": {
+        "completion_tokens": 40,
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 41,
+        "prompt_tokens": 425,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 465
+      }
+    },
+    {
+      "args": [
+        "37",
+        "5"
+      ],
+      "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+      "id": "call_00_zxpFgkOIRGf5bS1B3uPP7899",
+      "name": "add",
+      "result": "42\n",
+      "type": "tool"
+    },
+    {
+      "id": "f7651584-568a-491b-b2f9-a332f4f0f0ff",
+      "model": "deepseek-v4-flash",
+      "turn": 1,
+      "type": "model",
+      "usage": {
+        "completion_tokens": 41,
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 102,
+        "prompt_tokens": 486,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 527
+      }
+    },
+    {
+      "args": [
+        "42",
+        "2"
+      ],
+      "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+      "id": "call_00_aY1PlI5IJiGFg6FMx26k5166",
+      "name": "multiply",
+      "result": "84\n",
+      "type": "tool"
+    },
+    {
+      "id": "beb556fb-390c-4117-bc9c-aab9409d9a5d",
+      "model": "deepseek-v4-flash",
+      "turn": 2,
+      "type": "model",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_cache_hit_tokens": 512,
+        "prompt_cache_miss_tokens": 29,
+        "prompt_tokens": 541,
+        "prompt_tokens_details": {
+          "cached_tokens": 512
+        },
+        "total_tokens": 542
+      }
+    },
+    {
+      "reason": "model cumulative output budget exhausted",
+      "type": "model-denied"
+    },
+    {
+      "answer": "84",
+      "calls": 2,
+      "toolsUsed": [
+        "add",
+        "multiply"
+      ],
+      "type": "completed"
+    }
+  ],
+  "fetchActivity": [
+    8,
+    5,
+    1711
+  ],
+  "members": {
+    "/add": {
+      "dependencies": [],
+      "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020"
+    },
+    "/harness": {
+      "dependencies": [
+        "/add",
+        "/multiply",
+        "/pilot-fetch"
+      ],
+      "hash": "blake3:962b5dc9a59b27cc0e519075500b167434dff0e8d1938e4d40aa4f8eb6421311"
+    },
+    "/multiply": {
+      "dependencies": [],
+      "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1"
+    },
+    "/pilot-fetch": {
+      "dependencies": [],
+      "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e"
+    }
+  },
+  "modelPolicy": {
+    "maxOutputTokens": 512,
+    "maxTotalOutputTokens": 1536,
+    "model": "deepseek-chat",
+    "stream": false
+  },
+  "publisher": "67be0d645c0c4236f134a6a3e04cb3585082058cc4783f988cdeb717ed75ada8",
+  "scope": "direct-KVM reference Harness; not Sympozium dispatcher or Pi/Hermes",
+  "spawn": "warm mote CoW fork",
+  "toolfs": "blake3:2d6d4e297933d471187a27e9f16773e709235101554910fc7e69e49bef1a7c4a"
+}

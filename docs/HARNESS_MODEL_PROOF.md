@@ -54,6 +54,11 @@ must validate selected model and permitted request parameters, add per-run
 budget/usage accounting, address credential lifecycle/withdrawal and durable
 audit, and define ambiguous POST failures. This increment remains experimental.
 
+Follow-up: [host model policy](HARNESS_MODEL_POLICY.md) now enforces exact model
+aliases, narrow request parameters and cumulative output reservations in the
+prototype. The original result above is historical; tenant/currency budgets and
+the Sympozium grant binding remain undelivered.
+
 ## Reproduce
 
 Requires real KVM, a readable kernel, the static guest toolchain and a separately

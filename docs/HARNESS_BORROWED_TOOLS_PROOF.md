@@ -60,8 +60,9 @@ the guest image. Remove your temporary credential copy after testing.
   revocation. Console events are not independently attested per-tool receipts.
 - This is direct host KVM execution, not the deployed Sympozium controller →
   router → daemon path. Production multi-tool and closure-egress refusal guards
-  are unchanged. The prototype POST grant still needs host-enforced model and
-  parameter budgets before product exposure.
+  are unchanged. [Host-enforced model policy](HARNESS_MODEL_POLICY.md) now adds
+  model/parameter and output-reservation limits; product exposure still needs
+  trusted Sympozium binding, tenant accounting and lifecycle handling.
 - The next integration must bind approved runtime identity, execution placement,
   explicit tool identities and broker grants in a versioned Sympozium contract,
   then prove that exact path before exposing the Harness + Celln opt-in.

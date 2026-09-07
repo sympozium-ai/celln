@@ -111,6 +111,9 @@ fn main() -> Result<()> {
         policy.json_posts.push(JsonPostGrant {
             url,
             bearer_token_file,
+            model: "deepseek-chat".into(),
+            max_output_tokens: 64,
+            max_total_output_tokens: 64,
         });
         policy.timeout = std::time::Duration::from_secs(45);
         cell.set_timeout(std::time::Duration::from_secs(90));

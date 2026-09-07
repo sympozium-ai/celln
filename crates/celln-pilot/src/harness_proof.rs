@@ -140,6 +140,9 @@ fn main() -> Result<()> {
     policy.json_posts.push(JsonPostGrant {
         url: url.into(),
         bearer_token_file: token,
+        model: "deepseek-chat".into(),
+        max_output_tokens: 512,
+        max_total_output_tokens: 1536,
     });
     cell.enable_http_fetch(policy);
     let config = json!({"task":"Use add with args [\"37\",\"5\"], then use multiply with the returned result and \"2\". Wait for each tool result. Finally reply with exactly the final integer, no explanation.", "url":url,"model":"deepseek-chat","tools":[
@@ -200,7 +203,24 @@ fn main() -> Result<()> {
         "model did not consume results; {}",
         work.display()
     );
-    let evidence = json!({"scope":"direct-KVM reference Harness; not Sympozium dispatcher or Pi/Hermes","spawn":"warm mote CoW fork","publisher":signed.publisher,"toolfs":signed.closure.toolfs,"members":members,"fetchActivity":cell.fetch_activity(),"events":events});
+    for reason in [
+        "model not granted",
+        "model output token limit exceeded",
+        "unsupported model request parameters",
+        "model cumulative output budget exhausted",
+    ] {
+        ensure!(
+            events
+                .iter()
+                .any(|e| e["type"] == "model-denied" && e["reason"] == reason),
+            "missing guest model-policy denial: {reason}"
+        );
+    }
+    ensure!(
+        cell.fetch_activity().0 == 8 && cell.fetch_activity().1 == 5,
+        "unexpected broker attempts or denials"
+    );
+    let evidence = json!({"scope":"direct-KVM reference Harness; not Sympozium dispatcher or Pi/Hermes","spawn":"warm mote CoW fork","publisher":signed.publisher,"toolfs":signed.closure.toolfs,"members":members,"fetchActivity":cell.fetch_activity(),"modelPolicy":{"model":"deepseek-chat","maxOutputTokens":512,"maxTotalOutputTokens":1536,"stream":false},"events":events});
     std::fs::write(
         work.join("evidence.json"),
         serde_json::to_vec_pretty(&evidence)?,
