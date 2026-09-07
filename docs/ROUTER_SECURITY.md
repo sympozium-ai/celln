@@ -21,8 +21,10 @@ Both files are reread per request. Rotate through atomic file replacement (or
 a projected Secret directory, not a Kubernetes `subPath` mount). New requests
 use the new values; already authorized in-flight requests may finish. An invalid,
 missing or equal pair refuses startup or returns 503 after rotation. Old client
-tokens return 401. Dispatcher credential rotation must also be coordinated with
-the dispatcher, which currently loads its credential at startup.
+tokens return 401. Dispatchers also reread their credential per protected request.
+Backend rotation must be coordinated across both services: independent Secret
+projections can temporarily disagree. There is no overlapping-key guarantee; see
+[Dispatcher security](DISPATCHER_SECURITY.md#credential-rotation).
 
 This is an intentional fail-closed CLI compatibility change. Old commands with
 only `--token-file` must be updated before rollout. Do not install this binary

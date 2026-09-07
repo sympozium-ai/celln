@@ -143,6 +143,7 @@ fn harness_model_over_authenticated_dispatch() {
     let request: ExecutionRequest = serde_json::from_value(json!({"apiVersion":"celln.dev/v1alpha2","id":"harness-dispatch-proof","workload":{"id":"test-run","caller":caller},"mote":{"hash":mote.0},"tools":[{"alias":"/harness","hash":runtime.0,"closure":{"hash":closure.0}}],"invocation":{"alias":"/harness"},"harness":{"model":"deepseek-chat","contractVersion":"celln.reference-functions/v1","modelGrant":{"hash":grant_hash.0},"task":"Use add with args [\"37\",\"5\"], wait for its result, then multiply that result by \"2\". Reply with exactly the final integer.","borrowedTools":borrowed},"capabilities":{"workspace":"none","egress":["https://api.deepseek.com"],"timeoutMs":180000,"memoryBytes":268435456,"outputBytes":65536},"execution":{"lane":"agent","requireHardwareIsolation":true}})).unwrap();
     assert!(request.problems().is_empty(), "{:?}", request.problems());
     let state = State {
+        token_file: PathBuf::new(),
         token: "test-token-at-least-24-bytes".into(),
         egress_policy: EgressPolicy::new(&["api.deepseek.com".into()]).unwrap(),
         root: root.into(),

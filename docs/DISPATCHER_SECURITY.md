@@ -20,6 +20,24 @@ celln dispatcher \
   --token-file /etc/celln/dispatcher-token/token
 ```
 
+## Credential rotation
+
+The credential file must contain at least 24 printable ASCII non-whitespace
+bytes, with at most 4096 file bytes; surrounding whitespace is trimmed. Startup
+validates the file, and every protected request reopens it. Rotate with atomic
+file replacement or a projected Kubernetes Secret directory, not a `subPath`
+mount. Old credentials return 401 once the replacement is visible. Invalid or
+unreadable files return 503 without falling back to a cached credential; fixing
+the file restores authentication without a restart. Credential contents are
+never included in these errors. Already authorized requests may finish.
+
+`GET /v1/health` remains public and does not certify authentication readiness.
+Verify rotation using a protected endpoint. Router and dispatcher Secret
+projections update independently: expect temporary authentication failures until
+both see the same backend token. This is single-token rotation, not a zero-downtime
+overlapping-key protocol. Do not replay an execution under a new ID to bypass an
+authentication failure; retain its original owner and request identity.
+
 ## Host-owned egress policy
 
 An execution request cannot grant itself network authority. The dispatcher
