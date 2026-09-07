@@ -1,0 +1,225 @@
+{
+  "status": "passed",
+  "date": "2026-09-07",
+  "scope": "local operator issuance + real KVM member verification + dispatcher grant resolution; not model execution or controller integration",
+  "modelCalls": 0,
+  "credentialContentsRead": false,
+  "idempotentPublication": true,
+  "profileWithdrawalRefused": true,
+  "observations": [
+    {
+      "apiVersion": "celln.dev/harness-issuance-v1",
+      "artifactReadiness": "not_checked",
+      "conformance": "not_checked",
+      "executed": false,
+      "grant": "blake3:1745d06dd1725a4cc9c3cadac675cdd9347592be76c0cc2265ddd72ddcf9e6cf",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha3",
+        "capabilities": {
+          "egress": [
+            "https://api.deepseek.com"
+          ],
+          "memoryBytes": 268435456,
+          "outputBytes": 65536,
+          "timeoutMs": 180000,
+          "workspace": "none"
+        },
+        "execution": {
+          "lane": "agent",
+          "requireHardwareIsolation": true
+        },
+        "forge": null,
+        "harness": {
+          "borrowedTools": [
+            {
+              "description": "Uppercase text",
+              "hash": "blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c",
+              "jsonStdio": {
+                "abi": "celln.json-stdio/v1",
+                "inputBytes": 1024,
+                "inputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+                "outputBytes": 1024,
+                "outputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+                "timeoutMs": 1000
+              },
+              "name": "uppercase",
+              "path": "/uppercase"
+            },
+            {
+              "description": "Measure text length",
+              "hash": "blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245",
+              "jsonStdio": {
+                "abi": "celln.json-stdio/v1",
+                "inputBytes": 1024,
+                "inputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+                "outputBytes": 1024,
+                "outputSchema": "blake3:334d8ed405e3789cc513dc297a2137ee175e9f2b91743deb1e73e15517cf72d5",
+                "timeoutMs": 1000
+              },
+              "name": "length",
+              "path": "/length"
+            }
+          ],
+          "contractVersion": "celln.json-tools/v1",
+          "json": {
+            "maxCalls": 2,
+            "maxTurns": 3,
+            "system": "Use the explicitly lent tools."
+          },
+          "model": "deepseek-chat",
+          "modelGrant": {
+            "hash": "blake3:1745d06dd1725a4cc9c3cadac675cdd9347592be76c0cc2265ddd72ddcf9e6cf"
+          },
+          "task": "Call uppercase with text celln, wait for its result, then call length with the uppercase result. Wait for both tool results. Finally answer exactly: CELLN has length 5"
+        },
+        "id": "harness-dispatch-proof",
+        "inputs": [],
+        "invocation": {
+          "alias": "/harness",
+          "args": []
+        },
+        "mote": {
+          "hash": "blake3:69dd16ead0088c22dbd6cc36f7d7bec88a46bdb9386ba99e369985cd0659f29b"
+        },
+        "tools": [
+          {
+            "alias": "/harness",
+            "closure": {
+              "hash": "blake3:a8862c2652dc4a460c6e16bc111de2616f0afad036db7c3baf1209afac2b9d82"
+            },
+            "hash": "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47"
+          }
+        ],
+        "workload": {
+          "caller": "test:controller",
+          "id": "test-run"
+        }
+      },
+      "verification": {
+        "apiVersion": "celln.dev/sealed-members-verification-v1",
+        "artifactReadiness": "not_checked",
+        "cellDissolved": true,
+        "challenge": "blake3:5756e43d538e418dc9ceacaffc21712af600c2028b03139b95de9c048ff59bd8",
+        "closure": "blake3:a8862c2652dc4a460c6e16bc111de2616f0afad036db7c3baf1209afac2b9d82",
+        "conformance": "not_checked",
+        "initrd": "blake3:30cd3684ea388042986cab121c7cd70da40fbef2e0f5832c9e4857d5d65991a5",
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "memberCount": 4,
+        "memberIntegrity": "verified-in-sealed-cell",
+        "mote": "blake3:69dd16ead0088c22dbd6cc36f7d7bec88a46bdb9386ba99e369985cd0659f29b",
+        "publisher": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+        "requestHash": "blake3:bbd9ef879ff094b4f3568a8b850b237373ef03967599afd44a310076825c72c8",
+        "scope": "sealed-member-identities-only",
+        "toolExecution": false,
+        "toolfs": "blake3:68d46fb9468200a3455b75472c104a47a67223694e285db3893e38c100cece47"
+      }
+    },
+    {
+      "apiVersion": "celln.dev/harness-issuance-v1",
+      "artifactReadiness": "not_checked",
+      "conformance": "not_checked",
+      "executed": false,
+      "grant": "blake3:1745d06dd1725a4cc9c3cadac675cdd9347592be76c0cc2265ddd72ddcf9e6cf",
+      "request": {
+        "apiVersion": "celln.dev/v1alpha3",
+        "capabilities": {
+          "egress": [
+            "https://api.deepseek.com"
+          ],
+          "memoryBytes": 268435456,
+          "outputBytes": 65536,
+          "timeoutMs": 180000,
+          "workspace": "none"
+        },
+        "execution": {
+          "lane": "agent",
+          "requireHardwareIsolation": true
+        },
+        "forge": null,
+        "harness": {
+          "borrowedTools": [
+            {
+              "description": "Uppercase text",
+              "hash": "blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c",
+              "jsonStdio": {
+                "abi": "celln.json-stdio/v1",
+                "inputBytes": 1024,
+                "inputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+                "outputBytes": 1024,
+                "outputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+                "timeoutMs": 1000
+              },
+              "name": "uppercase",
+              "path": "/uppercase"
+            },
+            {
+              "description": "Measure text length",
+              "hash": "blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245",
+              "jsonStdio": {
+                "abi": "celln.json-stdio/v1",
+                "inputBytes": 1024,
+                "inputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+                "outputBytes": 1024,
+                "outputSchema": "blake3:334d8ed405e3789cc513dc297a2137ee175e9f2b91743deb1e73e15517cf72d5",
+                "timeoutMs": 1000
+              },
+              "name": "length",
+              "path": "/length"
+            }
+          ],
+          "contractVersion": "celln.json-tools/v1",
+          "json": {
+            "maxCalls": 2,
+            "maxTurns": 3,
+            "system": "Use the explicitly lent tools."
+          },
+          "model": "deepseek-chat",
+          "modelGrant": {
+            "hash": "blake3:1745d06dd1725a4cc9c3cadac675cdd9347592be76c0cc2265ddd72ddcf9e6cf"
+          },
+          "task": "Call uppercase with text celln, wait for its result, then call length with the uppercase result. Wait for both tool results. Finally answer exactly: CELLN has length 5"
+        },
+        "id": "harness-dispatch-proof",
+        "inputs": [],
+        "invocation": {
+          "alias": "/harness",
+          "args": []
+        },
+        "mote": {
+          "hash": "blake3:69dd16ead0088c22dbd6cc36f7d7bec88a46bdb9386ba99e369985cd0659f29b"
+        },
+        "tools": [
+          {
+            "alias": "/harness",
+            "closure": {
+              "hash": "blake3:a8862c2652dc4a460c6e16bc111de2616f0afad036db7c3baf1209afac2b9d82"
+            },
+            "hash": "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47"
+          }
+        ],
+        "workload": {
+          "caller": "test:controller",
+          "id": "test-run"
+        }
+      },
+      "verification": {
+        "apiVersion": "celln.dev/sealed-members-verification-v1",
+        "artifactReadiness": "not_checked",
+        "cellDissolved": true,
+        "challenge": "blake3:025af3db559db1e29f7dbab098c5fdc8f47dc2f51b39d85bb6574558752c4187",
+        "closure": "blake3:a8862c2652dc4a460c6e16bc111de2616f0afad036db7c3baf1209afac2b9d82",
+        "conformance": "not_checked",
+        "initrd": "blake3:30cd3684ea388042986cab121c7cd70da40fbef2e0f5832c9e4857d5d65991a5",
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "memberCount": 4,
+        "memberIntegrity": "verified-in-sealed-cell",
+        "mote": "blake3:69dd16ead0088c22dbd6cc36f7d7bec88a46bdb9386ba99e369985cd0659f29b",
+        "publisher": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+        "requestHash": "blake3:06066f284223fc316674db656881552340fd2b0938ed02d2c356aa1611bad2c1",
+        "scope": "sealed-member-identities-only",
+        "toolExecution": false,
+        "toolfs": "blake3:68d46fb9468200a3455b75472c104a47a67223694e285db3893e38c100cece47"
+      }
+    }
+  ]
+}

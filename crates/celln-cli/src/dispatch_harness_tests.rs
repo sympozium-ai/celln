@@ -80,24 +80,34 @@ fn controller_hook(
 #[test]
 #[ignore = "billable: requires CELLN_HARNESS_PACKAGE, CELLN_MODEL_TOKEN_FILE and real KVM"]
 fn harness_model_over_authenticated_dispatch() {
-    model_over_authenticated_dispatch(false);
+    model_over_authenticated_dispatch(false, false);
 }
 
 #[test]
 #[ignore = "billable: requires JSON CELLN_HARNESS_PACKAGE, CELLN_MODEL_TOKEN_FILE and real KVM"]
 fn json_harness_model_over_authenticated_dispatch() {
-    model_over_authenticated_dispatch(true);
+    model_over_authenticated_dispatch(true, false);
 }
 
-fn model_over_authenticated_dispatch(json_adapter: bool) {
+#[test]
+#[ignore = "requires real KVM and a native JSON Harness package; no model calls"]
+fn json_harness_grant_issuance_on_real_kvm() {
+    model_over_authenticated_dispatch(true, true);
+}
+
+fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool) {
     let _lock = crate::dispatch::warm::PROOF_LOCK.lock().unwrap();
     let package = PathBuf::from(
         std::env::var_os("CELLN_HARNESS_PACKAGE")
             .expect("set package directory from celln-harness-proof --package-only"),
     );
-    let token = PathBuf::from(
-        std::env::var_os("CELLN_MODEL_TOKEN_FILE").expect("set private host credential file"),
-    );
+    let token = if issuance_only {
+        PathBuf::from("/never-read-issuance-proof-credential")
+    } else {
+        PathBuf::from(
+            std::env::var_os("CELLN_MODEL_TOKEN_FILE").expect("set private host credential file"),
+        )
+    };
     assert!(
         Path::new("/dev/kvm").exists(),
         "explicit hardware proof requires KVM"
@@ -183,6 +193,10 @@ fn model_over_authenticated_dispatch(json_adapter: bool) {
         binding.task = "Call uppercase with text celln, wait for its result, then call length with the uppercase result. Wait for both tool results. Finally answer exactly: CELLN has length 5".into();
     }
     assert!(request.problems().is_empty(), "{:?}", request.problems());
+    if issuance_only {
+        crate::dispatch::harness::prove_issuance(&request, root);
+        return;
+    }
     let state = State {
         prewarm: Mutex::new(None),
         token_file: PathBuf::new(),
