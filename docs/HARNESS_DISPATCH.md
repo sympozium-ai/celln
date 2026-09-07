@@ -1,5 +1,9 @@
 # Experimental reference Harness dispatch
 
+This page retains the v1alpha2 reference contract. The separately versioned
+native JSON-tool adapter uses [v1alpha3 requests and v2 grants](JSON_HARNESS_DISPATCH.md);
+it does not change the reference tool ABI.
+
 Tracks [Sympozium #426](https://github.com/sympozium-ai/sympozium/issues/426).
 Measured 2026-09-07: **actual Sympozium controller → isolated Kind Kubernetes
 API → authenticated host dispatcher → warm-forked cell → DeepSeek → two lent

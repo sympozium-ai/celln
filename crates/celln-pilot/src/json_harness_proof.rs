@@ -15,6 +15,11 @@ use warden::vmm::boot::{BootConfig, BootEnd, LinuxCell};
 
 fn main() -> Result<()> {
     let real_model = std::env::args().any(|arg| arg == "--real-model");
+    let package_only = std::env::args().any(|arg| arg == "--package-only");
+    ensure!(
+        !(real_model && package_only),
+        "choose real-model or package-only, not both"
+    );
     let token = if real_model {
         Some(PathBuf::from(
             std::env::var_os("CELLN_MODEL_TOKEN_FILE")
@@ -36,7 +41,7 @@ fn main() -> Result<()> {
         ("uppercase", "json_tool.rs", true),
         ("length", "json_tool.rs", false),
     ] {
-        if real_model && name == "pilot-fetch" {
+        if (real_model || package_only) && name == "pilot-fetch" {
             std::fs::copy(binaries.join("pilot-fetch"), work.join(name))?;
             continue;
         }
@@ -100,6 +105,10 @@ fn main() -> Result<()> {
     signed
         .verify(&BTreeSet::from([signed.publisher.clone()]))
         .map_err(anyhow::Error::msg)?;
+    std::fs::write(
+        work.join("signed-closure.json"),
+        serde_json::to_vec(&signed)?,
+    )?;
     let mut manifest = Manifest::new();
     manifest.admit(Entry {
         alias: "/harness".into(),
@@ -123,6 +132,10 @@ fn main() -> Result<()> {
             .success(),
         "initrd build failed"
     );
+    if package_only {
+        println!("PACKAGED: native JSON Harness with real broker client; no model call or KVM execution; {}", work.display());
+        return Ok(());
+    }
     let kernel = BootConfig::host_kernel().context("readable kernel required")?;
     let mut template = LinuxCell::boot(
         BootConfig::new(kernel)

@@ -24,8 +24,15 @@ impl DispatcherCapabilities {
             binary_version: env!("CARGO_PKG_VERSION").into(),
             preflight_only: true,
             node,
-            request_versions: vec!["celln.dev/v1alpha1".into(), "celln.dev/v1alpha2".into()],
-            harness_contracts: vec!["celln.reference-functions/v1".into()],
+            request_versions: vec![
+                "celln.dev/v1alpha1".into(),
+                "celln.dev/v1alpha2".into(),
+                "celln.dev/v1alpha3".into(),
+            ],
+            harness_contracts: vec![
+                "celln.reference-functions/v1".into(),
+                "celln.json-tools/v1".into(),
+            ],
             persistent_sessions: false,
             artifact_readiness: "not_checked".into(),
         }

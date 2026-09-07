@@ -6,8 +6,10 @@ Its agent loop runs inside a sealed cell and uses explicitly lent executables
 with immutable, bounded input/result schemas. It is no longer restricted to
 two integer-string functions or required to invoke every available tool.
 
-**Integration status:** this binary is not yet accepted by the dispatcher
-Harness binding or selectable through Sympozium. The existing
+**Integration status:** the dispatcher accepts this binary only through the
+explicit v1alpha3 binding and independent v2 operator grant described in
+[JSON Harness dispatch](JSON_HARNESS_DISPATCH.md). It is not yet selectable
+through Sympozium. The existing
 `celln.reference-functions/v1` contract and refusal guards are unchanged.
 Do not label this as arbitrary OCI/Pi/Hermes compatibility, a finished user BYO
 workflow, or conversational HarnessSession support.
@@ -30,7 +32,8 @@ Host configuration is one bounded JSON argument (at most 64 KiB) containing:
 Tool invocation is **JSON stdin → JSON stdout**, with no user arguments or
 shell. This is a new adapter ABI, not a silent reinterpretation of catalogue
 `celln.argv/v1`. The catalogue/runtime schema and independently authorized host
-binding must explicitly support it before integration can be enabled.
+binding explicitly name `celln.json-stdio/v1`; the Sympozium catalogue/runtime
+schema still needs that support before its integration can be enabled.
 
 Model arguments are validated as their original bytes before parsing, so
 duplicate keys, unknown fields, wrong types and excess budgets cannot disappear
@@ -115,7 +118,8 @@ the earlier real-model run as a measurement of this later binary.
 
 ## Remaining integration gates
 
-Version the host grant/request and catalogue invocation ABI; bind the approved
+The host grant/request is now versioned and tested through authenticated HTTP
+dispatch. Extend the Sympozium catalogue invocation ABI; bind the approved
 runtime plus tool/schema/policy identities through the authority resolver;
 verify and compose their exact closure; distribute and prewarm in the serving
 process; expose runtime/tool selections and refusals in Sympozium. Re-run real

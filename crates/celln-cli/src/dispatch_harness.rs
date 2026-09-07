@@ -1,6 +1,6 @@
 //! Operator-owned grants: possessing artifact bytes is not model authority.
 use celln_manifest::Hash;
-use celln_spec::{BorrowedTool, ExecutionRequest};
+use celln_spec::{BorrowedTool, ExecutionRequest, JsonHarnessOptions};
 use serde::Deserialize;
 use std::{
     io::{Read, Write},
@@ -11,6 +11,10 @@ use std::{
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Grant {
     api_version: String,
+    #[serde(default)]
+    contract_version: Option<String>,
+    #[serde(default)]
+    json: Option<JsonHarnessOptions>,
     caller: String,
     mote: String,
     runtime: String,
@@ -27,6 +31,10 @@ pub struct Resolved {
     pub policy: warden::egress::HttpPolicy,
     pub args: Vec<String>,
 }
+
+#[cfg(test)]
+#[path = "dispatch_harness_json_tests.rs"]
+mod json_tests;
 
 pub fn resolve(
     request: &ExecutionRequest,
@@ -53,7 +61,20 @@ pub fn resolve(
         return Err("Harness grant revision mismatch".into());
     }
     let grant: Grant = serde_json::from_slice(&bytes).map_err(|_| "invalid Harness grant")?;
-    if grant.api_version != "celln.dev/harness-grant-v1"
+    let contract_authorized = match binding.contract_version.as_str() {
+        "celln.reference-functions/v1" => {
+            grant.api_version == "celln.dev/harness-grant-v1"
+                && grant.contract_version.is_none()
+                && grant.json.is_none()
+        }
+        "celln.json-tools/v1" => {
+            grant.api_version == "celln.dev/harness-grant-v2"
+                && grant.contract_version.as_deref() == Some("celln.json-tools/v1")
+                && grant.json == binding.json
+        }
+        _ => false,
+    };
+    if !contract_authorized
         || grant.caller != request.workload.caller
         || grant.mote != request.mote.as_ref().unwrap().hash
         || grant.runtime != request.tools[0].hash
@@ -100,6 +121,11 @@ pub fn resolve(
     {
         return Err("unsupported Harness closure composition".into());
     }
+    let config = if binding.contract_version == "celln.json-tools/v1" {
+        json_config(request, &grant, root)?
+    } else {
+        serde_json::json!({"task":binding.task,"url":grant.url,"model":grant.model,"tools":binding.borrowed_tools}).to_string()
+    };
     let mut policy =
         warden::egress::HttpPolicy::new(vec![origin.trim_start_matches("https://").into()]);
     policy.max_requests = grant.max_requests;
@@ -113,11 +139,61 @@ pub fn resolve(
         max_output_tokens: grant.max_output_tokens,
         max_total_output_tokens: grant.max_total_output_tokens,
     });
-    let config = serde_json::json!({"task":binding.task,"url":grant.url,"model":grant.model,"tools":binding.borrowed_tools});
     Ok(Some(Resolved {
         policy,
-        args: vec![config.to_string()],
+        args: vec![config],
     }))
+}
+
+fn json_config(request: &ExecutionRequest, grant: &Grant, root: &Path) -> Result<String, String> {
+    let binding = request.harness.as_ref().ok_or("missing Harness")?;
+    let options = binding
+        .json
+        .as_ref()
+        .ok_or("missing JSON Harness options")?;
+    if grant.max_requests < options.max_turns
+        || grant.max_total_output_tokens < (options.max_turns as u64) * 512
+    {
+        return Err("model grant cannot fund the configured JSON Harness turn ceiling".into());
+    }
+    // Public schema data may be distributed in a store. Only the independently
+    // authorized exact hashes above can select bytes from it; no host path is
+    // accepted from a request and no schema becomes executable authority.
+    let store = celln_store::Store::open(root.join("tool-schemas"))
+        .map_err(|_| "tool schema store unavailable")?;
+    let schema = |hash: &str| -> Result<serde_json::Value, String> {
+        let bytes = store
+            .get_bounded(
+                &Hash(hash.into()),
+                celln_manifest::tool_schema::MAX_SCHEMA_BYTES,
+            )
+            .map_err(|_| "tool schema unavailable or revision mismatch")?;
+        let bytes = String::from_utf8(bytes).map_err(|_| "tool schema is not UTF-8")?;
+        Ok(serde_json::json!({"hash":hash,"bytes":bytes}))
+    };
+    let mut tools = Vec::new();
+    for tool in &binding.borrowed_tools {
+        let io = tool.json_stdio.as_ref().ok_or("missing JSON tool ABI")?;
+        tools.push(serde_json::json!({
+            "name":tool.name,"path":tool.path,"hash":tool.hash,"description":tool.description,
+            "input_schema":schema(&io.input_schema)?,"output_schema":schema(&io.output_schema)?,
+            "input_bytes":io.input_bytes,"output_bytes":io.output_bytes,"timeout_ms":io.timeout_ms
+        }));
+    }
+    let config = serde_json::json!({
+        "contract":binding.contract_version,"task":binding.task,"system":options.system,
+        "url":grant.url,"model":grant.model,"max_turns":options.max_turns,
+        "max_calls":options.max_calls,"tools":tools
+    });
+    let encoded = config.to_string();
+    if encoded.len() > 65536 {
+        return Err("JSON Harness configuration exceeds delivery limit".into());
+    }
+    let typed: pilot::json_harness::Config =
+        serde_json::from_value(config).map_err(|_| "invalid JSON Harness configuration")?;
+    pilot::json_harness::validate(&typed)
+        .map_err(|e| format!("invalid JSON Harness contract: {e}"))?;
+    Ok(encoded)
 }
 
 /// Conservative durable local tombstone: restart must not recreate allowance
