@@ -1,0 +1,6 @@
+# Test-only derivative: model broker invokes curl on the host side.
+# Supply a locally built, recorded combined router/Harness image.
+ARG CELLN_PROOF_BASE
+FROM ${CELLN_PROOF_BASE}
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,120 @@
+# Disposable Kind fixture, not the production host installer.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dispatcher
+  namespace: celln-system
+spec:
+  serviceName: dispatcher-headless
+  replicas: 2
+  selector:
+    matchLabels: {app: celln-dispatcher-proof}
+  template:
+    metadata:
+      labels: {app: celln-dispatcher-proof}
+    spec:
+      automountServiceAccountToken: false
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values: [celln-deployed-worker, celln-deployed-worker2]
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels: {app: celln-dispatcher-proof}
+      containers:
+        - name: dispatcher
+          image: localhost/celln-dispatcher-proof:bb1e718
+          imagePullPolicy: Never
+          command: [/usr/local/bin/celln]
+          args:
+            - dispatcher
+            - --listen
+            - 0.0.0.0:8787
+            - --unsafe-non-loopback
+            - --token-file
+            - /etc/celln/backend/token
+            - --root
+            - /var/lib/celln
+            - --mote-store
+            - /var/lib/celln/motes
+            - --tool-store
+            - /var/lib/celln/tools
+            - --node-name
+            - $(NODE_NAME)
+            - --allow-egress-host
+            - api.deepseek.com
+            - --egress-slots
+            - '1'
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef: {fieldPath: spec.nodeName}
+          # Test fixture exposes /dev/kvm without a device plugin. This is NOT
+          # a claim that production provisioning should use broad privilege.
+          securityContext:
+            privileged: true
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: boot, mountPath: /boot, readOnly: true}
+            - {name: modules, mountPath: /lib/modules, readOnly: true}
+            - {name: state, mountPath: /var/lib/celln}
+            - {name: kvm, mountPath: /dev/kvm}
+            - {name: backend, mountPath: /etc/celln/backend, readOnly: true}
+            - {name: model, mountPath: /etc/celln/model, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: boot
+          hostPath: {path: /boot, type: Directory}
+        - name: modules
+          hostPath: {path: /lib/modules, type: Directory}
+        - name: state
+          hostPath: {path: /var/lib/celln-deployed-proof, type: Directory}
+        - name: kvm
+          hostPath: {path: /dev/kvm, type: CharDevice}
+        - name: backend
+          secret: {secretName: celln-dispatcher-backend, defaultMode: 0400}
+        - name: model
+          secret: {secretName: celln-model-proof, defaultMode: 0400, optional: true}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dispatcher-headless, namespace: celln-system}
+spec:
+  clusterIP: None
+  selector: {app: celln-dispatcher-proof}
+  ports: [{port: 8787, targetPort: 8787}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dispatcher-a, namespace: celln-system}
+spec:
+  selector: {statefulset.kubernetes.io/pod-name: dispatcher-0}
+  ports: [{port: 8787, targetPort: 8787}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: dispatcher-b, namespace: celln-system}
+spec:
+  selector: {statefulset.kubernetes.io/pod-name: dispatcher-1}
+  ports: [{port: 8787, targetPort: 8787}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: dispatcher-proof-ingress, namespace: celln-system}
+spec:
+  podSelector:
+    matchLabels: {app: celln-dispatcher-proof}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: celln-router}
+      ports: [{protocol: TCP, port: 8787}]
