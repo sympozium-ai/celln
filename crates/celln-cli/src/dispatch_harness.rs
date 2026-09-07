@@ -1,16 +1,25 @@
 //! Operator-owned grants: possessing artifact bytes is not model authority.
 use celln_manifest::Hash;
 use celln_spec::{BorrowedTool, ExecutionRequest, JsonHarnessOptions};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
 };
 
-#[derive(Deserialize)]
+#[path = "dispatch_harness_issuer.rs"]
+mod issuer;
+pub(crate) use issuer::inspect_binding;
+pub(crate) use issuer::issue;
+#[cfg(test)]
+pub(crate) use issuer::prove_issuance;
+
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Grant {
     api_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issuer: Option<issuer::Binding>,
     #[serde(default)]
     contract_version: Option<String>,
     #[serde(default)]
@@ -60,7 +69,18 @@ pub fn resolve(
     if bytes.len() > 65536 || Hash::of(&bytes).0 != binding.model_grant.hash {
         return Err("Harness grant revision mismatch".into());
     }
-    let grant: Grant = serde_json::from_slice(&bytes).map_err(|_| "invalid Harness grant")?;
+    resolve_bytes(request, closure, root, &bytes).map(Some)
+}
+
+fn resolve_bytes(
+    request: &ExecutionRequest,
+    closure: &super::closure::Admitted,
+    root: &Path,
+    bytes: &[u8],
+) -> Result<Resolved, String> {
+    let binding = request.harness.as_ref().ok_or("missing Harness binding")?;
+    let grant: Grant = serde_json::from_slice(bytes).map_err(|_| "invalid Harness grant")?;
+    issuer::validate(request, &grant, root)?;
     let contract_authorized = match binding.contract_version.as_str() {
         "celln.reference-functions/v1" => {
             grant.api_version == "celln.dev/harness-grant-v1"
@@ -68,7 +88,8 @@ pub fn resolve(
                 && grant.json.is_none()
         }
         "celln.json-tools/v1" => {
-            grant.api_version == "celln.dev/harness-grant-v2"
+            (grant.api_version == "celln.dev/harness-grant-v2"
+                || grant.api_version == "celln.dev/harness-grant-v3")
                 && grant.contract_version.as_deref() == Some("celln.json-tools/v1")
                 && grant.json == binding.json
         }
@@ -165,10 +186,10 @@ pub fn resolve(
         max_output_tokens: grant.max_output_tokens,
         max_total_output_tokens: grant.max_total_output_tokens,
     });
-    Ok(Some(Resolved {
+    Ok(Resolved {
         policy,
         args: vec![config],
-    }))
+    })
 }
 
 fn json_config(request: &ExecutionRequest, grant: &Grant, root: &Path) -> Result<String, String> {

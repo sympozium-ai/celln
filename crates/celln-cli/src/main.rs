@@ -66,6 +66,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Inspect a request binding for operator review; grants no authority.
+    HarnessBinding { request: PathBuf },
+    /// Issue a request-bound model grant from an independently provisioned host profile.
+    HarnessGrant {
+        request: PathBuf,
+        #[arg(long)]
+        profile: String,
+    },
     /// Authenticate and admit precomposed dependency closures.
     #[command(subcommand)]
     Closure(ClosureCmd),
@@ -441,6 +449,8 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::HarnessBinding { request } => dispatch::harness::inspect_binding(request),
+        Cmd::HarnessGrant { request, profile } => dispatch::harness::issue(request, profile, &root),
         Cmd::Closure(ClosureCmd::Compose {
             plan,
             key_file,

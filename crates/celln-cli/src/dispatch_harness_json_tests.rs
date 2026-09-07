@@ -78,7 +78,7 @@ fn composed_json_sources_bind_exact_selected_roots_and_keep_dependencies_out_of_
     assert!(bind(sources).is_err());
 }
 
-fn fixture(root: &Path) -> (ExecutionRequest, super::super::closure::Admitted, Value) {
+pub(super) fn fixture(root: &Path) -> (ExecutionRequest, super::super::closure::Admitted, Value) {
     let mut wire: Value = serde_json::from_str(include_str!(
         "../../../examples/execution/harness-reference.json"
     ))
