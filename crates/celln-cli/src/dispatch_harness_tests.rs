@@ -184,6 +184,7 @@ fn model_over_authenticated_dispatch(json_adapter: bool) {
     }
     assert!(request.problems().is_empty(), "{:?}", request.problems());
     let state = State {
+        prewarm: Mutex::new(None),
         token_file: PathBuf::new(),
         token: "test-token-at-least-24-bytes".into(),
         egress_policy: EgressPolicy::new(&["api.deepseek.com".into()]).unwrap(),

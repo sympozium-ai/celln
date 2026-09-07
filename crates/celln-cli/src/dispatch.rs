@@ -19,6 +19,7 @@ pub(crate) mod harness;
 mod substrate;
 pub(crate) use substrate::check_members;
 pub(crate) use substrate::launch_declared;
+pub(crate) use substrate::validate_member_request;
 #[path = "dispatch_inputs.rs"]
 pub(crate) mod inputs;
 #[cfg(target_os = "linux")]

@@ -1,0 +1,70 @@
+{
+  "capacityReleased": true,
+  "checks": 2,
+  "modelCalls": 0,
+  "observations": [
+    {
+      "apiVersion": "celln.dev/artifact-prewarm-v1",
+      "artifactReadiness": "not_checked",
+      "conformance": "not_checked",
+      "executionAuthorized": false,
+      "node": "test",
+      "processEpoch": "blake3:261838a79b4e1f9e900f46a686906858afbab2e0c70f7183addb78a7e0627d75",
+      "requestHash": "blake3:3d87e0179bb0dbe17869827a3a6536c298af3eb99a2fa4e6a76be60ab9538bae",
+      "validity": "observation-only",
+      "verification": {
+        "apiVersion": "celln.dev/sealed-members-verification-v1",
+        "artifactReadiness": "not_checked",
+        "cellDissolved": true,
+        "challenge": "blake3:8c442711b940fbdebe51d0af5382a0d643f01994b5eba440ef2125381f435765",
+        "closure": "blake3:34b15ce2e538cfbbd3ad52d05a895eed30f66fe5df6be00fb82f549c97408806",
+        "conformance": "not_checked",
+        "initrd": "blake3:37c85b3486c1752e6a61d70fe7403306ff265baa59b8c93a68d0de6f9468dce7",
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "memberCount": 4,
+        "memberIntegrity": "verified-in-sealed-cell",
+        "mote": "blake3:ff5110586a895ea7f4e32c27bc430a87b1e2bfbc46971c8a6759d51f64956e7c",
+        "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "requestHash": "blake3:2f00445512b79c156fa9994e198178d4591ce9497f870f171633fbe515686623",
+        "scope": "sealed-member-identities-only",
+        "toolExecution": false,
+        "toolfs": "blake3:c6e23d59578334855e485d0824960c5b08d909d0fde19688673653904fc6b7b6"
+      },
+      "warmState": "present-at-observation"
+    },
+    {
+      "apiVersion": "celln.dev/artifact-prewarm-v1",
+      "artifactReadiness": "not_checked",
+      "conformance": "not_checked",
+      "executionAuthorized": false,
+      "node": "test",
+      "processEpoch": "blake3:261838a79b4e1f9e900f46a686906858afbab2e0c70f7183addb78a7e0627d75",
+      "requestHash": "blake3:3d87e0179bb0dbe17869827a3a6536c298af3eb99a2fa4e6a76be60ab9538bae",
+      "validity": "observation-only",
+      "verification": {
+        "apiVersion": "celln.dev/sealed-members-verification-v1",
+        "artifactReadiness": "not_checked",
+        "cellDissolved": true,
+        "challenge": "blake3:939562789fa1950f8a2ebdfa80710753446277cafd80bd21bb06303c0a0db951",
+        "closure": "blake3:34b15ce2e538cfbbd3ad52d05a895eed30f66fe5df6be00fb82f549c97408806",
+        "conformance": "not_checked",
+        "initrd": "blake3:37c85b3486c1752e6a61d70fe7403306ff265baa59b8c93a68d0de6f9468dce7",
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "memberCount": 4,
+        "memberIntegrity": "verified-in-sealed-cell",
+        "mote": "blake3:ff5110586a895ea7f4e32c27bc430a87b1e2bfbc46971c8a6759d51f64956e7c",
+        "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "requestHash": "blake3:478b987d8a1bf52e1093dfc3dd3814ea33498c64c9ad8b58d18d1fbc68867741",
+        "scope": "sealed-member-identities-only",
+        "toolExecution": false,
+        "toolfs": "blake3:c6e23d59578334855e485d0824960c5b08d909d0fde19688673653904fc6b7b6"
+      },
+      "warmState": "present-at-observation"
+    }
+  ],
+  "preparations": 1,
+  "scope": "authenticated TCP dispatcher handler + real KVM, not router/controller readiness",
+  "sourceRevocationRefused": true,
+  "status": "passed",
+  "toolExecution": false
+}

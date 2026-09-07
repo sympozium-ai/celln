@@ -292,6 +292,7 @@ fn signed_closure_on_real_kvm() {
     composed_check.invocation.as_mut().unwrap().args.clear();
     let report = super::super::check_members(&composed_check, &motes, &tools, &state).unwrap();
     assert_eq!(report["memberIntegrity"], "verified-in-sealed-cell");
+    crate::dispatch_http::prove_prewarm_on_kvm(&composed_check, &state, &closure_hash.0);
     let (out, _) =
         super::super::launch_declared(&composed_request, &motes, &tools, &state).unwrap();
     assert!(out.succeeded(), "{out:?}");
