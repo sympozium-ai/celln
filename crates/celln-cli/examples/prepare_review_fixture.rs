@@ -23,6 +23,7 @@ fn main() -> Result<()> {
     let executable = Hash::of(b"declared example member").0;
     let signed = Closure {
         api_version: "celln.dev/closure-v1".into(),
+        sources: Vec::new(),
         toolfs: Hash::of(filesystem).0,
         entrypoint: "/example".into(),
         interpreter: false,

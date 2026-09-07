@@ -95,6 +95,7 @@ fn main() -> Result<()> {
         .collect();
     let signed = Closure {
         api_version: "celln.dev/closure-v1".into(),
+        sources: Vec::new(),
         toolfs: Hash::of(&payload).0,
         entrypoint: "/harness".into(),
         interpreter: false,

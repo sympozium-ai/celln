@@ -6,6 +6,78 @@ use std::collections::{BTreeMap, BTreeSet};
 
 const SCHEMA: &str = r#"{"type":"object","properties":{"text":{"type":"string","minLength":0,"maxLength":64}},"required":["text"],"additionalProperties":false}"#;
 
+#[test]
+fn composed_json_sources_bind_exact_selected_roots_and_keep_dependencies_out_of_tool_list() {
+    use celln_manifest::closure::composition::{compose, Source};
+    let root = tempfile::tempdir().unwrap();
+    let (mut request, mut admitted, mut grant) = fixture(root.path());
+    let original = &admitted.signed.closure;
+    let mut runtime = original.clone();
+    for tool in &request.harness.as_ref().unwrap().borrowed_tools {
+        runtime.members.remove(&tool.path);
+        runtime
+            .members
+            .get_mut("/harness")
+            .unwrap()
+            .dependencies
+            .remove(&tool.path);
+    }
+    let to_source = |closure: Closure| {
+        let descriptor = serde_json::to_string(&closure.sign(&[19; 32]).unwrap()).unwrap();
+        Source {
+            hash: Hash::of(descriptor.as_bytes()).0,
+            descriptor,
+        }
+    };
+    let mut sources = vec![to_source(runtime)];
+    for tool in &request.harness.as_ref().unwrap().borrowed_tools {
+        let library = "/lib/shared.so".to_string();
+        let mut member = original.members[&tool.path].clone();
+        member.dependencies.insert(library.clone());
+        sources.push(to_source(Closure {
+            api_version: "celln.dev/closure-v1".into(),
+            sources: vec![],
+            toolfs: Hash::of(tool.path.as_bytes()).0,
+            entrypoint: tool.path.clone(),
+            interpreter: false,
+            members: BTreeMap::from([
+                (tool.path.clone(), member),
+                (
+                    library,
+                    Member {
+                        hash: Hash::of(b"shared library").0,
+                        dependencies: BTreeSet::new(),
+                    },
+                ),
+            ]),
+        }));
+    }
+    let mut bind = |sources: Vec<Source>| {
+        let signed = compose(sources, &Hash::of(b"composed image"))
+            .unwrap()
+            .sign(&[19; 32])
+            .unwrap();
+        let identity = Hash::of(&serde_json::to_vec(&signed).unwrap()).0;
+        admitted.provenance.hash = identity.clone();
+        admitted.provenance.toolfs = signed.closure.toolfs.clone();
+        admitted.provenance.members = signed.closure.members.clone();
+        admitted.signed = signed;
+        request.tools[0].closure.as_mut().unwrap().hash = identity.clone();
+        grant["closure"] = json!(identity);
+        install(root.path(), &mut request, &grant);
+        resolve(&request, Some(&admitted), root.path())
+    };
+    let resolved = bind(sources.clone()).unwrap().unwrap();
+    let config: Value = serde_json::from_str(&resolved.args[0]).unwrap();
+    assert_eq!(config["tools"].as_array().unwrap().len(), 2);
+    assert!(!resolved.args[0].contains("shared.so"));
+    let mut reordered = sources.clone();
+    reordered.swap(1, 2);
+    assert!(bind(reordered).err().unwrap().contains("order or root"));
+    sources.pop();
+    assert!(bind(sources).is_err());
+}
+
 fn fixture(root: &Path) -> (ExecutionRequest, super::super::closure::Admitted, Value) {
     let mut wire: Value = serde_json::from_str(include_str!(
         "../../../examples/execution/harness-reference.json"
@@ -50,6 +122,7 @@ fn fixture(root: &Path) -> (ExecutionRequest, super::super::closure::Admitted, V
     );
     let signed = Closure {
         api_version: "celln.dev/closure-v1".into(),
+        sources: Vec::new(),
         toolfs: Hash::of(b"image").0,
         entrypoint: "/harness".into(),
         interpreter: false,

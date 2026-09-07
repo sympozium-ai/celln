@@ -115,6 +115,7 @@ fn signed_closure_on_real_kvm() {
     let image_hash = Hash::of(&image_bytes);
     let signed = Closure {
         api_version: "celln.dev/closure-v1".into(),
+        sources: Vec::new(),
         toolfs: image_hash.0.clone(),
         entrypoint: "/bin/program".into(),
         interpreter: false,
@@ -206,7 +207,7 @@ fn signed_closure_on_real_kvm() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/celln"));
     let cli_bytes = command(
-        Command::new(binary)
+        Command::new(&binary)
             .arg("--root")
             .arg(&state)
             .args(["closure", "check-members"])
@@ -235,6 +236,91 @@ fn signed_closure_on_real_kvm() {
         preparations + 1
     );
     assert_eq!(crate::cells::live_count(&state), 0);
+    // Exercise the actual compositor CLI with a dynamic source closure, then
+    // verify and execute its newly built image inside a sealed warm-forked cell.
+    let member_store = Store::open(&tools).unwrap();
+    for path in signed.closure.members.keys() {
+        member_store
+            .put(&std::fs::read(rootfs.join(path.trim_start_matches('/'))).unwrap())
+            .unwrap();
+    }
+    let plan = work.path().join("composition-plan.json");
+    std::fs::write(
+        &plan,
+        serde_json::to_vec(&json!({"apiVersion":"celln.dev/composition-plan-v1",
+        "sources":[closure_hash.0],"imageBytes":33554432}))
+        .unwrap(),
+    )
+    .unwrap();
+    let key = work.path().join("fixture-seed");
+    std::fs::write(&key, [17; 32]).unwrap();
+    let composed_dir = work.path().join("composed");
+    command(
+        Command::new(&binary)
+            .arg("--root")
+            .arg(&state)
+            .args(["closure", "compose"])
+            .arg(&plan)
+            .arg("--key-file")
+            .arg(&key)
+            .arg("--output-dir")
+            .arg(&composed_dir),
+    );
+    let composed_bytes = std::fs::read(composed_dir.join("signed-closure.json")).unwrap();
+    let composed = crate::closure_policy::verify(&composed_bytes, &state).unwrap();
+    assert_eq!(composed.signed.closure.api_version, "celln.dev/closure-v2");
+    let composed_hash = closure_store.put(&composed_bytes).unwrap();
+    let composed_image = store
+        .put(&std::fs::read(composed_dir.join("toolfs.ext2")).unwrap())
+        .unwrap();
+    let composed_bundle = store.put(&serde_json::to_vec(&json!({"apiVersion":"celln.dev/v1alpha1",
+        "format":"celln.warm-closure-v1","kernel":kernel_hash.0,"initrd":initrd_hash.0,
+        "toolfs":composed_image.0,"invocation":{"alias":"/closure/program","toolHash":program_hash.0}})).unwrap()).unwrap();
+    std::fs::write(
+        state.join("trusted-motes.json"),
+        serde_json::to_vec(&json!({"apiVersion":"celln.dev/v1alpha1",
+        "bundles":[bundle.0,composed_bundle.0]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut composed_request = request.clone();
+    composed_request.id = "composed-closure-proof".into();
+    composed_request.mote.as_mut().unwrap().hash = composed_bundle.0;
+    composed_request.tools[0].closure.as_mut().unwrap().hash = composed_hash.0;
+    let mut composed_check = composed_request.clone();
+    composed_check.capabilities.workspace = serde_json::from_value(json!("none")).unwrap();
+    composed_check.invocation.as_mut().unwrap().args.clear();
+    let report = super::super::check_members(&composed_check, &motes, &tools, &state).unwrap();
+    assert_eq!(report["memberIntegrity"], "verified-in-sealed-cell");
+    let (out, _) =
+        super::super::launch_declared(&composed_request, &motes, &tools, &state).unwrap();
+    assert!(out.succeeded(), "{out:?}");
+    assert_eq!(
+        out.output.as_deref(),
+        Some(b"closure:read-write:dynamic-loader:replacement-denied\n".as_slice())
+    );
+    let mut source_revoked = policy.clone();
+    source_revoked["revoked"] = json!([closure_hash.0]);
+    std::fs::write(
+        state.join("trusted-closures.json"),
+        serde_json::to_vec(&source_revoked).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        super::super::launch_declared(&composed_request, &motes, &tools, &state)
+            .unwrap_err()
+            .contains("revoked")
+    );
+    std::fs::write(
+        state.join("trusted-closures.json"),
+        serde_json::to_vec(&policy).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(crate::cells::live_count(&state), 0);
+    // The composed image can evict the original single-entry warm fixture.
+    // Prepare the original again before its existing live-withdrawal checks.
+    let (restored, _) = super::super::launch_declared(&request, &motes, &tools, &state).unwrap();
+    assert!(restored.succeeded(), "{restored:?}");
     let mut revoked_cell = super::super::warm::fork(
         format!("{}:268435456", bundle.0),
         vec![program_hash.0.clone()],

@@ -14,6 +14,7 @@ fn cli_verification_is_bound_read_only_and_rechecks_policy() {
     let executable = Hash::of(b"test executable").0;
     let signed = Closure {
         api_version: "celln.dev/closure-v1".into(),
+        sources: Vec::new(),
         toolfs: Hash::of(b"test toolfs").0,
         entrypoint: "/tools/test".into(),
         interpreter: false,
