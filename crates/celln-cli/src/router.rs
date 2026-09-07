@@ -20,25 +20,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-const ROUTER_TOKEN_BYTES: usize = 24;
 #[path = "router_ownership.rs"]
 mod ownership;
 
 // Credentials are bounded and never echoed in errors. Reload on each request
 // to support atomic file/Secret rotation; an unreadable file fails closed.
 fn read_token(path: &Path) -> Result<String> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(4097)
-        .read_to_end(&mut bytes)?;
-    let token = std::str::from_utf8(&bytes)?.trim();
-    if bytes.len() > 4096
-        || token.len() < ROUTER_TOKEN_BYTES
-        || !token.bytes().all(|b| b.is_ascii_graphic())
-    {
-        bail!("invalid router credential");
-    }
-    Ok(token.to_owned())
+    crate::dispatch_http::read_bearer_token(path)
 }
 
 fn credentials(state: &RouterState) -> Result<(String, String)> {

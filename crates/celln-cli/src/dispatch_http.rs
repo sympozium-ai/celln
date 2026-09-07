@@ -205,11 +205,37 @@ fn current_node(
 }
 
 struct State {
+    token_file: PathBuf,
+    #[cfg(test)]
     token: String,
     egress_policy: EgressPolicy,
     root: PathBuf,
     probe: NodeProbeArgs,
     executions: Executions,
+}
+
+/// Reopen the path each time: projected Secrets replace symlinks during rotation.
+/// Bound the read and never include credential bytes in diagnostics.
+pub(crate) fn read_bearer_token(path: &Path) -> Result<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(4097)
+        .read_to_end(&mut bytes)?;
+    let token = std::str::from_utf8(&bytes)?.trim();
+    if bytes.len() > 4096 || token.len() < 24 || !token.bytes().all(|b| b.is_ascii_graphic()) {
+        bail!("invalid bearer credential");
+    }
+    Ok(token.to_owned())
+}
+
+impl State {
+    fn credential(&self) -> Result<String> {
+        #[cfg(test)]
+        if self.token_file.as_os_str().is_empty() {
+            return Ok(self.token.clone());
+        }
+        read_bearer_token(&self.token_file)
+    }
 }
 
 #[derive(Debug)]
@@ -295,13 +321,7 @@ pub fn serve(
 ) -> Result<u8> {
     let (listen_address, non_loopback) = validate_listen(listen, unsafe_non_loopback)?;
     let egress_policy = EgressPolicy::new(allow_egress_hosts)?;
-    let token = std::fs::read_to_string(token_file)
-        .with_context(|| format!("reading dispatcher token {}", token_file.display()))?
-        .trim()
-        .to_owned();
-    if token.len() < 24 {
-        bail!("dispatcher token must contain at least 24 non-whitespace bytes");
-    }
+    read_bearer_token(token_file).context("reading dispatcher credential")?;
     // Reservations are process-local. Two dispatchers must not independently
     // advertise the same state root's capacity while neither has a cell yet.
     let _ownership = own_dispatch_root(&root)?;
@@ -309,7 +329,9 @@ pub fn serve(
     let listener = TcpListener::bind(listen_address)
         .with_context(|| format!("binding dispatcher {listen_address}"))?;
     let state = Arc::new(State {
-        token,
+        token_file: token_file.to_owned(),
+        #[cfg(test)]
+        token: String::new(),
         egress_policy,
         root,
         probe: probe.clone(),
@@ -377,15 +399,27 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         .to_owned();
     let method = method.to_owned();
     let (length, authorization) = read_headers(&mut reader)?;
-    let authorized = authorization
-        .is_some_and(|value| constant_time_eq(value.as_bytes(), state.token.as_bytes()));
     let is_public_health_check = method == "GET" && path == "/v1/health";
-    if !authorized && !is_public_health_check {
-        return reply(
-            &mut stream,
-            401,
-            &serde_json::json!({"error":"unauthorized"}),
-        );
+    if !is_public_health_check {
+        let token = match state.credential() {
+            Ok(token) => token,
+            Err(_) => {
+                return reply(
+                    &mut stream,
+                    503,
+                    &serde_json::json!({"error":"dispatcher credential unavailable"}),
+                );
+            }
+        };
+        let authorized =
+            authorization.is_some_and(|value| constant_time_eq(value.as_bytes(), token.as_bytes()));
+        if !authorized {
+            return reply(
+                &mut stream,
+                401,
+                &serde_json::json!({"error":"unauthorized"}),
+            );
+        }
     }
     match (method.as_str(), path.as_str()) {
         ("GET", "/v1/node") => {
@@ -944,6 +978,7 @@ mod tests {
 
     fn lifecycle_state(root: &Path) -> State {
         State {
+            token_file: PathBuf::new(),
             token: "test-token-at-least-24-bytes".into(),
             egress_policy: EgressPolicy::new(&[]).unwrap(),
             root: root.into(),
@@ -957,6 +992,42 @@ mod tests {
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    #[test]
+    fn credentials_rotate_and_fail_closed_without_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = lifecycle_state(dir.path());
+        state.token_file = dir.path().join("credential");
+        let old = "old-public-test-token-at-least-24";
+        let new = "new-public-test-token-at-least-24";
+        std::fs::write(&state.token_file, old).unwrap();
+        // An authenticated request reaches lookup (404); rejected requests do not.
+        assert!(cancel_http(&state, "absent", old).starts_with("HTTP/1.1 404"));
+        assert!(cancel_http(&state, "absent", "").starts_with("HTTP/1.1 401"));
+        let replacement = dir.path().join("replacement");
+        std::fs::write(&replacement, format!("{new}\n")).unwrap();
+        std::fs::rename(&replacement, &state.token_file).unwrap();
+        assert!(cancel_http(&state, "absent", old).starts_with("HTTP/1.1 401"));
+        assert!(cancel_http(&state, "absent", new).starts_with("HTTP/1.1 404"));
+        for invalid in [
+            Vec::new(),
+            b"short".to_vec(),
+            format!("{new} injected").into_bytes(),
+            format!("{new}\r\nInjected: header").into_bytes(),
+            vec![b'x'; 4097],
+            vec![0xff; 24],
+        ] {
+            std::fs::write(&state.token_file, invalid).unwrap();
+            let response = cancel_http(&state, "absent", new);
+            assert!(response.starts_with("HTTP/1.1 503"));
+            assert!(!response.contains(new));
+        }
+        std::fs::remove_file(&state.token_file).unwrap();
+        assert!(cancel_http(&state, "absent", old).starts_with("HTTP/1.1 503"));
+        std::fs::write(&state.token_file, new).unwrap();
+        assert!(cancel_http(&state, "absent", new).starts_with("HTTP/1.1 404"));
+        assert!(state.executions.lock().unwrap().is_empty());
     }
 
     #[cfg(unix)]
@@ -1375,6 +1446,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let root = work.path().join("unused");
         let state = State {
+            token_file: PathBuf::new(),
             token: "test-token-at-least-24-bytes".into(),
             egress_policy: EgressPolicy::new(&[]).unwrap(),
             root: root.clone(),
