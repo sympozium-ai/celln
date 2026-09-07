@@ -46,6 +46,11 @@ the bounded warm template may remain cached. The cell run has a watchdog of at
 most ten seconds; cold preparation retains its existing separate watchdog.
 Policies are rechecked after the potentially slow operation.
 
+The warm cache is process-local. A standalone CLI exits and releases its
+template; checking members in that process does **not** prewarm a separate
+dispatcher or make a node selection ready. Distribution/prewarm must be proven
+in the actual serving process before advertising readiness.
+
 Success reports `scope=sealed-member-identities-only`,
 `memberIntegrity=verified-in-sealed-cell`, `toolExecution=false`, exact
 mote/kernel/initrd/toolfs/closure identities and `cellDissolved=true`.
