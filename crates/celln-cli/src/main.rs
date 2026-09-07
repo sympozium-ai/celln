@@ -68,6 +68,8 @@ struct Cli {
 enum Cmd {
     /// Inspect a request binding for operator review; grants no authority.
     HarnessBinding { request: PathBuf },
+    /// Inspect this host's boot clock for bounded model-profile expiry (no authority).
+    HarnessProfileClock,
     /// Issue a request-bound model grant from an independently provisioned host profile.
     HarnessGrant {
         request: PathBuf,
@@ -450,6 +452,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::HarnessBinding { request } => dispatch::harness::inspect_binding(request),
+        Cmd::HarnessProfileClock => dispatch::harness::inspect_clock(),
         Cmd::HarnessGrant { request, profile } => dispatch::harness::issue(request, profile, &root),
         Cmd::Closure(ClosureCmd::Compose {
             plan,

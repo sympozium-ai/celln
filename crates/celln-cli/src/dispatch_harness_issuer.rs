@@ -1,6 +1,10 @@
 //! Local operator issuance. This is not an upload endpoint or a tenant authority.
 use super::*;
 
+#[path = "dispatch_harness_expiry.rs"]
+mod expiry;
+pub(crate) use expiry::inspect_clock;
+
 #[cfg(test)]
 #[path = "dispatch_harness_issuer_tests.rs"]
 mod tests;
@@ -34,6 +38,8 @@ pub(super) struct Binding {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Profile {
     api_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expiry: Option<expiry::Expiry>,
     request_binding: String,
     credential_file: PathBuf,
     model: String,
@@ -73,8 +79,12 @@ fn profile(root: &Path, name: &str) -> Result<(Profile, String), String> {
     }
     let p: Profile =
         serde_json::from_slice(&bytes).map_err(|_| "invalid operator model profile")?;
-    if p.api_version != "celln.dev/model-issuer-profile-v1"
-        || !p.credential_file.is_absolute()
+    match (p.api_version.as_str(), &p.expiry) {
+        ("celln.dev/model-issuer-profile-v1", None) => {}
+        ("celln.dev/model-issuer-profile-v2", Some(expiry)) => expiry.validate_current()?,
+        _ => return Err("unsupported operator model profile expiry contract".into()),
+    }
+    if !p.credential_file.is_absolute()
         || p.url != "https://api.deepseek.com/chat/completions"
         || p.model.is_empty()
         || p.model.len() > 128

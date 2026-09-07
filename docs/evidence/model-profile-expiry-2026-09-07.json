@@ -1,0 +1,35 @@
+{
+  "date": "2026-09-07",
+  "scope": "host-enforced new-issuance and grant-resolution expiry",
+  "profileVersion": "celln.dev/model-issuer-profile-v2",
+  "grantVersion": "celln.dev/harness-grant-v3",
+  "clock": "Linux boot UUID plus CLOCK_BOOTTIME; no wall time",
+  "maxLifetimeMs": 300000,
+  "portableChecks": {
+    "makeCi": "passed",
+    "clippyAllTargetsAllFeaturesDenyWarnings": "passed",
+    "issuerTests": "6 passed; none skipped in the targeted Linux run",
+    "expiryCases": [
+      "future issuance, exact expiry boundary and expired profile refused",
+      "zero, reversed, overlong and overflowing lifetime refused",
+      "different boot identity refused (injected clock; no actual host reboot)",
+      "actual Linux boot clock read succeeds",
+      "unchanged profile bytes expire without a reconciler",
+      "version downgrade or omitted v2 expiry refused"
+    ]
+  },
+  "realKVM": {
+    "test": "json_harness_grant_issuance_on_real_kvm --ignored --nocapture",
+    "result": "passed",
+    "sequence": "boot-bound expiring profile -> sealed member verification twice -> identical v3 grant -> resolution -> profile removal -> refusal",
+    "grant": "blake3:f34fe836947e4943eab20d21480964442c75310792c915851b6e772f792a72a2",
+    "modelCalls": 0
+  },
+  "notProven": [
+    "live cancellation at expiry or fleet-wide revocation",
+    "actual host reboot, suspend or clock-adjustment qualification",
+    "autonomous Sympozium provisioning requiring expiring profiles",
+    "lease renewal or replay authorization",
+    "UI/YAML or conversational end-to-end acceptance"
+  ]
+}
