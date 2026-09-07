@@ -1,0 +1,119 @@
+{
+  "events": [
+    {
+      "toolWrites": "denied",
+      "type": "negative-checks",
+      "unselected": "EACCES"
+    },
+    {
+      "id": "cfc3f951-a884-49bd-b060-37a2dc47e532",
+      "model": "deepseek-v4-flash",
+      "turn": 0,
+      "type": "model",
+      "usage": {
+        "completion_tokens": 40,
+        "prompt_cache_hit_tokens": 0,
+        "prompt_cache_miss_tokens": 425,
+        "prompt_tokens": 425,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "total_tokens": 465
+      }
+    },
+    {
+      "args": [
+        "37",
+        "5"
+      ],
+      "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+      "id": "call_00_98DprAPAMupkrkhxyOWc9665",
+      "name": "add",
+      "result": "42\n",
+      "type": "tool"
+    },
+    {
+      "id": "a39827cc-5185-43ab-8251-c1f387abafbf",
+      "model": "deepseek-v4-flash",
+      "turn": 1,
+      "type": "model",
+      "usage": {
+        "completion_tokens": 41,
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 102,
+        "prompt_tokens": 486,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 527
+      }
+    },
+    {
+      "args": [
+        "42",
+        "2"
+      ],
+      "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+      "id": "call_00_Nrwy7RyJjOTngnKN88lx3067",
+      "name": "multiply",
+      "result": "84\n",
+      "type": "tool"
+    },
+    {
+      "id": "950534d1-f97c-44a4-8748-816597d83515",
+      "model": "deepseek-v4-flash",
+      "turn": 2,
+      "type": "model",
+      "usage": {
+        "completion_tokens": 1,
+        "prompt_cache_hit_tokens": 512,
+        "prompt_cache_miss_tokens": 29,
+        "prompt_tokens": 541,
+        "prompt_tokens_details": {
+          "cached_tokens": 512
+        },
+        "total_tokens": 542
+      }
+    },
+    {
+      "answer": "84",
+      "calls": 2,
+      "toolsUsed": [
+        "add",
+        "multiply"
+      ],
+      "type": "completed"
+    }
+  ],
+  "fetchActivity": [
+    3,
+    0,
+    1708
+  ],
+  "members": {
+    "/add": {
+      "dependencies": [],
+      "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020"
+    },
+    "/harness": {
+      "dependencies": [
+        "/add",
+        "/multiply",
+        "/pilot-fetch"
+      ],
+      "hash": "blake3:10f6c50b4e012f6caf7c09e9a46a0f7695a2a7f3a4145d81f50c9b1f892c77c3"
+    },
+    "/multiply": {
+      "dependencies": [],
+      "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1"
+    },
+    "/pilot-fetch": {
+      "dependencies": [],
+      "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e"
+    }
+  },
+  "publisher": "ddaed7fc08a8f4c7e27bca04a4d9425de8c9accf4596e8ade9e6692f2a7057f8",
+  "scope": "direct-KVM reference Harness; not Sympozium dispatcher or Pi/Hermes",
+  "spawn": "warm mote CoW fork",
+  "toolfs": "blake3:f06bc97c258da04c7df040838cd51246cf6011166d33b598e1d5b1e0b338310e"
+}

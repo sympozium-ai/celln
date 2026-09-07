@@ -29,6 +29,11 @@ requested runtime and authority are actually delivered.
 
 ## Current baseline and gaps
 
+Prototype progress: the [borrowed-tools reference proof](HARNESS_BORROWED_TOOLS_PROOF.md)
+now demonstrates a real model/tool/result loop inside a warm-forked cell with
+two separately hashed executables. This does not remove the baseline production
+gaps below or complete the deployed Harness acceptance gates.
+
 Baseline inspected: Celln `4b95a1c`, Sympozium `88a432c`, plus draft M0 router
 changes in [Celln #70](https://github.com/sympozium-ai/celln/pull/70) and ingress
 policy in [Sympozium #427](https://github.com/sympozium-ai/sympozium/pull/427).
