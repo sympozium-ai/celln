@@ -1,20 +1,12 @@
 //! Resolve authenticated, precomposed closures without consulting host runtimes.
 use celln_manifest::{closure::SignedClosure, Hash};
 use celln_spec::ExecutionRequest;
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::Path};
+use serde::Serialize;
+use std::path::Path;
 
 #[cfg(all(test, target_os = "linux"))]
 #[path = "dispatch_closure_tests.rs"]
 mod tests;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Policy {
-    api_version: String,
-    publishers: BTreeSet<String>,
-    revoked: BTreeSet<String>,
-}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,16 +38,6 @@ pub fn resolve(
             "unsupported authority: closure requires celln.warm-closure-v1 substrate".into(),
         );
     }
-    let policy: Policy = serde_json::from_slice(
-        &std::fs::read(root.join("trusted-closures.json"))
-            .map_err(|_| "closure trust policy unavailable")?,
-    )
-    .map_err(|_| "invalid closure trust policy")?;
-    if policy.api_version != "celln.dev/closure-policy-v1"
-        || policy.revoked.contains(&reference.hash)
-    {
-        return Err("closure policy version unsupported or closure revoked".into());
-    }
     let store = celln_store::Store::open(root.join("closures")).map_err(|e| e.to_string())?;
     let bytes = store
         .get_bounded(&Hash(reference.hash.clone()), 262144)
@@ -63,9 +45,8 @@ pub fn resolve(
     if bytes.len() > 262144 {
         return Err("closure descriptor exceeds limit".into());
     }
-    let signed: SignedClosure =
-        serde_json::from_slice(&bytes).map_err(|_| "invalid signed closure")?;
-    signed.verify(&policy.publishers)?;
+    let verified = crate::closure_policy::verify(&bytes, root)?;
+    let signed = verified.signed;
     let closure = &signed.closure;
     if bundle.toolfs_bytes.len() as u64 > crate::image::MAX_IMAGE_BYTES {
         return Err("unsupported closure filesystem exceeds 512 MiB".into());
@@ -74,14 +55,6 @@ pub fn resolve(
         || closure.members[&closure.entrypoint].hash != bundle.program_hash
     {
         return Err("closure does not bind selected filesystem and executable".into());
-    }
-    if closure
-        .members
-        .values()
-        .any(|m| policy.revoked.contains(&m.hash))
-        || policy.revoked.contains(&closure.toolfs)
-    {
-        return Err("closure dependency revoked".into());
     }
     let provenance = Provenance {
         hash: reference.hash.clone(),

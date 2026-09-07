@@ -4,6 +4,7 @@ mod agent;
 mod capabilities;
 mod cells;
 mod closure_cli;
+mod closure_policy;
 mod config;
 mod dispatch;
 #[cfg(all(test, target_os = "linux"))]
@@ -340,6 +341,19 @@ enum ClosureCmd {
     },
     /// Verify against host policy and store a signed descriptor by content hash.
     Admit { descriptor: PathBuf },
+    /// Read-only signature/policy check bound to exact catalogue identities.
+    /// Does not certify artifact distribution, conformance or execution readiness.
+    Verify {
+        descriptor: PathBuf,
+        #[arg(long)]
+        expected_hash: String,
+        #[arg(long)]
+        publisher: String,
+        #[arg(long)]
+        entry_point: String,
+        #[arg(long)]
+        executable: String,
+    },
 }
 
 #[derive(clap::Args, Clone)]
@@ -398,6 +412,20 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             key_file,
         }) => closure_cli::sign(descriptor, key_file),
         Cmd::Closure(ClosureCmd::Admit { descriptor }) => closure_cli::admit(descriptor, &root),
+        Cmd::Closure(ClosureCmd::Verify {
+            descriptor,
+            expected_hash,
+            publisher,
+            entry_point,
+            executable,
+        }) => closure_cli::verify(
+            descriptor,
+            &root,
+            expected_hash,
+            publisher,
+            entry_point,
+            executable,
+        ),
         Cmd::Doctor => Ok(doctor(o)),
         Cmd::Dispatcher {
             listen,
