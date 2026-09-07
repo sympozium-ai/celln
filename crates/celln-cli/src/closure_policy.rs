@@ -46,6 +46,14 @@ pub fn verify(bytes: &[u8], root: &Path) -> Result<Verified, String> {
         serde_json::from_slice(bytes).map_err(|_| "invalid signed closure")?;
     signed.verify(&policy.publishers)?;
     let identity = Hash::of(bytes);
+    for source in &signed.closure.sources {
+        let descriptor = source.parse()?;
+        if policy.revoked.contains(&source.hash)
+            || policy.revoked.contains(&descriptor.closure.toolfs)
+        {
+            return Err("composition source or source filesystem revoked".into());
+        }
+    }
     if policy.revoked.contains(&identity.0)
         || policy.revoked.contains(&signed.closure.toolfs)
         || signed

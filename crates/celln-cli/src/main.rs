@@ -5,6 +5,7 @@ mod capabilities;
 mod cells;
 mod closure_cli;
 mod closure_policy;
+mod composition_cli;
 mod config;
 mod dispatch;
 #[cfg(all(test, target_os = "linux"))]
@@ -336,6 +337,16 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum ClosureCmd {
+    /// Build and sign a filesystem from exact approved source closures and member blobs.
+    Compose {
+        plan: PathBuf,
+        #[arg(long)]
+        key_file: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long, default_value = "/usr/sbin/mke2fs")]
+        builder: PathBuf,
+    },
     /// Hash signed closure members inside a sealed cell without executing them.
     /// Requires an operator-pinned declared request, with empty args and no egress.
     CheckMembers { request: PathBuf },
@@ -430,6 +441,12 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::Closure(ClosureCmd::Compose {
+            plan,
+            key_file,
+            output_dir,
+            builder,
+        }) => composition_cli::run(plan, key_file, output_dir, builder, &root),
         Cmd::Schema(SchemaCmd::Verify {
             schema,
             expected_hash,

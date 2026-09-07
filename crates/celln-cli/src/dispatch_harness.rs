@@ -98,7 +98,7 @@ pub fn resolve(
         return Err("unsupported Harness model policy".into());
     }
     let c = &closure.signed.closure;
-    // Static adapter only. Broader closures require a dependency/tool contract.
+    // Callable roots are distinct from their signed dependency members.
     let mut expected = std::collections::BTreeSet::from([c.entrypoint.as_str(), "/pilot-fetch"]);
     if expected.len() != 2 {
         return Err("Harness runtime cannot be the broker client".into());
@@ -112,12 +112,38 @@ pub fn resolve(
             return Err("borrowed tool is not a distinct matching closure member".into());
         }
     }
-    if c.interpreter
-        || c.members
-            .keys()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>()
-            != expected
+    if c.interpreter {
+        return Err("unsupported Harness interpreter closure".into());
+    }
+    if c.api_version == "celln.dev/closure-v2" {
+        if binding.contract_version != "celln.json-tools/v1" {
+            return Err("composed closures require the JSON Harness contract".into());
+        }
+        // Admission checks signatures and live source policy. Reconstruct the
+        // source-derived graph here too; accepting extra files based merely on
+        // a composer signature would broaden the selected tool authority.
+        c.validate()?;
+        if c.sources.len() != binding.borrowed_tools.len() + 1 {
+            return Err("composition sources do not match selected tools".into());
+        }
+        let runtime = c.sources[0].parse()?.closure;
+        if runtime.entrypoint != c.entrypoint || !runtime.members.contains_key("/pilot-fetch") {
+            return Err("runtime source must own the Harness and broker client".into());
+        }
+        for (source, tool) in c.sources.iter().skip(1).zip(&binding.borrowed_tools) {
+            let source = source.parse()?.closure;
+            if source.entrypoint != tool.path
+                || source.members[&source.entrypoint].hash != tool.hash
+            {
+                return Err("composition source order or root differs from selected tools".into());
+            }
+        }
+    } else if c
+        .members
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>()
+        != expected
     {
         return Err("unsupported Harness closure composition".into());
     }
@@ -271,6 +297,7 @@ mod tests {
         // this unit test exercises binding, not filesystem/signature admission.
         let signed = Closure {
             api_version: "celln.dev/closure-v1".into(),
+            sources: Vec::new(),
             toolfs: Hash::of(b"image").0,
             entrypoint: "/harness".into(),
             interpreter: false,

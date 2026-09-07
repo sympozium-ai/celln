@@ -9,6 +9,17 @@ fn read(path: &Path) -> Result<Vec<u8>> {
 
 pub fn sign(descriptor: &Path, key: &Path) -> Result<u8> {
     let closure: Closure = serde_json::from_slice(&read(descriptor)?)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&sign_descriptor(closure, key)?)?
+    );
+    Ok(0)
+}
+
+pub(crate) fn sign_descriptor(
+    closure: Closure,
+    key: &Path,
+) -> Result<celln_manifest::closure::SignedClosure> {
     let mut seed = zeroize::Zeroizing::new([0u8; 32]);
     let mut source = std::fs::File::open(key).context("opening private seed file")?;
     source
@@ -19,9 +30,7 @@ pub fn sign(descriptor: &Path, key: &Path) -> Result<u8> {
         source.read(&mut extra)? == 0,
         "private seed must contain exactly 32 raw bytes"
     );
-    let signed = closure.sign(&seed).map_err(anyhow::Error::msg);
-    println!("{}", serde_json::to_string_pretty(&signed?)?);
-    Ok(0)
+    closure.sign(&seed).map_err(anyhow::Error::msg)
 }
 
 pub fn admit(descriptor: &Path, root: &Path) -> Result<u8> {
@@ -189,6 +198,7 @@ mod tests {
         let executable = Hash::of(b"fixture executable").0;
         let signed = Closure {
             api_version: "celln.dev/closure-v1".into(),
+            sources: Vec::new(),
             toolfs: Hash::of(b"fixture filesystem").0,
             entrypoint: "/tools/example".into(),
             interpreter: false,

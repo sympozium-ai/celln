@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 const DOMAIN: &[u8] = b"celln.dev/closure-v1\0";
+const COMPOSITION_DOMAIN: &[u8] = b"celln.dev/closure-v2\0";
+
+#[path = "composition.rs"]
+pub mod composition;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,9 +22,13 @@ pub struct Closure {
     /// Every admitted code file, keyed by canonical absolute path. Dependencies
     /// name other members; composition never consults a host library directory.
     pub members: BTreeMap<String, Member>,
+    /// v2 only: exact signed v1 inputs, runtime first. Keeping these inside the
+    /// signed message preserves source identity and withdrawal checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<composition::Source>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Member {
     pub hash: String,
@@ -77,7 +85,10 @@ fn decode<const N: usize>(value: &str) -> Result<[u8; N], String> {
 
 impl Closure {
     pub fn validate(&self) -> Result<(), String> {
-        if self.api_version != "celln.dev/closure-v1"
+        if !matches!(
+            self.api_version.as_str(),
+            "celln.dev/closure-v1" | "celln.dev/closure-v2"
+        ) || (self.api_version == "celln.dev/closure-v1" && !self.sources.is_empty())
             || !hash(&self.toolfs)
             || self.members.is_empty()
             || self.members.len() > 256
@@ -108,12 +119,26 @@ impl Closure {
         if seen.len() != self.members.len() {
             return Err("closure contains unreachable code members".into());
         }
+        if self.api_version == "celln.dev/closure-v2" {
+            let expected = composition::compose(self.sources.clone(), &Hash(self.toolfs.clone()))?;
+            if self.entrypoint != expected.entrypoint
+                || self.interpreter != expected.interpreter
+                || self.members != expected.members
+            {
+                return Err("composed closure differs from its signed source graph".into());
+            }
+        }
         Ok(())
     }
 
     fn message(&self) -> Result<Vec<u8>, String> {
         self.validate()?;
-        let mut message = DOMAIN.to_vec();
+        let mut message = if self.api_version == "celln.dev/closure-v2" {
+            COMPOSITION_DOMAIN
+        } else {
+            DOMAIN
+        }
+        .to_vec();
         message.extend(serde_json::to_vec(self).map_err(|e| e.to_string())?);
         Ok(message)
     }
@@ -134,6 +159,9 @@ impl SignedClosure {
     pub fn verify(&self, publishers: &BTreeSet<String>) -> Result<(), String> {
         if !publishers.contains(&self.publisher) {
             return Err("closure publisher is not authorized".into());
+        }
+        for source in &self.closure.sources {
+            source.parse()?.verify(publishers)?;
         }
         let key = VerifyingKey::from_bytes(&decode(&self.publisher)?)
             .map_err(|_| "invalid closure publisher key")?;
@@ -157,6 +185,7 @@ mod tests {
     fn fixture() -> Closure {
         Closure {
             api_version: "celln.dev/closure-v1".into(),
+            sources: Vec::new(),
             toolfs: Hash::of(b"filesystem").0,
             entrypoint: "/bin/program".into(),
             interpreter: false,
