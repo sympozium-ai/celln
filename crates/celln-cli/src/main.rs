@@ -357,6 +357,9 @@ enum ClosureCmd {
         entry_point: String,
         #[arg(long)]
         executable: String,
+        /// Also hash the exact local filesystem bytes (not member conformance or readiness).
+        #[arg(long)]
+        toolfs: Option<PathBuf>,
     },
 }
 
@@ -441,6 +444,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             publisher,
             entry_point,
             executable,
+            toolfs,
         }) => closure_cli::verify(
             descriptor,
             &root,
@@ -448,6 +452,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             publisher,
             entry_point,
             executable,
+            toolfs.as_deref(),
         ),
         Cmd::Doctor => Ok(doctor(o)),
         Cmd::Dispatcher {

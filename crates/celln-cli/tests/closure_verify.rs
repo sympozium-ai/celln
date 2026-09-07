@@ -32,8 +32,11 @@ fn cli_verification_is_bound_read_only_and_rechecks_policy() {
     std::fs::write(&descriptor, &bytes).unwrap();
     let policy = root.path().join("trusted-closures.json");
     std::fs::write(&policy, serde_json::json!({"apiVersion":"celln.dev/closure-policy-v1","publishers":[signed.publisher],"revoked":[]}).to_string()).unwrap();
-    let run = |expected: &str| {
-        Command::new(env!("CARGO_BIN_EXE_celln"))
+    let toolfs = root.path().join("toolfs.ext2");
+    std::fs::write(&toolfs, b"test toolfs").unwrap();
+    let run = |expected: &str, with_toolfs: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_celln"));
+        command
             .arg("--root")
             .arg(root.path())
             .args(["closure", "verify"])
@@ -47,12 +50,14 @@ fn cli_verification_is_bound_read_only_and_rechecks_policy() {
                 "/tools/test",
                 "--executable",
                 &executable,
-            ])
-            .output()
-            .unwrap()
+            ]);
+        if with_toolfs {
+            command.arg("--toolfs").arg(&toolfs);
+        }
+        command.output().unwrap()
     };
     let identity = Hash::of(&bytes).0;
-    let accepted = run(&identity);
+    let accepted = run(&identity, false);
     assert!(
         accepted.status.success(),
         "{}",
@@ -63,11 +68,30 @@ fn cli_verification_is_bound_read_only_and_rechecks_policy() {
     assert_eq!(report["closure"], identity);
     assert_eq!(report["artifactReadiness"], "not_checked");
     assert!(!root.path().join("closures").exists());
-    let mismatch = run(&Hash::of(b"wrong").0);
+    let local = run(&identity, true);
+    assert!(
+        local.status.success(),
+        "{}",
+        String::from_utf8_lossy(&local.stderr)
+    );
+    let local: serde_json::Value = serde_json::from_slice(&local.stdout).unwrap();
+    assert_eq!(local["localToolfsVerified"], true);
+    assert_eq!(local["localToolfsBytes"], 11);
+    assert_eq!(local["artifactReadiness"], "not_checked");
+    assert_eq!(local["conformance"], "not_checked");
+    assert_eq!(local["scope"], "descriptor-and-local-toolfs-bytes");
+    // This intentionally non-ext2 fixture proves only byte identity; no
+    // filesystem parsing, executable membership or ABI claim is manufactured.
+    std::fs::write(&toolfs, b"tampered").unwrap();
+    let tampered = run(&identity, true);
+    assert!(!tampered.status.success());
+    assert!(tampered.stdout.is_empty());
+    std::fs::write(&toolfs, b"test toolfs").unwrap();
+    let mismatch = run(&Hash::of(b"wrong").0, false);
     assert!(!mismatch.status.success());
     assert!(mismatch.stdout.is_empty());
     std::fs::write(&policy, serde_json::json!({"apiVersion":"celln.dev/closure-policy-v1","publishers":[signed.publisher],"revoked":[identity]}).to_string()).unwrap();
-    let revoked = run(&identity);
+    let revoked = run(&identity, true);
     assert!(!revoked.status.success());
     assert!(revoked.stdout.is_empty());
     assert!(!root.path().join("closures").exists());

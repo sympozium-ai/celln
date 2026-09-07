@@ -42,17 +42,74 @@ pub fn verify(
     publisher: &str,
     entry_point: &str,
     executable: &str,
+    toolfs: Option<&Path>,
 ) -> Result<u8> {
-    let report = verification_report(
-        &read(descriptor)?,
+    let bytes = read(descriptor)?;
+    let mut report = verification_report(
+        &bytes,
         root,
         expected_hash,
         publisher,
         entry_point,
         executable,
     )?;
+    if let Some(path) = toolfs {
+        let size = verify_toolfs(path, report["toolfs"].as_str().unwrap())?;
+        // A large artifact read must not hide a policy change during review.
+        let current = verification_report(
+            &bytes,
+            root,
+            expected_hash,
+            publisher,
+            entry_point,
+            executable,
+        )?;
+        anyhow::ensure!(
+            current["policyHash"] == report["policyHash"],
+            "policy changed during verification"
+        );
+        report["scope"] = "descriptor-and-local-toolfs-bytes".into();
+        report["localToolfsBytes"] = size.into();
+        report["localToolfsVerified"] = true.into();
+        // Distribution, member semantics and guest conformance remain separate gates.
+    }
     println!("{}", serde_json::to_string(&report)?);
     Ok(0)
+}
+
+fn verify_toolfs(path: &Path, expected: &str) -> Result<u64> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Refuse symlinks and avoid hanging on a FIFO supplied as an artifact.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .context("opening local closure filesystem")?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file(),
+        "closure filesystem must be a regular file"
+    );
+    anyhow::ensure!(
+        metadata.len() > 0 && metadata.len() <= crate::image::MAX_IMAGE_BYTES,
+        "closure filesystem must contain 1..512 MiB"
+    );
+    let mut bytes = Vec::new();
+    file.take(crate::image::MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        !bytes.is_empty() && bytes.len() as u64 <= crate::image::MAX_IMAGE_BYTES,
+        "closure filesystem exceeds byte ceiling or is empty"
+    );
+    anyhow::ensure!(
+        celln_manifest::Hash::of(&bytes).0 == expected,
+        "closure filesystem identity mismatch"
+    );
+    Ok(bytes.len() as u64)
 }
 
 fn verification_report(
@@ -102,6 +159,30 @@ mod tests {
     use super::*;
     use celln_manifest::{closure::Member, Hash};
     use std::collections::{BTreeMap, BTreeSet};
+
+    #[test]
+    fn local_artifact_refuses_missing_empty_oversized_and_nonregular_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("toolfs");
+        let expected = Hash::of(b"test").0;
+        assert!(verify_toolfs(&path, &expected).is_err());
+        assert!(verify_toolfs(dir.path(), &expected).is_err());
+        std::fs::write(&path, b"").unwrap();
+        assert!(verify_toolfs(&path, &expected).is_err());
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(crate::image::MAX_IMAGE_BYTES + 1)
+            .unwrap();
+        assert!(verify_toolfs(&path, &expected).is_err());
+        std::fs::write(&path, b"test").unwrap();
+        assert_eq!(verify_toolfs(&path, &expected).unwrap(), 4);
+        #[cfg(unix)]
+        {
+            let alias = dir.path().join("alias");
+            std::os::unix::fs::symlink(&path, &alias).unwrap();
+            assert!(verify_toolfs(&alias, &expected).is_err());
+        }
+    }
 
     fn fixture() -> (tempfile::TempDir, Vec<u8>, String, String) {
         let root = tempfile::tempdir().unwrap();

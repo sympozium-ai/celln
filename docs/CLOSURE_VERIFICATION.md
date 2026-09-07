@@ -36,8 +36,30 @@ upgrading. No wire-format or signature-domain change is introduced.
 
 ## Deliberately limited evidence
 
-`scope=descriptor-authenticity-only`, `artifactReadiness=not_checked` and
-`conformance=not_checked` are explicit. The command does not fetch or inspect
+### Optional local filesystem-byte verification
+
+Add `--toolfs /absolute/operator-staged/toolfs.ext2` to hash the exact local
+artifact against the signed filesystem identity. Inputs must be nonempty regular
+files of at most 512 MiB; Unix symlinks/special files refuse. Reads remain bounded
+if files grow. No mount, filesystem parser, guest or store write is involved.
+Policy is rechecked after reading; policy changes during verification refuse.
+
+This emits `scope=descriptor-and-local-toolfs-bytes`, `localToolfsVerified=true`
+and `localToolfsBytes`. Without the option the previous report is unchanged.
+**Both forms retain `artifactReadiness=not_checked` and
+`conformance=not_checked`.** Hashing bytes does not prove filesystem/member
+semantics, dependency ABI, execution behavior, distribution or prewarm. A
+publisher can sign broken bytes; guest/conformance gates must still refuse
+those. Reports are byte snapshots, not leases on files or publisher policy.
+
+`cargo run -p celln-cli --example prepare_review_fixture -- NEW_DIRECTORY`
+creates a public deterministic fixture for Sympozium review tests. Its
+filesystem is deliberately **non-executable**, with valid signed identities
+and restricted schemas. The generator validates the schemas itself. Never
+install its publisher as production trust or use this as a Ready fixture.
+
+Without `--toolfs`, `scope=descriptor-authenticity-only`, `artifactReadiness=not_checked` and
+`conformance=not_checked` are explicit. By default the command does not fetch or inspect
 filesystem/member bytes, verify schema documents, approve behavior or lending
 limits, distribute/prewarm artifacts, run a guest, grant invocation authority,
 or write an admission store. The policy hash is a snapshot identifier, not a
