@@ -43,6 +43,15 @@ name = "celln-fetch-proof"
 path = "src/fetch_proof.rs"
 required-features = ["kvm"]
 
+[[bin]]
+name = "celln-harness-reference"
+path = "src/harness_reference.rs"
+
+[[bin]]
+name = "celln-harness-proof"
+path = "src/harness_proof.rs"
+required-features = ["kvm"]
+
 [lib]
 name = "pilot"
 path = "src/lib.rs"
