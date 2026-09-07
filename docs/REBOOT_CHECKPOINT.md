@@ -1,5 +1,9 @@
 # Reboot checkpoint — 2026-09-07
 
+**Resumed after user confirmation.** Shared-storage checks subsequently passed;
+see `docs/evidence/router-storage-kind-2026-09-07.md`. The historical checkpoint
+below describes the state at pause, not the latest test results.
+
 Work paused at the user's request. Epic sympozium-ai/sympozium#426 remains
 incomplete; do not resume testing until the user asks. No test or model request
 is running. No simulated node failure has been performed.
