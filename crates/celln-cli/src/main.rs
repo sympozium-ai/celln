@@ -16,6 +16,7 @@ mod node;
 mod out;
 mod router;
 mod run;
+mod schema_cli;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -67,6 +68,9 @@ enum Cmd {
     /// Authenticate and admit precomposed dependency closures.
     #[command(subcommand)]
     Closure(ClosureCmd),
+    /// Verify immutable tool-schema bytes and optionally bounded JSON data.
+    #[command(subcommand)]
+    Schema(SchemaCmd),
     /// Report what this machine can run.
     Doctor,
 
@@ -356,6 +360,19 @@ enum ClosureCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum SchemaCmd {
+    Verify {
+        schema: PathBuf,
+        #[arg(long)]
+        expected_hash: String,
+        #[arg(long, requires = "max_value_bytes")]
+        value: Option<PathBuf>,
+        #[arg(long, requires = "value")]
+        max_value_bytes: Option<usize>,
+    },
+}
+
 #[derive(clap::Args, Clone)]
 struct NodeProbeArgs {
     #[arg(long, env = "CELLN_NODE_NAME", default_value = "local")]
@@ -407,6 +424,12 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::Schema(SchemaCmd::Verify {
+            schema,
+            expected_hash,
+            value,
+            max_value_bytes,
+        }) => schema_cli::verify(schema, expected_hash, value.as_deref(), *max_value_bytes),
         Cmd::Closure(ClosureCmd::Sign {
             descriptor,
             key_file,
