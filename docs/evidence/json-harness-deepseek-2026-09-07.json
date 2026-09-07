@@ -1,0 +1,53 @@
+{
+  "cases": [
+    {
+      "elapsedMicros": 3272852,
+      "exit": 0,
+      "expected": "CELLN has length 5",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"deepseek-chat\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"arguments\":{\"text\":\"celln\"},\"hash\":\"blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c\",\"id\":\"call_00_sIzJGjihwuTZeGOKYogr8961\",\"inputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"name\":\"uppercase\",\"outputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"result\":{\"text\":\"CELLN\"},\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"model\":\"deepseek-chat\",\"turn\":1,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"arguments\":{\"text\":\"CELLN\"},\"hash\":\"blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245\",\"id\":\"call_00_4G4pnUvbmR8ls7js0N6a0308\",\"inputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"name\":\"length\",\"outputSchema\":\"blake3:334d8ed405e3789cc513dc297a2137ee175e9f2b91743deb1e73e15517cf72d5\",\"result\":{\"length\":5},\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"model\":\"deepseek-chat\",\"turn\":2,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"answer\":\"CELLN has length 5\",\"calls\":2,\"type\":\"completed\"}\n",
+      "task": "normalize then measure"
+    }
+  ],
+  "closure": {
+    "closure": {
+      "apiVersion": "celln.dev/closure-v1",
+      "entrypoint": "/harness",
+      "interpreter": false,
+      "members": {
+        "/harness": {
+          "dependencies": [
+            "/length",
+            "/pilot-fetch",
+            "/uppercase"
+          ],
+          "hash": "blake3:7aaa9b62e104763d5659ff1642fed0121d95b0fc9194e0946ae3ebd6ed22a375"
+        },
+        "/length": {
+          "dependencies": [],
+          "hash": "blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245"
+        },
+        "/pilot-fetch": {
+          "dependencies": [],
+          "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e"
+        },
+        "/uppercase": {
+          "dependencies": [],
+          "hash": "blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c"
+        }
+      },
+      "toolfs": "blake3:d9006c508a0c87c23bcc02b404bcb2d380580a6d0661dc63ba8813228c26a503"
+    },
+    "publisher": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+    "signature": "5cde9631f84c780e47ae21b62fb2e00286ac6e34850fdd6d42adc13624e8d046e49ce656152922151a61055923ef6ac801f2b4f5cefd422b8e80995308d19a0d"
+  },
+  "guestBinary": "blake3:7aaa9b62e104763d5659ff1642fed0121d95b0fc9194e0946ae3ebd6ed22a375",
+  "modelCalls": 3,
+  "scope": "direct-KVM-native-JSON-adapter-real-DeepSeek-not-dispatcher",
+  "status": "passed",
+  "provenance": {
+    "baseRevision": "ef358f6",
+    "workingTreeChanges": true,
+    "source": "new native JSON adapter and proof on feat/json-tool-harness",
+    "productionDeploymentChanged": false
+  }
+}
