@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use warden::egress::HttpPolicy;
+use warden::egress::{HttpPolicy, JsonPostGrant};
 use warden::vmm::boot::{BootConfig, LinuxCell};
 
 fn main() -> Result<()> {
@@ -20,6 +20,16 @@ fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "https://example.com/".into());
     let host = host_of(&url)?;
+    let model_token_file = std::env::var_os("CELLN_MODEL_TOKEN_FILE").map(PathBuf::from);
+    let request = if model_token_file.is_some() {
+        serde_json::json!({
+            "apiVersion":"celln.fetch/v1", "method":"POST", "url":url,
+            "body": {"model":"deepseek-chat", "max_tokens":64, "stream":false,
+                "messages":[{"role":"user","content":"Reply with exactly CELLN_MODEL_PROOF_OK and no other text."}]}
+        }).to_string()
+    } else {
+        url.clone()
+    };
     let root = repo_root()?;
     let work = std::env::temp_dir().join(format!("celln-fetch-proof-{}", std::process::id()));
     std::fs::create_dir_all(&work)?;
@@ -63,7 +73,7 @@ fn main() -> Result<()> {
     std::fs::write(
         &run_path,
         serde_json::to_vec(&serde_json::json!({
-            "path": "/tools/program", "alias": "/probe", "args": [url],
+            "path": "/tools/program", "alias": "/probe", "args": [request, if model_token_file.is_some() { "model" } else { "get" }],
             "agent_authored_input": true,
             "allow_fetch": true,
         }))?,
@@ -96,7 +106,16 @@ fn main() -> Result<()> {
             .with_pmem(payload.len())
             .with_initrd(initrd),
     )?;
-    cell.enable_http_fetch(HttpPolicy::new(vec![host]));
+    let mut policy = HttpPolicy::new(vec![host]);
+    if let Some(bearer_token_file) = model_token_file {
+        policy.json_posts.push(JsonPostGrant {
+            url,
+            bearer_token_file,
+        });
+        policy.timeout = std::time::Duration::from_secs(45);
+        cell.set_timeout(std::time::Duration::from_secs(90));
+    }
+    cell.enable_http_fetch(policy);
     cell.seal_tool(&Hash::of(&payload), &payload)?;
     let report = cell.run()?;
     if !report
@@ -124,6 +143,14 @@ fn main() -> Result<()> {
     println!(
         "PASS: a real cell used only broker ports 0x500-0x502 and fetched HTTPS through pilot"
     );
+    for line in report
+        .console
+        .lines()
+        .filter(|line| line.contains("CELLN_MODEL_RESPONSE"))
+    {
+        println!("{line}");
+    }
+    println!("host-observed fetch counters: {:?}", cell.fetch_activity());
     Ok(())
 }
 

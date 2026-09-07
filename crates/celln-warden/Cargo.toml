@@ -23,6 +23,8 @@ tempfile.workspace = true
 celln-control.workspace = true
 celln-manifest.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 kvm-ioctls = { workspace = true, optional = true }
 kvm-bindings = { workspace = true, optional = true }
 libc = { workspace = true, optional = true }
