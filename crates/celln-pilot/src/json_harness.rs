@@ -13,7 +13,8 @@ pub const CONTRACT: &str = "celln.json-tools/v1";
 mod tests;
 
 pub fn validate(config: &Config) -> Result<()> {
-    compile(config).map(|_| ())
+    let tools = compile(config)?;
+    model_request(config, &tools, &initial_messages(config)).map(|_| ())
 }
 
 #[derive(Deserialize)]
@@ -104,27 +105,11 @@ pub fn run(
     mut event: impl FnMut(Value),
 ) -> Result<String> {
     let tools = compile(config)?;
-    let mut messages = Vec::new();
-    if !config.system.is_empty() {
-        messages.push(json!({"role":"system","content":config.system}));
-    }
-    messages.push(json!({"role":"user","content":config.task}));
+    let mut messages = initial_messages(config);
     let mut ids = BTreeSet::new();
     let mut calls = 0usize;
     for turn in 0..config.max_turns {
-        let mut body =
-            json!({"model":config.model,"stream":false,"max_tokens":512,"messages":messages});
-        if !tools.is_empty() {
-            body["tools"] = json!(tools.iter().map(|t| &t.definition).collect::<Vec<_>>());
-            body["tool_choice"] = json!("auto");
-        }
-        let wire = serde_json::to_vec(
-            &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":config.url,"body":body}),
-        )?;
-        ensure!(
-            wire.len() <= 8192,
-            "conversation/schema envelope exceeds broker byte limit"
-        );
+        let wire = model_request(config, &tools, &messages)?;
         let response = broker(&wire)?;
         ensure!(response.len() <= 1_048_576, "model response exceeds limit");
         let response: Value = serde_json::from_slice(&response)?;
@@ -214,4 +199,34 @@ pub fn run(
         }
     }
     bail!("model turn budget exhausted")
+}
+
+fn initial_messages(config: &Config) -> Vec<Value> {
+    let mut messages = Vec::new();
+    if !config.system.is_empty() {
+        messages.push(json!({"role":"system","content":config.system}));
+    }
+    messages.push(json!({"role":"user","content":config.task}));
+    messages
+}
+
+fn model_request(
+    config: &Config,
+    tools: &[CheckedTool<'_>],
+    messages: &[Value],
+) -> Result<Vec<u8>> {
+    let mut body =
+        json!({"model":config.model,"stream":false,"max_tokens":512,"messages":messages});
+    if !tools.is_empty() {
+        body["tools"] = json!(tools.iter().map(|t| &t.definition).collect::<Vec<_>>());
+        body["tool_choice"] = json!("auto");
+    }
+    let wire = serde_json::to_vec(
+        &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":config.url,"body":body}),
+    )?;
+    ensure!(
+        wire.len() <= 8192,
+        "conversation/schema envelope exceeds broker byte limit"
+    );
+    Ok(wire)
 }

@@ -1291,7 +1291,18 @@ mod tests {
         assert!(report.compatible());
         assert!(!report.node.eligible()); // Configured stores are absent.
         assert!(!report.persistent_sessions);
-        assert_eq!(report.harness_contracts, ["celln.reference-functions/v1"]);
+        assert_eq!(
+            report.harness_contracts,
+            ["celln.reference-functions/v1", "celln.json-tools/v1"]
+        );
+        assert_eq!(
+            report.request_versions,
+            [
+                "celln.dev/v1alpha1",
+                "celln.dev/v1alpha2",
+                "celln.dev/v1alpha3"
+            ]
+        );
         assert_eq!(report.artifact_readiness, "not_checked");
         assert!(state.executions.lock().unwrap().is_empty());
         assert!(!work.path().join("execution-journal").exists());

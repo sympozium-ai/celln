@@ -1,0 +1,238 @@
+{
+  "audit": {
+    "apiVersion": "celln.dev/audit-v1alpha1",
+    "caller": "test:controller",
+    "events": [
+      {
+        "at": "2026-09-07T14:45:54Z",
+        "phase": "Admitting",
+        "sequence": 0
+      },
+      {
+        "at": "2026-09-07T14:45:54Z",
+        "phase": "Resolving",
+        "sequence": 1
+      },
+      {
+        "at": "2026-09-07T14:45:56Z",
+        "phase": "CellRunning",
+        "sequence": 2
+      },
+      {
+        "at": "2026-09-07T14:46:00Z",
+        "phase": "Dissolved",
+        "sequence": 3
+      },
+      {
+        "at": "2026-09-07T14:46:00Z",
+        "phase": "Succeeded",
+        "sequence": 4
+      }
+    ],
+    "execution": {
+      "broker": {
+        "denied": 0,
+        "requests": 3,
+        "responseBytes": 1717
+      },
+      "cellId": "a463c9222a4f",
+      "exitCode": 0,
+      "granted": {
+        "egress": [
+          "https://api.deepseek.com"
+        ],
+        "memoryBytes": 268435456,
+        "outputBytes": 65536,
+        "timeoutMs": 180000,
+        "workspace": "none"
+      },
+      "inputs": [],
+      "modelGrant": "blake3:990a55bee6a36cf8b52aeda83e8c376f0f130238321ec02b72c7071e1f099ec3",
+      "pilot": {
+        "fetch": true,
+        "lane": "agent",
+        "tool": "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47",
+        "workspace": "none"
+      },
+      "signal": null,
+      "substrate": {
+        "closure": {
+          "hash": "blake3:181806441f4de12d61b5989e6bb932dd6ca799d5ffe083e28837630b46a96abe",
+          "members": {
+            "/harness": {
+              "dependencies": [
+                "/length",
+                "/pilot-fetch",
+                "/uppercase"
+              ],
+              "hash": "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47"
+            },
+            "/length": {
+              "dependencies": [],
+              "hash": "blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245"
+            },
+            "/pilot-fetch": {
+              "dependencies": [],
+              "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e"
+            },
+            "/uppercase": {
+              "dependencies": [],
+              "hash": "blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c"
+            }
+          },
+          "publisher": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+          "toolfs": "blake3:f4238a38b96cd27d699e2a8a3ce19f3ca3520099c272bf4111f3bd0b3c4c94a5"
+        },
+        "initrd": "blake3:b46c44a356a6f060e01f7fae116376a98b3ff2aee547bfc9068b9c7cc8e9186a",
+        "invocation": "blake3:f6a08e152755fe3ca28ed3435921457a810a16d2511228d0654d373e87ca2235",
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "toolfs": "blake3:f4238a38b96cd27d699e2a8a3ce19f3ca3520099c272bf4111f3bd0b3c4c94a5"
+      },
+      "watchdogStopped": false
+    },
+    "node": "harness-proof-node",
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha3",
+      "cellId": "a463c9222a4f",
+      "completedAt": "2026-09-07T14:46:00Z",
+      "node": "harness-proof-node",
+      "output": {
+        "bytes": 1100,
+        "hash": "blake3:df56994a6d00e2d383fd950bddd6d2e108b6ea6b3169978c8a65900c4e6bacc6",
+        "mediaType": "application/octet-stream"
+      },
+      "phase": "succeeded",
+      "requestId": "harness-dispatch-proof",
+      "resolved": {
+        "inputs": [],
+        "mote": "blake3:eee24b8031b33534417dafb4097c4d7947694afec717078286a0e3c8acbe9534",
+        "tools": [
+          "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47"
+        ]
+      },
+      "startedAt": "2026-09-07T14:45:54Z"
+    },
+    "requestId": "harness-dispatch-proof",
+    "workload": "test-run"
+  },
+  "callerMismatchDenied": true,
+  "grantWithdrawalDenied": true,
+  "localReplayDenied": true,
+  "request": {
+    "apiVersion": "celln.dev/v1alpha3",
+    "capabilities": {
+      "egress": [
+        "https://api.deepseek.com"
+      ],
+      "memoryBytes": 268435456,
+      "outputBytes": 65536,
+      "timeoutMs": 180000,
+      "workspace": "none"
+    },
+    "execution": {
+      "lane": "agent",
+      "requireHardwareIsolation": true
+    },
+    "forge": null,
+    "harness": {
+      "borrowedTools": [
+        {
+          "description": "Uppercase text",
+          "hash": "blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c",
+          "jsonStdio": {
+            "abi": "celln.json-stdio/v1",
+            "inputBytes": 1024,
+            "inputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+            "outputBytes": 1024,
+            "outputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+            "timeoutMs": 1000
+          },
+          "name": "uppercase",
+          "path": "/uppercase"
+        },
+        {
+          "description": "Measure text length",
+          "hash": "blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245",
+          "jsonStdio": {
+            "abi": "celln.json-stdio/v1",
+            "inputBytes": 1024,
+            "inputSchema": "blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6",
+            "outputBytes": 1024,
+            "outputSchema": "blake3:334d8ed405e3789cc513dc297a2137ee175e9f2b91743deb1e73e15517cf72d5",
+            "timeoutMs": 1000
+          },
+          "name": "length",
+          "path": "/length"
+        }
+      ],
+      "contractVersion": "celln.json-tools/v1",
+      "json": {
+        "maxCalls": 2,
+        "maxTurns": 3,
+        "system": "Use the explicitly lent tools."
+      },
+      "model": "deepseek-chat",
+      "modelGrant": {
+        "hash": "blake3:990a55bee6a36cf8b52aeda83e8c376f0f130238321ec02b72c7071e1f099ec3"
+      },
+      "task": "Call uppercase with text celln, wait for its result, then call length with the uppercase result. Wait for both tool results. Finally answer exactly: CELLN has length 5"
+    },
+    "id": "harness-dispatch-proof",
+    "inputs": [],
+    "invocation": {
+      "alias": "/harness",
+      "args": []
+    },
+    "mote": {
+      "hash": "blake3:eee24b8031b33534417dafb4097c4d7947694afec717078286a0e3c8acbe9534"
+    },
+    "tools": [
+      {
+        "alias": "/harness",
+        "closure": {
+          "hash": "blake3:181806441f4de12d61b5989e6bb932dd6ca799d5ffe083e28837630b46a96abe"
+        },
+        "hash": "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47"
+      }
+    ],
+    "workload": {
+      "caller": "test:controller",
+      "id": "test-run"
+    }
+  },
+  "scope": "authenticated host HTTP dispatcher; not router/Sympozium/Kind",
+  "terminal": {
+    "output": "CELLN_HARNESS_EVENT {\"model\":\"deepseek-chat\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"arguments\":{\"text\":\"celln\"},\"hash\":\"blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c\",\"id\":\"call_00_8zE0hIL3fKw1GQUrhNVM2623\",\"inputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"name\":\"uppercase\",\"outputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"result\":{\"text\":\"CELLN\"},\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"model\":\"deepseek-chat\",\"turn\":1,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"arguments\":{\"text\":\"CELLN\"},\"hash\":\"blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245\",\"id\":\"call_00_sm56wgiAMIyOU9RpavQz4492\",\"inputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"name\":\"length\",\"outputSchema\":\"blake3:334d8ed405e3789cc513dc297a2137ee175e9f2b91743deb1e73e15517cf72d5\",\"result\":{\"length\":5},\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"model\":\"deepseek-chat\",\"turn\":2,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"answer\":\"CELLN has length 5\",\"calls\":2,\"type\":\"completed\"}\n",
+    "phase": "Succeeded",
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha3",
+      "cellId": "a463c9222a4f",
+      "completedAt": "2026-09-07T14:46:00Z",
+      "node": "harness-proof-node",
+      "output": {
+        "bytes": 1100,
+        "hash": "blake3:df56994a6d00e2d383fd950bddd6d2e108b6ea6b3169978c8a65900c4e6bacc6",
+        "mediaType": "application/octet-stream"
+      },
+      "phase": "succeeded",
+      "requestId": "harness-dispatch-proof",
+      "resolved": {
+        "inputs": [],
+        "mote": "blake3:eee24b8031b33534417dafb4097c4d7947694afec717078286a0e3c8acbe9534",
+        "tools": [
+          "blake3:e0b47f4d4473dabec0a759f5915bf7b85f3c146a08d504ab6104f9b95ff8fa47"
+        ]
+      },
+      "startedAt": "2026-09-07T14:45:54Z"
+    },
+    "requestId": "harness-dispatch-proof"
+  },
+  "toolMismatchDenied": true,
+  "unknownGrantDenied": true,
+  "provenance": {
+    "baseRevision": "7d9116f30f5fa6be428a7e859491af2fef3ebd4c",
+    "workingTreeChanges": true,
+    "source": "feat/json-harness-dispatch: versioned request/grant/schema host binding",
+    "productionDeploymentChanged": false
+  }
+}

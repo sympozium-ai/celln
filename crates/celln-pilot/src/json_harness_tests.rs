@@ -198,3 +198,21 @@ fn final_model_turn_cannot_start_side_effects_without_a_result_turn() {
     // The same last-turn budget must still permit a tool-free final answer.
     assert!(run(&cfg, |_| Ok(answer()), |_, _| panic!(), |_| {}).is_ok());
 }
+
+#[test]
+fn host_validation_rejects_initial_envelope_overflow_before_execution() {
+    let names: Vec<_> = (0..16).map(|n| format!("tool{n}")).collect();
+    let refs: Vec<_> = names.iter().map(String::as_str).collect();
+    let mut cfg = config(&refs);
+    for tool in &mut cfg.tools {
+        tool.description = "x".repeat(512);
+    }
+    assert!(validate(&cfg).unwrap_err().to_string().contains("envelope"));
+    assert!(run(
+        &cfg,
+        |_| panic!("must refuse before broker"),
+        |_, _| panic!(),
+        |_| {}
+    )
+    .is_err());
+}

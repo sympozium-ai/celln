@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 mod harness;
-pub use harness::{BorrowedTool, HarnessBinding};
+pub use harness::{BorrowedTool, HarnessBinding, JsonHarnessOptions, JsonToolIo};
 
 /// A cell specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -423,16 +423,17 @@ impl ExecutionRequest {
         let mut problems = Vec::new();
         if !matches!(
             self.api_version.as_str(),
-            "celln.dev/v1alpha1" | "celln.dev/v1alpha2"
+            "celln.dev/v1alpha1" | "celln.dev/v1alpha2" | "celln.dev/v1alpha3"
         ) {
             problems.push(ExecutionProblem {
                 code: ExecutionProblemCode::UnsupportedVersion,
                 field: "apiVersion".into(),
-                message: "must be celln.dev/v1alpha1 or celln.dev/v1alpha2".into(),
+                message: "must be celln.dev/v1alpha1, celln.dev/v1alpha2 or celln.dev/v1alpha3"
+                    .into(),
             });
         }
         if !harness::valid(self) {
-            problems.push(ExecutionProblem { code: ExecutionProblemCode::InvalidHarness, field:"harness".into(), message:"v1alpha2 requires a bounded declared reference Harness binding; v1alpha1 forbids one".into() });
+            problems.push(ExecutionProblem { code: ExecutionProblemCode::InvalidHarness, field:"harness".into(), message:"v1alpha2 requires the reference Harness; v1alpha3 requires the bounded JSON Harness; v1alpha1 forbids Harness bindings".into() });
         }
         for (field, value) in [
             ("id", self.id.as_str()),
@@ -637,12 +638,13 @@ impl ExecutionReceipt {
         let mut problems = Vec::new();
         if !matches!(
             self.api_version.as_str(),
-            "celln.dev/v1alpha1" | "celln.dev/v1alpha2"
+            "celln.dev/v1alpha1" | "celln.dev/v1alpha2" | "celln.dev/v1alpha3"
         ) {
             problems.push(ExecutionProblem {
                 code: ExecutionProblemCode::UnsupportedVersion,
                 field: "apiVersion".into(),
-                message: "must be celln.dev/v1alpha1".into(),
+                message: "must be celln.dev/v1alpha1, celln.dev/v1alpha2 or celln.dev/v1alpha3"
+                    .into(),
             });
         }
         for (field, value) in [

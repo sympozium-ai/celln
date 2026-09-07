@@ -80,6 +80,16 @@ fn controller_hook(
 #[test]
 #[ignore = "billable: requires CELLN_HARNESS_PACKAGE, CELLN_MODEL_TOKEN_FILE and real KVM"]
 fn harness_model_over_authenticated_dispatch() {
+    model_over_authenticated_dispatch(false);
+}
+
+#[test]
+#[ignore = "billable: requires JSON CELLN_HARNESS_PACKAGE, CELLN_MODEL_TOKEN_FILE and real KVM"]
+fn json_harness_model_over_authenticated_dispatch() {
+    model_over_authenticated_dispatch(true);
+}
+
+fn model_over_authenticated_dispatch(json_adapter: bool) {
     let _lock = crate::dispatch::warm::PROOF_LOCK.lock().unwrap();
     let package = PathBuf::from(
         std::env::var_os("CELLN_HARNESS_PACKAGE")
@@ -96,6 +106,10 @@ fn harness_model_over_authenticated_dispatch() {
     let root = work.path();
     let namespace = format!("celln-harness-proof-{}", std::process::id());
     let hook = std::env::var_os("CELLN_HARNESS_CONTROLLER_HOOK");
+    assert!(
+        !json_adapter || hook.is_none(),
+        "JSON Sympozium controller contract is not implemented yet"
+    );
     let caller = if hook.is_some() {
         format!("sympozium:{namespace}/harness-proof")
     } else {
@@ -127,11 +141,32 @@ fn harness_model_over_authenticated_dispatch() {
         json!({"apiVersion":"celln.dev/v1alpha1","bundles":[mote.0]}).to_string(),
     )
     .unwrap();
-    let borrowed = json!([
-        {"name":"add","path":"/add","hash":signed.closure.members["/add"].hash,"description":"Add two integer strings."},
-        {"name":"multiply","path":"/multiply","hash":signed.closure.members["/multiply"].hash,"description":"Multiply two integer strings."}
-    ]);
-    let grant = serde_json::to_vec(&json!({"apiVersion":"celln.dev/harness-grant-v1","caller":caller,"mote":mote.0,"runtime":runtime.0,"closure":closure.0,"borrowedTools":borrowed,"url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","credentialFile":token,"maxRequests":3,"maxOutputTokens":512,"maxTotalOutputTokens":1536})).unwrap();
+    let borrowed = if json_adapter {
+        let store = Store::open(root.join("tool-schemas")).unwrap();
+        let input = store.put(br#"{"type":"object","properties":{"text":{"type":"string","minLength":1,"maxLength":64}},"required":["text"],"additionalProperties":false}"#).unwrap();
+        let length = store.put(br#"{"type":"object","properties":{"length":{"type":"integer","minimum":0,"maximum":64}},"required":["length"],"additionalProperties":false}"#).unwrap();
+        let io = |output: &str| {
+            json!({"abi":"celln.json-stdio/v1","inputSchema":input.0,"outputSchema":output,
+            "inputBytes":1024,"outputBytes":1024,"timeoutMs":1000})
+        };
+        json!([
+            {"name":"uppercase","path":"/uppercase","hash":signed.closure.members["/uppercase"].hash,"description":"Uppercase text","jsonStdio":io(&input.0)},
+            {"name":"length","path":"/length","hash":signed.closure.members["/length"].hash,"description":"Measure text length","jsonStdio":io(&length.0)}
+        ])
+    } else {
+        json!([
+            {"name":"add","path":"/add","hash":signed.closure.members["/add"].hash,"description":"Add two integer strings."},
+            {"name":"multiply","path":"/multiply","hash":signed.closure.members["/multiply"].hash,"description":"Multiply two integer strings."}
+        ])
+    };
+    let options = json!({"system":"Use the explicitly lent tools.","maxTurns":3,"maxCalls":2});
+    let mut grant = json!({"apiVersion":"celln.dev/harness-grant-v1","caller":caller,"mote":mote.0,"runtime":runtime.0,"closure":closure.0,"borrowedTools":borrowed,"url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","credentialFile":token,"maxRequests":3,"maxOutputTokens":512,"maxTotalOutputTokens":1536});
+    if json_adapter {
+        grant["apiVersion"] = json!("celln.dev/harness-grant-v2");
+        grant["contractVersion"] = json!("celln.json-tools/v1");
+        grant["json"] = options.clone();
+    }
+    let grant = serde_json::to_vec(&grant).unwrap();
     let grant_hash = Hash::of(&grant);
     let grant_dir = root.join("trusted-harness");
     std::fs::create_dir(&grant_dir).unwrap();
@@ -141,6 +176,14 @@ fn harness_model_over_authenticated_dispatch() {
     ));
     std::fs::write(&grant_file, &grant).unwrap();
     let request: ExecutionRequest = serde_json::from_value(json!({"apiVersion":"celln.dev/v1alpha2","id":"harness-dispatch-proof","workload":{"id":"test-run","caller":caller},"mote":{"hash":mote.0},"tools":[{"alias":"/harness","hash":runtime.0,"closure":{"hash":closure.0}}],"invocation":{"alias":"/harness"},"harness":{"model":"deepseek-chat","contractVersion":"celln.reference-functions/v1","modelGrant":{"hash":grant_hash.0},"task":"Use add with args [\"37\",\"5\"], wait for its result, then multiply that result by \"2\". Reply with exactly the final integer.","borrowedTools":borrowed},"capabilities":{"workspace":"none","egress":["https://api.deepseek.com"],"timeoutMs":180000,"memoryBytes":268435456,"outputBytes":65536},"execution":{"lane":"agent","requireHardwareIsolation":true}})).unwrap();
+    let mut request = request;
+    if json_adapter {
+        request.api_version = "celln.dev/v1alpha3".into();
+        let binding = request.harness.as_mut().unwrap();
+        binding.contract_version = "celln.json-tools/v1".into();
+        binding.json = Some(serde_json::from_value(options).unwrap());
+        binding.task = "Call uppercase with text celln, wait for its result, then call length with the uppercase result. Wait for both tool results. Finally answer exactly: CELLN has length 5".into();
+    }
     assert!(request.problems().is_empty(), "{:?}", request.problems());
     let state = State {
         token_file: PathBuf::new(),
@@ -193,7 +236,7 @@ fn harness_model_over_authenticated_dispatch() {
         thread::sleep(Duration::from_millis(200));
     };
     assert_eq!(terminal["phase"], "Succeeded", "{terminal}");
-    assert_eq!(terminal["receipt"]["apiVersion"], "celln.dev/v1alpha2");
+    assert_eq!(terminal["receipt"]["apiVersion"], request.api_version);
     let events: Vec<Value> = terminal["output"]
         .as_str()
         .unwrap()
@@ -203,12 +246,39 @@ fn harness_model_over_authenticated_dispatch() {
         .collect();
     let calls: Vec<_> = events.iter().filter(|e| e["type"] == "tool").collect();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0]["result"], "42\n");
-    assert_eq!(calls[1]["args"], json!(["42", "2"]));
-    assert_eq!(calls[1]["result"], "84\n");
+    if json_adapter {
+        assert_eq!(calls[0]["name"], "uppercase");
+        assert_eq!(calls[0]["result"], json!({"text":"CELLN"}));
+        assert_eq!(calls[1]["name"], "length");
+        assert_eq!(calls[1]["arguments"], json!({"text":"CELLN"}));
+        assert_eq!(calls[1]["result"], json!({"length":5}));
+        for (call, tool) in calls
+            .iter()
+            .zip(&request.harness.as_ref().unwrap().borrowed_tools)
+        {
+            assert_eq!(call["hash"], tool.hash);
+            assert_eq!(
+                call["inputSchema"],
+                tool.json_stdio.as_ref().unwrap().input_schema
+            );
+            assert_eq!(
+                call["outputSchema"],
+                tool.json_stdio.as_ref().unwrap().output_schema
+            );
+        }
+    } else {
+        assert_eq!(calls[0]["result"], "42\n");
+        assert_eq!(calls[1]["args"], json!(["42", "2"]));
+        assert_eq!(calls[1]["result"], "84\n");
+    }
+    let expected_answer = if json_adapter {
+        "CELLN has length 5"
+    } else {
+        "84"
+    };
     assert!(events
         .iter()
-        .any(|e| e["type"] == "completed" && e["answer"] == "84"));
+        .any(|e| e["type"] == "completed" && e["answer"] == expected_answer));
     let (_, audit) = http(
         &state,
         "GET",
