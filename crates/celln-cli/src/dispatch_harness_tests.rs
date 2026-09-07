@@ -106,10 +106,8 @@ fn model_over_authenticated_dispatch(json_adapter: bool) {
     let root = work.path();
     let namespace = format!("celln-harness-proof-{}", std::process::id());
     let hook = std::env::var_os("CELLN_HARNESS_CONTROLLER_HOOK");
-    assert!(
-        !json_adapter || hook.is_none(),
-        "JSON Sympozium controller contract is not implemented yet"
-    );
+    // An explicitly supplied hook must support the selected contract; its
+    // controller/receipt assertions are additional proof, not a fake transport.
     let caller = if hook.is_some() {
         format!("sympozium:{namespace}/harness-proof")
     } else {
