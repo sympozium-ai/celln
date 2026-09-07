@@ -1,7 +1,8 @@
 //! Authenticated router that distributes actions across Celln dispatcher
 //! backends. Each backend is a Celln process with a `/v1/health` endpoint that
 //! reports KVM availability. The router picks a backend, checks its health,
-//! and forwards if healthy; otherwise it tries the next.
+//! and forwards if healthy; otherwise it tries the next BEFORE claiming an
+//! owner. Claimed executions are never reselected or automatically replayed.
 //!
 //! The router is intentionally not a load tracker. It relies on per-node
 //! admission ("can this node spawn another cell?") via the health check.
@@ -12,15 +13,16 @@ use crate::dispatch_http::{
 };
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 const ROUTER_TOKEN_BYTES: usize = 24;
+#[path = "router_ownership.rs"]
+mod ownership;
 
 // Credentials are bounded and never echoed in errors. Reload on each request
 // to support atomic file/Secret rotation; an unreadable file fails closed.
@@ -84,6 +86,7 @@ pub fn serve(
     mode: RoutingMode,
     token_file: &Path,
     client_token_file: &Path,
+    ownership_dir: &Path,
 ) -> Result<u8> {
     let mut urls: Vec<String> = backends
         .into_iter()
@@ -121,7 +124,7 @@ pub fn serve(
         backends: urls.clone(),
         mode,
         cursor: AtomicUsize::new(0),
-        executions: Mutex::new(HashMap::new()),
+        executions: ownership::Ledger::open(ownership_dir, 100_000)?,
         token_file: token_file.to_owned(),
         client_token_file: client_token_file.to_owned(),
     });
@@ -151,9 +154,8 @@ struct RouterState {
     backends: Vec<String>,
     mode: RoutingMode,
     cursor: AtomicUsize,
-    /// Which backend owns each in-flight `/v1/executions` id, so a later
-    /// GET can find it.
-    executions: Mutex<HashMap<String, String>>,
+    /// Shared durable ownership and anti-replay tombstones.
+    executions: ownership::Ledger,
     token_file: PathBuf,
     client_token_file: PathBuf,
 }
@@ -265,7 +267,6 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
             &mut reader,
             length,
             "/v1/executions",
-            &state.executions,
             &backend_token,
         )?,
         ("POST", path) if execution_path_id(path, true).is_some() => {
@@ -290,15 +291,14 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
 
 /// `POST <endpoint>`: pick a healthy backend deterministically by the
 /// request's own `id` field, forward the body verbatim, and — on
-/// acceptance — remember which backend owns that id so a later poll can
-/// find it.
+/// before forwarding — durably bind the body and owner. Lost responses must
+/// not let another router replica replay a possibly executed POST.
 fn forward_submission(
     state: &RouterState,
     stream: &mut TcpStream,
     reader: &mut BufReader<TcpStream>,
     length: usize,
     endpoint: &str,
-    tracker: &Mutex<HashMap<String, String>>,
     token: &Option<String>,
 ) -> Result<()> {
     if length == 0 || length > 64 * 1024 {
@@ -322,18 +322,49 @@ fn forward_submission(
         }
     };
 
-    let backend = pick_backend(state, &id, token)?;
-    let resp = forward_post(&backend, endpoint, &body, token)?;
-    let status = parse_status(&resp);
-
-    if status == 202 || status == 200 {
-        tracker
-            .lock()
-            .expect("router tracking map not poisoned")
-            .insert(id, backend);
+    let claim = match state
+        .executions
+        .claim(&id, &body, || pick_backend(state, &id, token))
+    {
+        Ok(claim) => claim,
+        Err(_) => {
+            return reply(
+                stream,
+                503,
+                &serde_json::json!({"error":"ownership unavailable; retry same request without changing id"}),
+            )
+        }
+    };
+    match claim {
+        ownership::Claim::Conflict => reply(
+            stream,
+            409,
+            &serde_json::json!({"error":"execution id already binds different request bytes"}),
+        ),
+        ownership::Claim::Full => reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"ownership capacity exhausted; operator reconciliation required"}),
+        ),
+        ownership::Claim::Existing(owner) => forward_owned(
+            state,
+            stream,
+            &owner.backend,
+            "GET",
+            &format!("/v1/executions/{id}"),
+            token,
+        ),
+        ownership::Claim::New(owner) => {
+            match forward_post(&owner.backend, endpoint, &body, token) {
+                Ok(resp) => raw_reply(stream, &resp),
+                Err(_) => reply(
+                    stream,
+                    503,
+                    &serde_json::json!({"error":"submission outcome unknown; owner retained; POST will not be replayed"}),
+                ),
+            }
+        }
     }
-
-    raw_reply(stream, &resp)
 }
 
 /// `GET <endpoint>/:id`: forward to whichever backend `forward_submission`
@@ -347,25 +378,52 @@ fn forward_existing(
     token: &Option<String>,
 ) -> Result<()> {
     let id = execution_path_id(path, cancel).context("invalid execution path")?;
-    let backend = state
-        .executions
-        .lock()
-        .expect("router tracking map not poisoned")
-        .get(id)
-        .cloned();
-    match backend {
-        Some(backend_url) => {
-            let resp = if method == "POST" {
-                forward_post(&backend_url, path, &[], token)?
-            } else {
-                forward_get(&backend_url, path, token)?
-            };
-            raw_reply(stream, &resp)
+    let backend = match state.executions.lookup(id) {
+        Ok(owner) => owner,
+        Err(_) => {
+            return reply(
+                stream,
+                503,
+                &serde_json::json!({"error":"execution ownership unavailable"}),
+            )
         }
+    };
+    match backend {
+        Some(owner) => forward_owned(state, stream, &owner.backend, method, path, token),
         None => reply(
             stream,
             404,
             &serde_json::json!({"error": "unknown execution"}),
+        ),
+    }
+}
+
+fn forward_owned(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    backend: &str,
+    method: &str,
+    path: &str,
+    token: &Option<String>,
+) -> Result<()> {
+    if !state.backends.iter().any(|url| url == backend) {
+        return reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"recorded owner removed from configured backends; no reroute"}),
+        );
+    }
+    let response = if method == "POST" {
+        forward_post(backend, path, &[], token)
+    } else {
+        forward_get(backend, path, token)
+    };
+    match response {
+        Ok(resp) if parse_status(&resp) != 404 => raw_reply(stream, &resp),
+        _ => reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"recorded owner unavailable or outcome lost; no reroute or replay"}),
         ),
     }
 }
@@ -382,6 +440,7 @@ fn execution_path_id(path: &str, cancel: bool) -> Option<&str> {
 
 fn valid_path_id(id: &str) -> bool {
     !id.is_empty()
+        && id.len() <= 512
         && id != "."
         && id != ".."
         && id
@@ -406,7 +465,7 @@ fn pick_backend(state: &RouterState, action_id: &str, token: &Option<String>) ->
 
     for offset in 0..n {
         let backend = &state.backends[(start + offset) % n];
-        if is_healthy(backend, token)? {
+        if is_healthy(backend, token).unwrap_or(false) {
             return Ok(backend.clone());
         }
     }
@@ -613,6 +672,101 @@ mod tests {
     const CLIENT_TOKEN: &str = "client-test-credential-at-least-24";
     const BACKEND_TOKEN: &str = "backend-test-credential-at-least-24";
 
+    #[test]
+    fn lost_acceptance_is_not_replayed_and_fresh_replica_recovers_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = state(dir.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        first.backends.push(backend.clone());
+        let server = std::thread::spawn(move || {
+            // Any second POST /v1/executions would violate this transcript.
+            for (method, path, status) in [
+                ("GET", "/v1/health", 200),
+                ("POST", "/v1/executions", 0),
+                ("GET", "/v1/executions/lost", 200),
+                ("GET", "/v1/executions/lost", 200),
+                ("GET", "/v1/executions/lost/audit", 200),
+                ("POST", "/v1/executions/lost/cancel", 202),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                assert_eq!(
+                    read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap(),
+                    format!("{method} {path} HTTP/1.1\r\n")
+                );
+                let mut length = 0;
+                loop {
+                    let line = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(n) = line.strip_prefix("Content-Length: ") {
+                        length = n.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                if status == 0 {
+                    continue;
+                } // accepted backend work, lost reply
+                let payload = if path == "/v1/health" {
+                    r#"{"ok":true,"kvm":true}"#
+                } else {
+                    r#"{"requestId":"lost","phase":"Running"}"#
+                };
+                write!(stream,"HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",payload.len()).unwrap();
+            }
+        });
+        let auth = format!("Authorization: Bearer {CLIENT_TOKEN}\r\n");
+        let body = r#"{"id":"lost"}"#;
+        let headers = format!("{auth}Content-Length: {}\r\n", body.len());
+        assert_eq!(
+            parse_status(&request(&first, "POST", "/v1/executions", &headers, body)),
+            503
+        );
+        drop(first);
+        let mut replica = state(dir.path());
+        replica.backends = vec!["http://127.0.0.1:1".into(), backend];
+        assert_eq!(
+            parse_status(&request(&replica, "POST", "/v1/executions", &headers, body)),
+            200
+        );
+        for path in ["/v1/executions/lost", "/v1/executions/lost/audit"] {
+            assert_eq!(
+                parse_status(&request(&replica, "GET", path, &auth, "")),
+                200
+            );
+        }
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/executions/lost/cancel",
+                &auth,
+                ""
+            )),
+            202
+        );
+        server.join().unwrap();
+        // A lost node does not send this request to the spare backend.
+        assert_eq!(
+            parse_status(&request(&replica, "POST", "/v1/executions", &headers, body)),
+            503
+        );
+        let changed = r#"{"id":"lost","task":"changed"}"#;
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/executions",
+                &format!("{auth}Content-Length: {}\r\n", changed.len()),
+                changed
+            )),
+            409
+        );
+    }
+
     fn state(dir: &Path) -> RouterState {
         let client_token_file = dir.join("client");
         let token_file = dir.join("backend");
@@ -622,7 +776,7 @@ mod tests {
             backends: vec![],
             mode: RoutingMode::RoundRobin,
             cursor: AtomicUsize::new(0),
-            executions: Mutex::new(HashMap::new()),
+            executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
             token_file,
             client_token_file,
         }
