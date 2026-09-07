@@ -12,6 +12,7 @@
 use celln_manifest::{ExecDenied, Hash, Input, Lane, Manifest};
 use serde::Serialize;
 
+pub mod closure_check;
 pub mod dispatch_report;
 
 /// The result of asking pilot to run something.

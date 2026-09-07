@@ -17,6 +17,7 @@ pub(crate) mod harness;
 
 #[path = "dispatch_substrate.rs"]
 mod substrate;
+pub(crate) use substrate::check_members;
 pub(crate) use substrate::launch_declared;
 #[path = "dispatch_inputs.rs"]
 pub(crate) mod inputs;

@@ -183,6 +183,39 @@ fn signed_closure_on_real_kvm() {
         "execution":{"lane":"tool","requireHardwareIsolation":true}
     })).unwrap();
     let preparations = super::super::warm::PREPARATIONS.load(std::sync::atomic::Ordering::SeqCst);
+    let mut member_request = request.clone();
+    member_request.invocation.as_mut().unwrap().args.clear();
+    let check_started = std::time::Instant::now();
+    let member_report =
+        super::super::check_members(&member_request, &motes, &tools, &state).unwrap();
+    let member_check_micros = check_started.elapsed().as_micros();
+    assert_eq!(member_report["memberIntegrity"], "verified-in-sealed-cell");
+    assert_eq!(member_report["memberCount"], signed.closure.members.len());
+    assert_eq!(member_report["toolExecution"], false);
+    assert_eq!(member_report["artifactReadiness"], "not_checked");
+    assert_eq!(member_report["conformance"], "not_checked");
+    // Execution arguments cannot turn this read-only operation into a run.
+    assert!(super::super::check_members(&request, &motes, &tools, &state).is_err());
+    let member_request_file = work.path().join("member-check.json");
+    std::fs::write(
+        &member_request_file,
+        serde_json::to_vec(&member_request).unwrap(),
+    )
+    .unwrap();
+    let binary = std::env::var_os("CELLN_TEST_BINARY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/celln"));
+    let cli_bytes = command(
+        Command::new(binary)
+            .arg("--root")
+            .arg(&state)
+            .args(["closure", "check-members"])
+            .arg(&member_request_file),
+    );
+    let cli_report: serde_json::Value = serde_json::from_slice(&cli_bytes).unwrap();
+    assert_eq!(cli_report["memberIntegrity"], "verified-in-sealed-cell");
+    assert_eq!(cli_report["closure"], closure_hash.0);
+    assert_eq!(cli_report["toolExecution"], false);
     let mut measurements = Vec::new();
     for mode in ["none", "read-only", "read-write"] {
         request.capabilities.workspace = serde_json::from_value(json!(mode)).unwrap();
@@ -239,6 +272,12 @@ fn signed_closure_on_real_kvm() {
         .unwrap()
         .0;
     let (out, _) = super::super::launch_declared(&denied, &motes, &tools, &state).unwrap();
+    member_request.tools = denied.tools.clone();
+    assert!(
+        super::super::check_members(&member_request, &motes, &tools, &state)
+            .unwrap_err()
+            .contains("verification failed")
+    );
     assert_eq!(
         out.denial.as_deref(),
         Some("sealed closure member mismatch")
@@ -259,6 +298,12 @@ fn signed_closure_on_real_kvm() {
     );
     assert!(out.execution.is_none());
     let mut forged_signature = signed.clone();
+    member_request.tools = denied.tools.clone();
+    assert!(
+        super::super::check_members(&member_request, &motes, &tools, &state)
+            .unwrap_err()
+            .contains("verification failed")
+    );
     forged_signature.signature = celln_manifest::closure::hex(&[0; 64]);
     denied.tools[0].closure.as_mut().unwrap().hash = closure_store
         .put(&serde_json::to_vec(&forged_signature).unwrap())
@@ -349,6 +394,11 @@ fn signed_closure_on_real_kvm() {
     );
     let evidence = json!({"status":"passed","closure":closure_hash.0,"publisher":signed.publisher,"members":signed.closure.members,"toolfsBytes":image_bytes.len(),"materialisationMicros":materialisation.as_micros(),"runs":measurements,"warmPreparations":1,"replacementDenied":true,"dependencyRevocationDenied":true,"signatureForgeryDenied":true,"publisherWithdrawalDenied":true,"memberMismatchDenied":true,"symlinkMemberDenied":true,"daxRevocationKilledGuest":true,"executableScratchMappingDenied":true,"liveForkSurvivedEviction":true,"unusedPagesCollected":true,"simultaneousForks":8,"additionalToolAllocations":0,"sharedToolBytes":shared_bytes});
     let evidence_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/closure-proof");
+    let mut evidence = evidence;
+    evidence["sealedMemberCheck"] = member_report;
+    evidence["sealedMemberCLICheck"] = cli_report;
+    evidence["memberCheckIncludingPreparationMicros"] = json!(member_check_micros);
+    evidence["executionSamples"] = json!("prewarmed-by-member-check");
     std::fs::create_dir_all(&evidence_dir).unwrap();
     std::fs::write(
         evidence_dir.join(format!("{}.json", std::process::id())),
