@@ -11,12 +11,14 @@ mod audit;
 #[cfg(all(test, target_os = "linux"))]
 #[path = "dispatch_harness_tests.rs"]
 mod harness_tests;
+#[path = "dispatch_journal.rs"]
+mod journal;
 use anyhow::{bail, Context, Result};
 use celln_spec::{
     ExecutionOutput, ExecutionPhase, ExecutionReceipt, ExecutionRequest, ResolvedExecution,
 };
 use celln_store::Store;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -34,9 +36,8 @@ pub(crate) const MAX_REQUEST_LINE: usize = 8 * 1024;
 pub(crate) const MAX_HEADER_LINE: usize = 8 * 1024;
 pub(crate) const MAX_HEADER_COUNT: usize = 64;
 
-/// How long a finished execution record is kept before it is evicted on the
-/// next insert. The registry is otherwise unbounded — every unique id a
-/// caller submits stays in memory for the life of the process.
+/// Terminal memory-cache TTL only. Durable records/tombstones are not expired;
+/// new admission stops at the journal's bounded record capacity.
 const RECORD_TTL: Duration = Duration::from_secs(3600);
 
 /// Read one line with a hard byte cap, so a peer that never sends `\n`
@@ -90,15 +91,15 @@ fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>)> {
     Ok((length, authorization))
 }
 
-/// A registry entry tagged with its insertion time, so a background sweep
-/// can evict entries older than [`RECORD_TTL`]. The registry is otherwise
-/// unbounded for the life of the process.
+/// A registry entry with terminal cache age. Admission sweeps expired terminal
+/// entries only after persistence; active or unpersisted records remain live.
 struct Entry<T> {
     at: Instant,
     value: T,
     control: Option<celln_control::Control>,
     reservation: Option<Reservation>,
     audit: Option<audit::Audit>,
+    journal_root: Option<PathBuf>,
 }
 
 impl<T> Entry<T> {
@@ -109,6 +110,7 @@ impl<T> Entry<T> {
             control: None,
             reservation: None,
             audit: None,
+            journal_root: None,
         }
     }
 }
@@ -116,14 +118,19 @@ impl<T> Entry<T> {
 fn evict_expired(registry: &mut HashMap<String, Entry<ExecutionRecord>>) {
     let now = Instant::now();
     registry.retain(|_, entry| {
-        execution_is_active(&entry.value) || now.duration_since(entry.at) < RECORD_TTL
+        execution_is_active(&entry.value)
+            || now.duration_since(entry.at) < RECORD_TTL
+            || entry.journal_root.as_ref().is_some_and(|root| {
+                !journal::read(root, &entry.value.request_id)
+                    .is_ok_and(|snapshot| snapshot.is_some_and(|s| !execution_is_active(&s.record)))
+            })
     });
 }
 
 /// One `celln.dev/v1alpha1` execution in flight or finished on this node.
 /// This is the dispatcher's own bookkeeping, not the wire receipt — it has
 /// room for a human-readable reason a receipt does not.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionRecord {
     pub request_id: String,
@@ -298,6 +305,7 @@ pub fn serve(
     // Reservations are process-local. Two dispatchers must not independently
     // advertise the same state root's capacity while neither has a cell yet.
     let _ownership = own_dispatch_root(&root)?;
+    journal::prepare(&root)?;
     let listener = TcpListener::bind(listen_address)
         .with_context(|| format!("binding dispatcher {listen_address}"))?;
     let state = Arc::new(State {
@@ -482,6 +490,32 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 .executions
                 .lock()
                 .expect("dispatcher registry not poisoned");
+            match journal::read(&state.root, &request.id) {
+                Ok(Some(snapshot)) => {
+                    if snapshot.request_hash != celln_manifest::Hash::of(&body).0 {
+                        return reply(
+                            &mut stream,
+                            409,
+                            &serde_json::json!({"error":"execution id already bound to different request bytes"}),
+                        );
+                    }
+                    if let Some(existing) = registry.get(&request.id) {
+                        if execution_is_active(&existing.value) {
+                            return reply(&mut stream, 202, &existing.value);
+                        }
+                        return reply_entry(&mut stream, existing, false);
+                    }
+                    return reply_snapshot(&mut stream, snapshot, false);
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    return reply(
+                        &mut stream,
+                        503,
+                        &serde_json::json!({"error":"execution journal unavailable; do not replay"}),
+                    )
+                }
+            }
             if let Some(existing) = registry.get(&request.id) {
                 return reply(&mut stream, 202, &existing.value);
             }
@@ -514,6 +548,21 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
             entry.control = Some(control.clone());
             entry.reservation = Some(Reservation::for_request(&request));
             entry.audit = Some(audit::Audit::new(&request, &state.probe.node_name));
+            if journal::claim(
+                &state.root,
+                &body,
+                &entry.value,
+                entry.audit.as_ref().unwrap(),
+            )
+            .is_err()
+            {
+                return reply(
+                    &mut stream,
+                    503,
+                    &serde_json::json!({"error":"durable admission unavailable; retry same id"}),
+                );
+            }
+            entry.journal_root = Some(state.root.clone());
             registry.insert(request.id.clone(), entry);
             drop(registry);
             let worker_executions = Arc::clone(&state.executions);
@@ -555,11 +604,7 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 .lock()
                 .expect("dispatcher registry not poisoned");
             let Some(entry) = registry.get_mut(id) else {
-                return reply(
-                    &mut stream,
-                    404,
-                    &serde_json::json!({"error": "unknown execution"}),
-                );
+                return reply_archived(&mut stream, state, id, false);
             };
             if execution_is_active(&entry.value) {
                 if let Some(control) = &entry.control {
@@ -574,7 +619,7 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 // subprocesses, VM handles and preparation state.
                 reply(&mut stream, 202, &entry.value)
             } else {
-                reply(&mut stream, 200, &entry.value)
+                reply_entry(&mut stream, entry, false)
             }
         }
         ("GET", path) if path.starts_with("/v1/executions/") && path.ends_with("/audit") => {
@@ -583,13 +628,9 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 .executions
                 .lock()
                 .expect("dispatcher registry not poisoned");
-            match registry.get(id).and_then(|entry| entry.audit.as_ref()) {
-                Some(audit) => reply(&mut stream, 200, audit),
-                None => reply(
-                    &mut stream,
-                    404,
-                    &serde_json::json!({"error": "unknown execution audit"}),
-                ),
+            match registry.get(id) {
+                Some(entry) => reply_entry(&mut stream, entry, true),
+                None => reply_archived(&mut stream, state, id, true),
             }
         }
         ("GET", path) if path.starts_with("/v1/executions/") => {
@@ -599,15 +640,77 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 .lock()
                 .expect("dispatcher registry not poisoned");
             match registry.get(id) {
-                Some(entry) => reply(&mut stream, 200, &entry.value),
-                None => reply(
-                    &mut stream,
-                    404,
-                    &serde_json::json!({"error":"unknown execution"}),
-                ),
+                Some(entry) => reply_entry(&mut stream, entry, false),
+                None => reply_archived(&mut stream, state, id, false),
             }
         }
         _ => reply(&mut stream, 404, &serde_json::json!({"error":"not found"})),
+    }
+}
+
+fn persist_terminal(entry: &Entry<ExecutionRecord>) -> Result<()> {
+    if !execution_is_active(&entry.value) {
+        if let Some(root) = &entry.journal_root {
+            journal::complete(
+                root,
+                &entry.value,
+                entry.audit.as_ref().context("missing audit")?,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn reply_entry(stream: &mut TcpStream, entry: &Entry<ExecutionRecord>, audit: bool) -> Result<()> {
+    if persist_terminal(entry).is_err() {
+        return reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"terminal record not durable; do not replay"}),
+        );
+    }
+    if audit {
+        match &entry.audit {
+            Some(value) => reply(stream, 200, value),
+            None => reply(
+                stream,
+                404,
+                &serde_json::json!({"error":"unknown execution audit"}),
+            ),
+        }
+    } else {
+        reply(stream, 200, &entry.value)
+    }
+}
+
+fn reply_snapshot(stream: &mut TcpStream, snapshot: journal::Snapshot, audit: bool) -> Result<()> {
+    if execution_is_active(&snapshot.record) {
+        return reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"interrupted execution requires operator reconciliation; teardown is unproven; do not replay"}),
+        );
+    }
+    if audit {
+        reply(stream, 200, &snapshot.audit)
+    } else {
+        reply(stream, 200, &snapshot.record)
+    }
+}
+
+fn reply_archived(stream: &mut TcpStream, state: &State, id: &str, audit: bool) -> Result<()> {
+    match journal::read(&state.root, id) {
+        Ok(Some(snapshot)) => reply_snapshot(stream, snapshot, audit),
+        Ok(None) => reply(
+            stream,
+            404,
+            &serde_json::json!({"error":"unknown execution"}),
+        ),
+        Err(_) => reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"execution journal unavailable; do not replay"}),
+        ),
     }
 }
 
@@ -639,6 +742,9 @@ fn update_execution(executions: &Executions, id: &str, f: impl FnOnce(&mut Execu
         if let Some(audit) = &mut entry.audit {
             audit.phase(&entry.value.phase);
             audit.receipt = entry.value.receipt.clone();
+        }
+        if let Err(error) = persist_terminal(entry) {
+            eprintln!("dispatcher terminal journal unavailable: {error:#}");
         }
     }
 }
@@ -851,6 +957,105 @@ mod tests {
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_records_survive_empty_registry_without_replaying_interrupted_claims() {
+        fn http(state: &State, method: &str, path: &str, body: &[u8], token: &str) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let (server, _) = listener.accept().unwrap();
+            write!(client, "{method} {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\nContent-Length: {}\r\n\r\n", body.len()).unwrap();
+            client.write_all(body).unwrap();
+            handle(server, state).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            response
+        }
+        let root = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(root.path());
+        let request = request_with_egress(&[]);
+        let body = serde_json::to_vec(&request).unwrap();
+        let mut record = empty_record(&request.id);
+        let mut audit = audit::Audit::new(&request, "test");
+        journal::claim(root.path(), &body, &record, &audit).unwrap();
+        // No live registry/worker exists, as after a restart. A durable claim
+        // cannot be interpreted as a fresh request, success or teardown.
+        for (method, suffix) in [("GET", ""), ("GET", "/audit"), ("POST", "/cancel")] {
+            let path = format!("/v1/executions/{}{suffix}", request.id);
+            assert!(http(&state, method, &path, b"", "wrong").starts_with("HTTP/1.1 401"));
+            assert!(http(&state, method, &path, b"", &state.token).starts_with("HTTP/1.1 503"));
+        }
+        assert!(
+            http(&state, "POST", "/v1/executions", &body, &state.token).starts_with("HTTP/1.1 503")
+        );
+        let mut changed = request.clone();
+        changed.workload.id.push_str("-changed");
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/executions",
+            &serde_json::to_vec(&changed).unwrap(),
+            &state.token
+        )
+        .starts_with("HTTP/1.1 409"));
+        assert!(state.executions.lock().unwrap().is_empty());
+
+        record.phase = "Refused".into();
+        record.reason = Some("fixture refused before execution".into());
+        audit.phase("Refused");
+        journal::complete(root.path(), &record, &audit).unwrap();
+        for (method, suffix) in [("GET", ""), ("GET", "/audit"), ("POST", "/cancel")] {
+            let response = http(
+                &state,
+                method,
+                &format!("/v1/executions/{}{suffix}", request.id),
+                b"",
+                &state.token,
+            );
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+            let value: serde_json::Value =
+                serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+            let expected = if suffix == "/audit" {
+                serde_json::to_value(&audit).unwrap()
+            } else {
+                serde_json::to_value(&record).unwrap()
+            };
+            assert_eq!(value, expected);
+        }
+        assert!(
+            http(&state, "POST", "/v1/executions", &body, &state.token).starts_with("HTTP/1.1 200")
+        );
+        assert!(state.executions.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_persistence_failure_is_not_reported_as_completion_or_evicted() {
+        let root = tempfile::tempdir().unwrap();
+        let request = request_with_egress(&[]);
+        let mut entry = Entry::new(empty_record(&request.id));
+        entry.journal_root = Some(root.path().into());
+        entry.audit = Some(audit::Audit::new(&request, "test"));
+        // Missing claim simulates unavailable/corrupt admission state.
+        entry.value.phase = "Failed".into();
+        entry.at = Instant::now() - RECORD_TTL - Duration::from_secs(1);
+        assert!(persist_terminal(&entry).is_err());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        reply_entry(&mut server, &entry, false).unwrap();
+        drop(server);
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"));
+        let mut registry = HashMap::from([(request.id.clone(), entry)]);
+        evict_expired(&mut registry);
+        assert!(registry.contains_key(&request.id));
     }
 
     #[test]
@@ -1364,6 +1569,7 @@ mod tests {
                 control: None,
                 reservation: None,
                 audit: None,
+                journal_root: None,
             },
         );
         registry.insert("fresh".into(), Entry::new(empty_record("fresh")));
@@ -1375,6 +1581,7 @@ mod tests {
                 control: None,
                 reservation: None,
                 audit: None,
+                journal_root: None,
             },
         );
 
