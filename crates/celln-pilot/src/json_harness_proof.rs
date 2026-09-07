@@ -149,6 +149,7 @@ fn main() -> Result<()> {
         ("bad-result", "required tool field missing"),
         ("sleep", "tool deadline exceeded"),
         ("flood", "child output exceeded limit"),
+        ("last-turn", "model budget leaves no tool result turn"),
     ] {
         if real_model && task != "normalize then measure" {
             continue;
@@ -158,6 +159,9 @@ fn main() -> Result<()> {
             {"name":"uppercase","path":"/uppercase","hash":members["/uppercase"].hash,"description":"Uppercase text","input_schema":schema(input),"output_schema":schema(input),"input_bytes":1024,"output_bytes":256,"timeout_ms":100},
             {"name":"length","path":"/length","hash":members["/length"].hash,"description":"Measure text length","input_schema":schema(input),"output_schema":schema(length),"input_bytes":1024,"output_bytes":256,"timeout_ms":100}
         ]});
+        if task == "last-turn" {
+            config["max_turns"] = json!(1);
+        }
         if real_model {
             config["url"] = json!("https://api.deepseek.com/chat/completions");
             config["model"] = json!("deepseek-chat");
@@ -204,6 +208,12 @@ fn main() -> Result<()> {
             }
         }
         let output = String::from_utf8(output)?;
+        if task == "last-turn" {
+            ensure!(
+                !output.contains("\"type\":\"tool\""),
+                "last-turn batch emitted a completed tool event"
+            );
+        }
         if real_model {
             let events: Vec<serde_json::Value> = output
                 .lines()

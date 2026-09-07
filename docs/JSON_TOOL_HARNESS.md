@@ -38,6 +38,10 @@ through JSON normalization. The whole proposed tool-call batch is checked
 before the first call executes. A requested unselected tool or repeated call ID
 refuses; omission grants nothing. A final answer may use no tools. Results must
 validate against the pinned output schema before returning to the model.
+Tool-call batches on the last permitted model turn refuse before execution:
+there must be a remaining model turn to consume the results. A tool-free final
+answer on the last turn is allowed. This does not promise that a later provider
+request succeeds or that it has enough remaining host-granted allowance.
 
 There are no automatic tool retries. A failed result cannot undo an already
 completed side effect; it stops further execution. Tool pipes are nonblocking
@@ -73,9 +77,12 @@ CARGO_TARGET_DIR=target/validation cargo run -p celln-pilot --features kvm \
   --bin celln-json-harness-proof
 ```
 
-Six real warm-forked KVM cases exercise the compiled adapter: text uppercase
+Seven real warm-forked KVM cases exercise the compiled adapter: text uppercase
 then length, undeclared tool, invalid arguments, invalid output, child deadline
-and output overflow. Fixture tools deliberately use a tiny text grammar; the
+and output overflow, plus final-turn tool-batch refusal. The latter checks the
+compiled refusal path and absence of completed-tool events; the portable test
+directly proves the executor callback was never invoked. Fixture tools
+deliberately use a tiny text grammar; the
 adapter itself uses the bounded JSON/schema parser. The signed filesystem also
 contains an unselected binary excluded from the lent closure; runtime selection
 refusal is tested here, not a new claim of a guest attempted-exec attack.
@@ -100,6 +107,11 @@ Committed records: [scripted six-case KVM suite](evidence/json-harness-scripted-
 and [real DeepSeek JSON-tool task](evidence/json-harness-deepseek-2026-09-07.json).
 Both used the same runtime binary. Full `make ci` passed on this implementation;
 the original reference Harness and dispatcher contracts remain unchanged.
+
+PR review then reproduced and fixed final-turn side effects before exhaustion.
+The [reviewed seven-case scripted KVM record](evidence/json-harness-reviewed-scripted-2026-09-07.json)
+binds the revised binary, with full `make ci` passing again. It does not relabel
+the earlier real-model run as a measurement of this later binary.
 
 ## Remaining integration gates
 

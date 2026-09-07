@@ -1,0 +1,95 @@
+{
+  "cases": [
+    {
+      "elapsedMicros": 100619,
+      "exit": 0,
+      "expected": "CELLN has length 5",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"arguments\":{\"text\":\"celln\"},\"hash\":\"blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c\",\"id\":\"call-uppercase\",\"inputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"name\":\"uppercase\",\"outputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"result\":{\"text\":\"CELLN\"},\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":1,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"arguments\":{\"text\":\"CELLN\"},\"hash\":\"blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245\",\"id\":\"call-length\",\"inputSchema\":\"blake3:0dfab6d82264eae8236cdfe7e66e7dd9d99f7afe6fe80cc01ddaef3791e54ab6\",\"name\":\"length\",\"outputSchema\":\"blake3:334d8ed405e3789cc513dc297a2137ee175e9f2b91743deb1e73e15517cf72d5\",\"result\":{\"length\":5},\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":2,\"type\":\"model\"}\nCELLN_HARNESS_EVENT {\"answer\":\"CELLN has length 5\",\"calls\":2,\"type\":\"completed\"}\n",
+      "task": "normalize then measure"
+    },
+    {
+      "elapsedMicros": 60451,
+      "exit": 1,
+      "expected": "unselected tool requested",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_ERROR unselected tool requested\n",
+      "task": "undeclared"
+    },
+    {
+      "elapsedMicros": 60444,
+      "exit": 1,
+      "expected": "tool value type mismatch",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_ERROR tool value type mismatch\n",
+      "task": "invalid-arguments"
+    },
+    {
+      "elapsedMicros": 60400,
+      "exit": 1,
+      "expected": "required tool field missing",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_ERROR required tool field missing\n",
+      "task": "bad-result"
+    },
+    {
+      "elapsedMicros": 160743,
+      "exit": 1,
+      "expected": "tool deadline exceeded",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_ERROR tool deadline exceeded\n",
+      "task": "sleep"
+    },
+    {
+      "elapsedMicros": 60458,
+      "exit": 1,
+      "expected": "child output exceeded limit",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_ERROR child output exceeded limit\n",
+      "task": "flood"
+    },
+    {
+      "elapsedMicros": 60295,
+      "exit": 1,
+      "expected": "model budget leaves no tool result turn",
+      "output": "CELLN_HARNESS_EVENT {\"model\":\"scripted-not-ai\",\"turn\":0,\"type\":\"model\"}\nCELLN_HARNESS_ERROR model budget leaves no tool result turn\n",
+      "task": "last-turn"
+    }
+  ],
+  "closure": {
+    "closure": {
+      "apiVersion": "celln.dev/closure-v1",
+      "entrypoint": "/harness",
+      "interpreter": false,
+      "members": {
+        "/harness": {
+          "dependencies": [
+            "/length",
+            "/pilot-fetch",
+            "/uppercase"
+          ],
+          "hash": "blake3:2d433dbf14b0e58b31b3768d645d191a7e0a95d2f7851296527128642fc749a3"
+        },
+        "/length": {
+          "dependencies": [],
+          "hash": "blake3:8da2133cbe208448e3aa8fe6b8e91d6cd6b66ae3bc93fb81e18916f6488bd245"
+        },
+        "/pilot-fetch": {
+          "dependencies": [],
+          "hash": "blake3:d6e0f9b8e8f94b1f7e595cf117a38a98ef95b65d43edb081eb53b0a6178c0b01"
+        },
+        "/uppercase": {
+          "dependencies": [],
+          "hash": "blake3:2696e782ed2d35ec85cb07057b27a4ed1068862edb5ce8b40510d87e8dd58d0c"
+        }
+      },
+      "toolfs": "blake3:f0f560ab049249eebd5fb42acd18681f5241010af579ee6be5239435485e1964"
+    },
+    "publisher": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61",
+    "signature": "4cfc23f4a2b9034d499378b2966a9e703cbfe02b6f135a4338ce751fc77ffcaa1d46edfae65521c1b7120f8da4c782dd529c7aeed624f4f4cde36b041dac3309"
+  },
+  "guestBinary": "blake3:2d433dbf14b0e58b31b3768d645d191a7e0a95d2f7851296527128642fc749a3",
+  "modelCalls": 0,
+  "scope": "real-KVM-native-adapter-with-scripted-broker-not-AI",
+  "status": "passed",
+  "provenance": {
+    "baseRevision": "33b6f2d2a5a69a076bf26314a1259520bc58dae1",
+    "workingTreeChanges": true,
+    "source": "PR85 review: refuse final-turn tool batches before side effects",
+    "productionDeploymentChanged": false
+  }
+}

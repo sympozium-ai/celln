@@ -177,3 +177,24 @@ fn budgets_and_repeated_call_ids_stop_the_loop() {
     .is_err());
     assert_eq!(executes.get(), 1);
 }
+
+#[test]
+fn final_model_turn_cannot_start_side_effects_without_a_result_turn() {
+    let mut cfg = config(&["echo"]);
+    cfg.max_turns = 1;
+    let executes = Cell::new(0);
+    let error = run(
+        &cfg,
+        |_| Ok(response(vec![call("one", "echo", r#"{"text":"x"}"#)])),
+        |_, input| {
+            executes.set(executes.get() + 1);
+            Ok(input.to_vec())
+        },
+        |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(executes.get(), 0, "no turn remains to consume tool results");
+    assert!(error.to_string().contains("result turn"));
+    // The same last-turn budget must still permit a tool-free final answer.
+    assert!(run(&cfg, |_| Ok(answer()), |_, _| panic!(), |_| {}).is_ok());
+}

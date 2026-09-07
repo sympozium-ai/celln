@@ -155,6 +155,12 @@ pub fn run(
             event(json!({"type":"completed","answer":answer,"calls":calls}));
             return Ok(answer.into());
         }
+        // Do not start side effects when the configured turn budget already
+        // makes returning their results to the model impossible.
+        ensure!(
+            turn + 1 < config.max_turns,
+            "model budget leaves no tool result turn"
+        );
         // Validate the complete batch before any side effects. Preserve only
         // the supported assistant fields, never arbitrary provider extensions.
         let mut pending = Vec::new();
