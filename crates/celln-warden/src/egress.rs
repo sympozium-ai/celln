@@ -7,6 +7,10 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::process::Command;
 use std::time::Duration;
 
+#[path = "egress_post.rs"]
+mod post;
+pub use post::JsonPostGrant;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpPolicy {
     /// Exact DNS names this cell may contact. Empty means no egress.
@@ -14,6 +18,9 @@ pub struct HttpPolicy {
     pub max_requests: usize,
     pub max_response_bytes: usize,
     pub timeout: Duration,
+    /// Additional operator-owned authority. A GET host grant never implies
+    /// POST or access to provider credentials.
+    pub json_posts: Vec<JsonPostGrant>,
 }
 
 impl HttpPolicy {
@@ -23,6 +30,7 @@ impl HttpPolicy {
             max_requests: 32,
             max_response_bytes: 1 << 20,
             timeout: Duration::from_secs(10),
+            json_posts: Vec::new(),
         }
     }
 }
@@ -119,6 +127,14 @@ impl HttpBroker {
     /// followed one hop at a time so every destination is independently
     /// authorised; `curl --location` would bypass the allowlist on hop two.
     pub fn fetch(&mut self, raw: &str) -> Result<Vec<u8>, FetchDenied> {
+        if raw.len() > 8192 {
+            return Err(FetchDenied::Fetch(
+                "request exceeds broker wire budget".into(),
+            ));
+        }
+        if raw.starts_with('{') {
+            return self.post_json(raw);
+        }
         let mut url = raw.to_owned();
         for _ in 0..=5 {
             if self.used >= self.policy.max_requests {

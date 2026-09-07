@@ -3,7 +3,8 @@
 //! It has no network code. Its only possible path to a response is invoking
 //! `/pilot-fetch`, which exercises the guest→warden broker ABI.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::io::Write;
 
 unsafe extern "C" {
     fn syscall(number: isize, ...) -> isize;
@@ -70,15 +71,25 @@ fn main() {
     let url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "https://example.com/".into());
-    let result = Command::new("/pilot-fetch")
-        .arg(url)
-        .output()
-        .expect("pilot-fetch must exist in the initramfs");
+    let result = if url.starts_with('{') {
+        let mut child = Command::new("/pilot-fetch").arg("--json-stdin")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().expect("pilot-fetch must exist");
+        child.stdin.take().unwrap().write_all(url.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    } else {
+        Command::new("/pilot-fetch").arg(url).output().expect("pilot-fetch must exist in the initramfs")
+    };
     assert!(
         result.status.success(),
         "pilot-fetch failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
     assert!(!result.stdout.is_empty(), "broker returned an empty response");
+    if std::env::args().nth(2).as_deref() == Some("model") {
+        let response = String::from_utf8(result.stdout.clone()).unwrap();
+        assert!(response.contains("choices") && response.contains("CELLN_MODEL_PROOF_OK"), "model completion did not meet proof assertion");
+        println!("CELLN_MODEL_RESPONSE {}", response.trim());
+    }
     println!("CELLN_FETCH_OK bytes={}", result.stdout.len());
 }

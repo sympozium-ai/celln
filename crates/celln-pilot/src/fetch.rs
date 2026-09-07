@@ -3,7 +3,7 @@
 //! It has no sockets and does no DNS. It sends an HTTPS URL over three private
 //! I/O ports; `warden` owns validation, DNS pinning, TLS and the request.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 
@@ -93,8 +93,8 @@ fn prove_ioperm_scope() -> std::io::Result<()> {
 }
 
 fn main() {
-    let Some(url) = std::env::args().nth(1) else {
-        eprintln!("usage: pilot-fetch https://allowed.example/path");
+    let Some(mut url) = std::env::args().nth(1) else {
+        eprintln!("usage: pilot-fetch https://allowed.example/path | --json-stdin");
         std::process::exit(2);
     };
     if url == DENIAL_PROBE {
@@ -107,6 +107,18 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if url == "--json-stdin" {
+        url.clear();
+        if std::io::stdin()
+            .take(8193)
+            .read_to_string(&mut url)
+            .is_err()
+            || !url.starts_with('{')
+        {
+            eprintln!("pilot-fetch: invalid JSON request");
+            std::process::exit(2);
+        }
     }
     if url.len() > 8192 || url.contains('\0') {
         eprintln!("pilot-fetch: invalid URL request");

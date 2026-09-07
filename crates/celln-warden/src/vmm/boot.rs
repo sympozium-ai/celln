@@ -1489,9 +1489,12 @@ impl LinuxCell {
                             } else if port == PILOT_FETCH_TX {
                                 // Bounded before allocation: a malicious cell
                                 // cannot make the host buffer an unbounded URL.
-                                if self.fetch_request.len() < 8192 {
-                                    self.fetch_request.extend_from_slice(data);
-                                }
+                                // Retain one overflow byte so a truncated,
+                                // valid JSON prefix cannot execute as a request.
+                                let take = 8193usize
+                                    .saturating_sub(self.fetch_request.len())
+                                    .min(data.len());
+                                self.fetch_request.extend_from_slice(&data[..take]);
                             } else if port == PILOT_FETCH_CALL {
                                 self.dispatch_fetch();
                             } else if port == PCI_CONFIG_ADDR && data.len() == 4 {
