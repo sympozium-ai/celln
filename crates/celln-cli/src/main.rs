@@ -118,7 +118,15 @@ enum Cmd {
 
         /// File containing the bearer token forwarded to dispatcher backends.
         #[arg(long)]
-        token_file: Option<PathBuf>,
+        token_file: PathBuf,
+
+        /// Required inbound bearer credential, distinct from the backend token.
+        /// Both files are reread per request so rotation does not need a restart.
+        #[arg(long)]
+        client_token_file: PathBuf,
+        /// Durable owner ledger shared by all router replicas (coherent POSIX locks required).
+        #[arg(long)]
+        ownership_dir: PathBuf,
     },
 
     /// Work with cell specs.
@@ -407,12 +415,16 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             backends_srv,
             mode,
             token_file,
+            client_token_file,
+            ownership_dir,
         } => router::serve(
             listen,
             backends.to_vec(),
             backends_srv.as_deref(),
             *mode,
-            token_file.as_deref(),
+            token_file,
+            client_token_file,
+            ownership_dir,
         ),
         Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe, &root),
         Cmd::Node(NodeCmd::Admit { request, probe }) => node::admit_file(request, probe, &root),
