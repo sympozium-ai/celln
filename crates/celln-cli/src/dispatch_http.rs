@@ -422,6 +422,15 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         }
     }
     match (method.as_str(), path.as_str()) {
+        ("GET", "/v1/capabilities") => {
+            let registry = state
+                .executions
+                .lock()
+                .expect("dispatcher registry not poisoned");
+            let report =
+                crate::capabilities::DispatcherCapabilities::new(current_node(state, &registry));
+            reply(&mut stream, 200, &serde_json::to_value(report)?)
+        }
         ("GET", "/v1/node") => {
             let registry = state
                 .executions
@@ -1235,7 +1244,11 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let state = lifecycle_state(work.path());
         std::fs::create_dir(&state.probe.mote_store).unwrap();
-        for (path, expected) in [("/v1/health", "HTTP/1.1 200"), ("/v1/node", "HTTP/1.1 401")] {
+        for (path, expected) in [
+            ("/v1/health", "HTTP/1.1 200"),
+            ("/v1/node", "HTTP/1.1 401"),
+            ("/v1/capabilities", "HTTP/1.1 401"),
+        ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let (server, _) = listener.accept().unwrap();
@@ -1254,6 +1267,34 @@ mod tests {
                 assert!(body.get("warm").is_none());
             }
         }
+    }
+
+    #[test]
+    fn capability_report_is_versioned_preflight_and_does_not_advertise_artifact_readiness() {
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        write!(
+            client,
+            "GET /v1/capabilities HTTP/1.1\r\nAuthorization: Bearer {}\r\n\r\n",
+            state.token
+        )
+        .unwrap();
+        handle(server, &state).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"));
+        let report: crate::capabilities::DispatcherCapabilities =
+            serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert!(report.compatible());
+        assert!(!report.node.eligible()); // Configured stores are absent.
+        assert!(!report.persistent_sessions);
+        assert_eq!(report.harness_contracts, ["celln.reference-functions/v1"]);
+        assert_eq!(report.artifact_readiness, "not_checked");
+        assert!(state.executions.lock().unwrap().is_empty());
+        assert!(!work.path().join("execution-journal").exists());
     }
 
     fn cancel_http(state: &State, id: &str, token: &str) -> String {

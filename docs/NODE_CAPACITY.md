@@ -33,6 +33,10 @@ starting independently of this service. Run one managed dispatcher per node.
 
 ## Reports
 
+For versioned discovery through the router, see
+[authenticated capabilities](CAPABILITIES.md). Its preflight result deliberately
+does not advertise readiness for an unchecked runtime/tool bundle.
+
 `GET /v1/health` remains public and returns HTTP 200 for a reachable service;
 `ok` describes admission preflight, not merely `/dev/kvm` pathname presence.
 It uses configured mote/tool-store directories, the loader's kernel-format

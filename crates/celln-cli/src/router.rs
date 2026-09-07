@@ -16,7 +16,7 @@ use serde::Deserialize;
 use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,13 +29,33 @@ fn read_token(path: &Path) -> Result<String> {
     crate::dispatch_http::read_bearer_token(path)
 }
 
-fn credentials(state: &RouterState) -> Result<(String, String)> {
+fn credentials(state: &RouterState) -> Result<(String, String, Option<String>)> {
     let client = read_token(&state.client_token_file)?;
     let backend = read_token(&state.token_file)?;
     if constant_time_eq(client.as_bytes(), backend.as_bytes()) {
         bail!("client and dispatcher credentials must be distinct");
     }
-    Ok((client, backend))
+    let capability = capability_credential(state, &client, &backend)?;
+    Ok((client, backend, capability))
+}
+
+fn capability_credential(
+    state: &RouterState,
+    client: &str,
+    backend: &str,
+) -> Result<Option<String>> {
+    let token = state
+        .capability_token_file
+        .as_deref()
+        .map(read_token)
+        .transpose()?;
+    if token.as_ref().is_some_and(|token| {
+        constant_time_eq(token.as_bytes(), client.as_bytes())
+            || constant_time_eq(token.as_bytes(), backend.as_bytes())
+    }) {
+        bail!("capability credential must be distinct");
+    }
+    Ok(token)
 }
 
 /// How the router selects a dispatcher backend for each action.
@@ -67,6 +87,7 @@ struct Health {
     kvm: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn serve(
     listen: &str,
     backends: Vec<String>,
@@ -74,6 +95,7 @@ pub fn serve(
     mode: RoutingMode,
     token_file: &Path,
     client_token_file: &Path,
+    capability_token_file: Option<&Path>,
     ownership_dir: &Path,
 ) -> Result<u8> {
     let mut urls: Vec<String> = backends
@@ -115,6 +137,8 @@ pub fn serve(
         executions: ownership::Ledger::open(ownership_dir, 100_000)?,
         token_file: token_file.to_owned(),
         client_token_file: client_token_file.to_owned(),
+        capability_token_file: capability_token_file.map(Path::to_owned),
+        capability_probe_active: AtomicBool::new(false),
     });
     credentials(&state).context("router credentials are missing, invalid or not distinct")?;
     let listener = TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
@@ -146,6 +170,8 @@ struct RouterState {
     executions: ownership::Ledger,
     token_file: PathBuf,
     client_token_file: PathBuf,
+    capability_token_file: Option<PathBuf>,
+    capability_probe_active: AtomicBool,
 }
 
 fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
@@ -226,20 +252,25 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         }
     }
 
-    let Ok((client_token, backend_token)) = credentials(state) else {
+    let Ok((client_token, backend_token, read_token)) = credentials(state) else {
         return reply(
             &mut stream,
             503,
             &serde_json::json!({"error":"router credentials unavailable"}),
         );
     };
-    let authorized = authorization
-        .as_deref()
-        .and_then(|value| {
-            let (scheme, token) = value.split_once(' ')?;
-            scheme.eq_ignore_ascii_case("bearer").then_some(token)
-        })
-        .is_some_and(|token| constant_time_eq(token.as_bytes(), client_token.as_bytes()));
+    let presented = authorization.as_deref().and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("bearer").then_some(token)
+    });
+    let is_capability_read = method == "GET" && path == "/v1/capabilities";
+    let authorized = presented.is_some_and(|token| {
+        constant_time_eq(token.as_bytes(), client_token.as_bytes())
+            || (is_capability_read
+                && read_token
+                    .as_ref()
+                    .is_some_and(|read| constant_time_eq(token.as_bytes(), read.as_bytes())))
+    });
     if !authorized {
         return reply(
             &mut stream,
@@ -249,6 +280,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     }
     let backend_token = Some(backend_token);
     match (method.as_str(), path.as_str()) {
+        ("GET", "/v1/capabilities") => capability_report(state, &mut stream, &backend_token)?,
         ("POST", "/v1/executions") => forward_submission(
             state,
             &mut stream,
@@ -275,6 +307,73 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn capability_report(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    token: &Option<String>,
+) -> Result<()> {
+    // Bound fanout and permit only one probe at a time per router. No request or
+    // owner ledger is mutated by discovery; failures never trigger execution.
+    if state.backends.len() > 32 || state.capability_probe_active.swap(true, Ordering::AcqRel) {
+        return reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"capability probe unavailable"}),
+        );
+    }
+    struct ProbeGuard<'a>(&'a AtomicBool);
+    impl Drop for ProbeGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _guard = ProbeGuard(&state.capability_probe_active);
+    let nodes = std::thread::scope(|scope| {
+        let probes: Vec<_> = state.backends.iter().enumerate().map(|(index, backend)| {
+            scope.spawn(move || {
+                let report = (|| -> Result<crate::capabilities::DispatcherCapabilities> {
+                    let addr = backend_to_addr(backend)?;
+                    let mut conn = connect(&addr)?;
+                    let credential = token.as_deref().context("backend credential missing")?;
+                    write!(conn, "GET /v1/capabilities HTTP/1.1\r\nHost: dispatcher\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n")?;
+                    let response = read_capability_response(&mut conn)?;
+                    if parse_status(&response) != 200 { bail!("backend capability request failed"); }
+                    let report: crate::capabilities::DispatcherCapabilities = serde_json::from_str(extract_body(&response))?;
+                    if !report.compatible() { bail!("incompatible backend capabilities"); }
+                    Ok(report)
+                })();
+                match report {
+                    Ok(report) => serde_json::json!({"index":index,"preflightEligible":report.node.eligible(),"report":report}),
+                    Err(_) => serde_json::json!({"index":index,"preflightEligible":false,"reason":"unreachable_unauthorized_or_incompatible"}),
+                }
+            })
+        }).collect();
+        probes
+            .into_iter()
+            .map(|probe| {
+                probe.join().unwrap_or_else(
+                    |_| serde_json::json!({"preflightEligible":false,"reason":"probe_failed"}),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    let eligible = nodes
+        .iter()
+        .filter(|node| node["preflightEligible"] == true)
+        .count();
+    reply(
+        stream,
+        200,
+        &serde_json::json!({
+            "apiVersion":crate::capabilities::VERSION,
+            "preflightOnly":true,
+            "eligibleNodes":eligible,
+            "artifactReadiness":"not_checked",
+            "nodes":nodes,
+        }),
+    )
 }
 
 /// `POST <endpoint>`: pick a healthy backend deterministically by the
@@ -548,10 +647,37 @@ fn connect(addr: &str) -> Result<TcpStream> {
 fn read_response(stream: &mut TcpStream) -> Result<String> {
     // Dispatchers close each response. Bound the entire wire message, including
     // headers; a truncated header must not cause an infinite EOF loop.
-    const MAX_RESPONSE: u64 = 16 * 1024 * 1024;
+    read_response_limit(stream, 16 * 1024 * 1024)
+}
+
+fn read_capability_response(stream: &mut TcpStream) -> Result<String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut bytes = Vec::new();
-    stream.take(MAX_RESPONSE + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_RESPONSE || !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+    let mut buf = [0u8; 4096];
+    loop {
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .context("capability response deadline exceeded")?;
+        stream.set_read_timeout(Some(remaining))?;
+        let n = stream.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..n]);
+        if bytes.len() > 65536 {
+            bail!("oversized capability response");
+        }
+    }
+    if !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+        bail!("invalid capability response");
+    }
+    String::from_utf8(bytes).context("invalid capability encoding")
+}
+
+fn read_response_limit(stream: &mut TcpStream, max_response: u64) -> Result<String> {
+    let mut bytes = Vec::new();
+    stream.take(max_response + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_response || !bytes.windows(4).any(|w| w == b"\r\n\r\n") {
         bail!("invalid or oversized dispatcher response");
     }
     String::from_utf8(bytes).context("dispatcher response is not UTF-8")
@@ -661,6 +787,182 @@ mod tests {
     const BACKEND_TOKEN: &str = "backend-test-credential-at-least-24";
 
     #[test]
+    fn capability_token_is_read_only_distinct_and_rotatable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        let path = dir.path().join("capability");
+        let first = "readonly-test-credential-at-least-24";
+        let second = "rotated-readonly-credential-at-least-24";
+        std::fs::write(&path, first).unwrap();
+        state.capability_token_file = Some(path.clone());
+        let headers = |token| format!("Authorization: Bearer {token}\r\n");
+        for token in [first, CLIENT_TOKEN] {
+            let response = request(&state, "GET", "/v1/capabilities", &headers(token), "");
+            assert_eq!(parse_status(&response), 200);
+            let report: serde_json::Value = serde_json::from_str(extract_body(&response)).unwrap();
+            assert_eq!(report["eligibleNodes"], 0);
+            assert_eq!(report["preflightOnly"], true);
+        }
+        for (method, path) in [
+            ("POST", "/v1/executions"),
+            ("GET", "/v1/executions/x"),
+            ("GET", "/v1/executions/x/audit"),
+            ("POST", "/v1/executions/x/cancel"),
+            ("POST", "/v1/capabilities"),
+            ("GET", "/v1/node"),
+        ] {
+            assert_eq!(
+                parse_status(&request(&state, method, path, &headers(first), "")),
+                401
+            );
+        }
+        for token in ["", BACKEND_TOKEN, "wrong"] {
+            assert_eq!(
+                parse_status(&request(
+                    &state,
+                    "GET",
+                    "/v1/capabilities",
+                    &headers(token),
+                    ""
+                )),
+                401
+            );
+        }
+        std::fs::write(&path, second).unwrap();
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "GET",
+                "/v1/capabilities",
+                &headers(first),
+                ""
+            )),
+            401
+        );
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "GET",
+                "/v1/capabilities",
+                &headers(second),
+                ""
+            )),
+            200
+        );
+        for invalid in [CLIENT_TOKEN, BACKEND_TOKEN, "short"] {
+            std::fs::write(&path, invalid).unwrap();
+            assert!(credentials(&state).is_err());
+            assert_eq!(
+                parse_status(&request(
+                    &state,
+                    "GET",
+                    "/v1/capabilities",
+                    &headers(second),
+                    ""
+                )),
+                503
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "GET",
+                "/v1/capabilities",
+                &headers(second),
+                ""
+            )),
+            503
+        );
+    }
+
+    #[test]
+    fn capability_fanout_requires_authenticated_compatible_eligible_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        let base = crate::capabilities::DispatcherCapabilities::new(crate::node::NodeEligibility {
+            node_name: "fixture".into(),
+            kvm: true,
+            cpu_virtualization: true,
+            guest_kernel: true,
+            mote_store: true,
+            tool_store: true,
+            live_cells: 0,
+            max_cells: 1,
+            memory_bytes: 268435456,
+            egress_slots: 1,
+        });
+        let good = serde_json::to_value(base).unwrap();
+        let mut missing_kvm = good.clone();
+        missing_kvm["node"]["kvm"] = false.into();
+        let mut full = good.clone();
+        full["node"]["live_cells"] = 1.into();
+        let mut incompatible = good.clone();
+        incompatible["apiVersion"] = "future/unknown".into();
+        let fixtures = [
+            (200, good),
+            (200, missing_kvm),
+            (200, full),
+            (200, incompatible),
+            (401, serde_json::json!({})),
+            (200, serde_json::json!({"ok":true,"kvm":true})),
+        ];
+        std::thread::scope(|scope| {
+            for (status, body) in fixtures {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                state
+                    .backends
+                    .push(format!("http://{}", listener.local_addr().unwrap()));
+                scope.spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                    assert_eq!(line, "GET /v1/capabilities HTTP/1.1\r\n");
+                    let mut seen_backend = false;
+                    loop {
+                        let line = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        if line.starts_with("Authorization:") {
+                            assert_eq!(line, format!("Authorization: Bearer {BACKEND_TOKEN}\r\n"));
+                            seen_backend = true;
+                        }
+                    }
+                    assert!(seen_backend);
+                    reply(&mut stream, status, &body).unwrap();
+                });
+            }
+            let response = request(
+                &state,
+                "GET",
+                "/v1/capabilities",
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                "",
+            );
+            assert_eq!(parse_status(&response), 200);
+            let report: serde_json::Value = serde_json::from_str(extract_body(&response)).unwrap();
+            assert_eq!(report["eligibleNodes"], 1);
+            assert_eq!(report["nodes"].as_array().unwrap().len(), 6);
+            assert_eq!(report["artifactReadiness"], "not_checked");
+            assert_eq!(report["nodes"][0]["report"]["persistentSessions"], false);
+            assert!(!response.contains(BACKEND_TOKEN));
+        });
+        assert!(!state.capability_probe_active.load(Ordering::Acquire));
+        state.capability_probe_active.store(true, Ordering::Release);
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "GET",
+                "/v1/capabilities",
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                ""
+            )),
+            503
+        );
+    }
+
+    #[test]
     fn lost_acceptance_is_not_replayed_and_fresh_replica_recovers_owner() {
         let dir = tempfile::tempdir().unwrap();
         let mut first = state(dir.path());
@@ -767,6 +1069,8 @@ mod tests {
             executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
             token_file,
             client_token_file,
+            capability_token_file: None,
+            capability_probe_active: AtomicBool::new(false),
         }
     }
 

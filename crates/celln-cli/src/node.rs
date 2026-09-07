@@ -9,10 +9,10 @@ use crate::host::Host;
 use crate::NodeProbeArgs;
 use anyhow::{Context, Result};
 use celln_spec::{ExecutionProblem, ExecutionRequest};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeEligibility {
     pub node_name: String,
     pub kvm: bool,
