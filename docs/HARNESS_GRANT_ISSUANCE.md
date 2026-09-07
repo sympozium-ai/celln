@@ -51,6 +51,47 @@ resolution. It is not a fleet-wide active-cell withdrawal claim. Existing
 manually provisioned v1/v2 grants keep their prior compatibility contract and
 do not acquire this new guarantee.
 
+## Expiring profiles for unattended provisioning
+
+`celln.dev/model-issuer-profile-v2` keeps the fields above and **requires** an
+`expiry` object. Obtain this host's clock with `celln harness-profile-clock`:
+the versioned report contains `bootId`, `boottimeMs`, and `maxLifetimeMs` (300000).
+It reads no credentials and grants no authority. The operator may copy the boot
+identity and observed time into this additional profile field:
+
+```json
+{
+  "bootId": "<this host's reported Linux boot UUID>",
+  "issuedAtBoottimeMs": 1234000,
+  "expiresAtBoottimeMs": 1354000
+}
+```
+
+These are elapsed boot milliseconds, **not Unix timestamps**. The numbers above
+are illustrative; use the actual host report and an independently approved
+lifetime of at most five minutes. Linux `CLOCK_BOOTTIME` includes suspend time
+and does not follow wall-clock adjustments. The boot UUID must match; profiles
+from a previous boot refuse. Other operating systems return `Unsupported`.
+This trusts the host kernel/clock and operator configuration, not tenant time.
+
+Future issuance times, expired profiles (including equality at the deadline),
+zero/reversed/overlong windows and missing expiry refuse. V1 cannot carry expiry;
+v2 cannot omit it. Earlier Celln versions reject v2 rather than ignore expiry.
+Every issuance policy check and v3 grant resolution enforces this window,
+including the serving path's recheck after warm preparation. The profile may
+remain on disk after a reconciler crashes, but its authority at a new check does
+not remain valid indefinitely. Profile removal can still withdraw it earlier.
+
+Expiry is an **admission gate**, not live cancellation: an execution already
+admitted remains bounded by its existing execution deadline and budgets. It
+does not prove active-cell or fleet-wide withdrawal. There is no lease renewal;
+editing the expiry changes the pinned profile hash and invalidates old grants.
+New authority requires independent reapproval and issuance, with the same
+execution ownership/replay rules; expiry never authorizes replay. Unattended
+Sympozium provisioning must require v2 and startup reconciliation before claiming
+this protection. Legacy v1 profiles retain explicit-operator compatibility and
+do not gain expiry automatically.
+
 ## Scope and proof
 
 This process's member-check cache is not the serving dispatcher's cache.

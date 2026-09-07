@@ -10,6 +10,7 @@ use std::{
 #[path = "dispatch_harness_issuer.rs"]
 mod issuer;
 pub(crate) use issuer::inspect_binding;
+pub(crate) use issuer::inspect_clock;
 pub(crate) use issuer::issue;
 #[cfg(test)]
 pub(crate) use issuer::prove_issuance;

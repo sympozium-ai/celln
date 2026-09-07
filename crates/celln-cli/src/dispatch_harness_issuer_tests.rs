@@ -3,6 +3,7 @@ use serde_json::json;
 
 pub(super) fn prove_issuance(request: &ExecutionRequest, root: &Path) {
     let profile = setup(root, request);
+    set_expiry(&profile, 300_000);
     let bytes = candidate(request, "reviewed", root).unwrap();
     let hash = Hash::of(&bytes);
     let path = root.join("issuer-request.json");
@@ -24,7 +25,44 @@ pub(super) fn prove_issuance(request: &ExecutionRequest, root: &Path) {
     assert!(resolve(&bound, closure.as_ref(), root).is_err());
     assert!(issue(&path, "reviewed", root).is_err());
     assert_eq!(std::fs::read(issued).unwrap(), bytes);
-    eprintln!("PASS real-KVM issuer: two checks, idempotent publication, v3 resolution and policy withdrawal refusal; modelCalls=0; grant={}", hash.0);
+    eprintln!("PASS real-KVM issuer: boot-bound expiring profile, two checks, idempotent publication, v3 resolution and policy withdrawal refusal; modelCalls=0; grant={}", hash.0);
+}
+
+fn set_expiry(path: &Path, lifetime_ms: u64) {
+    let mut profile: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    profile["apiVersion"] = json!("celln.dev/model-issuer-profile-v2");
+    profile["expiry"] = serde_json::to_value(expiry::test_expiry(lifetime_ms)).unwrap();
+    std::fs::write(path, serde_json::to_vec(&profile).unwrap()).unwrap();
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn unchanged_profile_expires_without_a_reconciler_and_cannot_downgrade() {
+    let root = tempfile::tempdir().unwrap();
+    let (request, closure, _) = super::super::json_tests::fixture(root.path());
+    let path = setup(root.path(), &request);
+    set_expiry(&path, 500);
+    let original = std::fs::read(&path).unwrap();
+    let bytes = candidate(&request, "reviewed", root.path()).unwrap();
+    assert!(resolve_bytes(&request, &closure, root.path(), &bytes).is_ok());
+    let mut altered: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    altered["apiVersion"] = json!("celln.dev/model-issuer-profile-v1");
+    std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+    assert!(candidate(&request, "reviewed", root.path()).is_err());
+    altered["apiVersion"] = json!("celln.dev/model-issuer-profile-v2");
+    altered.as_object_mut().unwrap().remove("expiry");
+    std::fs::write(&path, serde_json::to_vec(&altered).unwrap()).unwrap();
+    assert!(candidate(&request, "reviewed", root.path()).is_err());
+    std::fs::write(&path, &original).unwrap();
+    // No profile mutation, cleanup worker or API call causes this refusal.
+    std::thread::sleep(std::time::Duration::from_millis(510));
+    assert!(resolve_bytes(&request, &closure, root.path(), &bytes)
+        .err()
+        .unwrap()
+        .contains("expired"));
+    assert!(candidate(&request, "reviewed", root.path()).is_err());
+    assert_eq!(std::fs::read(path).unwrap(), original);
 }
 
 fn setup(root: &Path, request: &ExecutionRequest) -> PathBuf {
