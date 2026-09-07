@@ -14,6 +14,9 @@ use serde::Serialize;
 
 pub mod closure_check;
 pub mod dispatch_report;
+#[cfg(target_os = "linux")]
+pub mod harness_io;
+pub mod json_harness;
 
 /// The result of asking pilot to run something.
 #[derive(Debug, PartialEq, Eq)]

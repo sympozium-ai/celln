@@ -48,6 +48,15 @@ name = "celln-harness-reference"
 path = "src/harness_reference.rs"
 
 [[bin]]
+name = "celln-harness-json"
+path = "src/harness_json.rs"
+
+[[bin]]
+name = "celln-json-harness-proof"
+path = "src/json_harness_proof.rs"
+required-features = ["kvm"]
+
+[[bin]]
 name = "celln-harness-proof"
 path = "src/harness_proof.rs"
 required-features = ["kvm"]
