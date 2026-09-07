@@ -18,7 +18,9 @@ pub(crate) fn prove_closure(
     root: &Path,
     evidence: &Path,
 ) {
-    let binary = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/celln");
+    let binary = std::env::var_os("CELLN_TEST_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/celln"));
     let address = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()

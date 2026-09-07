@@ -974,7 +974,9 @@ mod tests {
     pub(super) fn test_runtime_root(work: &Path) -> Option<std::path::PathBuf> {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."); // crates/celln-cli -> repo root
         let repo_root = repo_root.canonicalize().expect("repo root resolves");
-        let pilot_dir = repo_root.join("target/x86_64-unknown-linux-musl/release");
+        let pilot_dir = std::env::var_os("CELLN_PILOT_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| repo_root.join("target/x86_64-unknown-linux-musl/release"));
         if !pilot_dir.join("celln-pilot").exists() || !pilot_dir.join("pilot-fetch").exists() {
             eprintln!(
                 "skipping: guest pilot binaries not built — run \
