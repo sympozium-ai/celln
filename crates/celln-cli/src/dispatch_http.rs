@@ -8,6 +8,9 @@
 use crate::NodeProbeArgs;
 #[path = "dispatch_audit.rs"]
 mod audit;
+#[cfg(all(test, target_os = "linux"))]
+#[path = "dispatch_harness_tests.rs"]
+mod harness_tests;
 use anyhow::{bail, Context, Result};
 use celln_spec::{
     ExecutionOutput, ExecutionPhase, ExecutionReceipt, ExecutionRequest, ResolvedExecution,
@@ -745,7 +748,7 @@ fn run_execution(
     let output = outcome.output.as_deref().filter(|bytes| !bytes.is_empty());
     let (phase, stored_output, reason) = collect_result(&outcome, &root.join("outputs"));
     let receipt = ExecutionReceipt {
-        api_version: "celln.dev/v1alpha1".into(),
+        api_version: request.api_version.clone(),
         request_id: request.id.clone(),
         phase,
         node: probe.node_name.clone(),

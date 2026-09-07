@@ -1,0 +1,382 @@
+{
+  "measuredAt": "2026-09-07",
+  "sourceState": "working-tree implementation recorded in the accompanying PRs; summary revision is the pre-change base",
+  "dispatcher": {
+    "audit": {
+      "apiVersion": "celln.dev/audit-v1alpha1",
+      "caller": "sympozium:celln-harness-proof-1719787/harness-proof",
+      "events": [
+        {
+          "at": "2026-09-07T09:28:19Z",
+          "phase": "Admitting",
+          "sequence": 0
+        },
+        {
+          "at": "2026-09-07T09:28:19Z",
+          "phase": "Resolving",
+          "sequence": 1
+        },
+        {
+          "at": "2026-09-07T09:28:22Z",
+          "phase": "CellRunning",
+          "sequence": 2
+        },
+        {
+          "at": "2026-09-07T09:28:25Z",
+          "phase": "Dissolved",
+          "sequence": 3
+        },
+        {
+          "at": "2026-09-07T09:28:25Z",
+          "phase": "Succeeded",
+          "sequence": 4
+        }
+      ],
+      "execution": {
+        "broker": {
+          "denied": 0,
+          "requests": 3,
+          "responseBytes": 1710
+        },
+        "cellId": "6c4545198cda",
+        "exitCode": 0,
+        "granted": {
+          "egress": [
+            "https://api.deepseek.com"
+          ],
+          "memoryBytes": 268435456,
+          "outputBytes": 65536,
+          "timeoutMs": 180000,
+          "workspace": "none"
+        },
+        "inputs": [],
+        "modelGrant": "blake3:db2860a06e9003d1cab7908eb325ae517e1fe5fcc96d0991de105bb94d9a1796",
+        "pilot": {
+          "fetch": true,
+          "lane": "agent",
+          "tool": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+          "workspace": "none"
+        },
+        "signal": null,
+        "substrate": {
+          "closure": {
+            "hash": "blake3:93a643e7783169183bf1906be2269412aca0a505470d65f88b24fcee34903bef",
+            "members": {
+              "/add": {
+                "dependencies": [],
+                "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020"
+              },
+              "/harness": {
+                "dependencies": [
+                  "/add",
+                  "/multiply",
+                  "/pilot-fetch"
+                ],
+                "hash": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+              },
+              "/multiply": {
+                "dependencies": [],
+                "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1"
+              },
+              "/pilot-fetch": {
+                "dependencies": [],
+                "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e"
+              }
+            },
+            "publisher": "df20a7b76d8b78331f72a085af34b1bc3af43e2eee8004630ec2d850edf571c3",
+            "toolfs": "blake3:aeda5bd5171aa26ae0bbd722e578a5418490d8420a6ed6c76b8a812fee7fddad"
+          },
+          "initrd": "blake3:1707294872258b71bbda52ecd51736a3c07ccab939e3224627b7690250d1473d",
+          "invocation": "blake3:c80ce29ea4e97933e7d18c58d7124178103d292615cea56e29f577dfb2ff8c4b",
+          "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+          "toolfs": "blake3:aeda5bd5171aa26ae0bbd722e578a5418490d8420a6ed6c76b8a812fee7fddad"
+        },
+        "watchdogStopped": false
+      },
+      "node": "harness-proof-node",
+      "receipt": {
+        "apiVersion": "celln.dev/v1alpha2",
+        "cellId": "6c4545198cda",
+        "completedAt": "2026-09-07T09:28:25Z",
+        "node": "harness-proof-node",
+        "output": {
+          "bytes": 1396,
+          "hash": "blake3:57b551e5d95dafdf353e799d279225b7f1d70fc801180792c5942778531fce42",
+          "mediaType": "application/octet-stream"
+        },
+        "phase": "succeeded",
+        "requestId": "harness-dispatch-proof",
+        "resolved": {
+          "inputs": [],
+          "mote": "blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530",
+          "tools": [
+            "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+          ]
+        },
+        "startedAt": "2026-09-07T09:28:19Z"
+      },
+      "requestId": "harness-dispatch-proof",
+      "workload": "test-run"
+    },
+    "callerMismatchDenied": true,
+    "grantWithdrawalDenied": true,
+    "localReplayDenied": true,
+    "request": {
+      "apiVersion": "celln.dev/v1alpha2",
+      "capabilities": {
+        "egress": [
+          "https://api.deepseek.com"
+        ],
+        "memoryBytes": 268435456,
+        "outputBytes": 65536,
+        "timeoutMs": 180000,
+        "workspace": "none"
+      },
+      "execution": {
+        "lane": "agent",
+        "requireHardwareIsolation": true
+      },
+      "forge": null,
+      "harness": {
+        "borrowedTools": [
+          {
+            "description": "Add two integer strings.",
+            "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+            "name": "add",
+            "path": "/add"
+          },
+          {
+            "description": "Multiply two integer strings.",
+            "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+            "name": "multiply",
+            "path": "/multiply"
+          }
+        ],
+        "contractVersion": "celln.reference-functions/v1",
+        "model": "deepseek-chat",
+        "modelGrant": {
+          "hash": "blake3:db2860a06e9003d1cab7908eb325ae517e1fe5fcc96d0991de105bb94d9a1796"
+        },
+        "task": "Use add with args [\"37\",\"5\"], wait for its result, then multiply that result by \"2\". Reply with exactly the final integer."
+      },
+      "id": "harness-dispatch-proof",
+      "inputs": [],
+      "invocation": {
+        "alias": "/harness",
+        "args": []
+      },
+      "mote": {
+        "hash": "blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530"
+      },
+      "tools": [
+        {
+          "alias": "/harness",
+          "closure": {
+            "hash": "blake3:93a643e7783169183bf1906be2269412aca0a505470d65f88b24fcee34903bef"
+          },
+          "hash": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+        }
+      ],
+      "workload": {
+        "caller": "sympozium:celln-harness-proof-1719787/harness-proof",
+        "id": "test-run"
+      }
+    },
+    "scope": "authenticated host HTTP dispatcher; not router/Sympozium/Kind",
+    "terminal": {
+      "output": "CELLN_HARNESS_EVENT {\"id\":\"fc00efd2-5ac1-455e-9311-e7a0be63e702\",\"model\":\"deepseek-v4-flash\",\"turn\":0,\"type\":\"model\",\"usage\":{\"completion_tokens\":40,\"prompt_cache_hit_tokens\":384,\"prompt_cache_miss_tokens\":25,\"prompt_tokens\":409,\"prompt_tokens_details\":{\"cached_tokens\":384},\"total_tokens\":449}}\nCELLN_HARNESS_EVENT {\"args\":[\"37\",\"5\"],\"hash\":\"blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020\",\"id\":\"call_00_kyIABs68imdajsuf5oOl7827\",\"name\":\"add\",\"result\":\"42\\n\",\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"id\":\"d81fa5f5-024b-4056-8fdd-e88b1a0bfe99\",\"model\":\"deepseek-v4-flash\",\"turn\":1,\"type\":\"model\",\"usage\":{\"completion_tokens\":41,\"prompt_cache_hit_tokens\":384,\"prompt_cache_miss_tokens\":86,\"prompt_tokens\":470,\"prompt_tokens_details\":{\"cached_tokens\":384},\"total_tokens\":511}}\nCELLN_HARNESS_EVENT {\"args\":[\"42\",\"2\"],\"hash\":\"blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1\",\"id\":\"call_00_kDsqZXnGbnI9pOAp36XH2196\",\"name\":\"multiply\",\"result\":\"84\\n\",\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"id\":\"efc8b958-b4a1-45e4-9911-1bd7ace25b20\",\"model\":\"deepseek-v4-flash\",\"turn\":2,\"type\":\"model\",\"usage\":{\"completion_tokens\":1,\"prompt_cache_hit_tokens\":512,\"prompt_cache_miss_tokens\":13,\"prompt_tokens\":525,\"prompt_tokens_details\":{\"cached_tokens\":512},\"total_tokens\":526}}\nCELLN_HARNESS_EVENT {\"answer\":\"84\",\"calls\":2,\"toolsUsed\":[\"add\",\"multiply\"],\"type\":\"completed\"}\n",
+      "phase": "Succeeded",
+      "receipt": {
+        "apiVersion": "celln.dev/v1alpha2",
+        "cellId": "6c4545198cda",
+        "completedAt": "2026-09-07T09:28:25Z",
+        "node": "harness-proof-node",
+        "output": {
+          "bytes": 1396,
+          "hash": "blake3:57b551e5d95dafdf353e799d279225b7f1d70fc801180792c5942778531fce42",
+          "mediaType": "application/octet-stream"
+        },
+        "phase": "succeeded",
+        "requestId": "harness-dispatch-proof",
+        "resolved": {
+          "inputs": [],
+          "mote": "blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530",
+          "tools": [
+            "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+          ]
+        },
+        "startedAt": "2026-09-07T09:28:19Z"
+      },
+      "requestId": "harness-dispatch-proof"
+    },
+    "toolMismatchDenied": true,
+    "unknownGrantDenied": true
+  },
+  "controller": {
+    "summary": {
+      "status": "passed",
+      "scope": "actual host controller + isolated Kind API + authenticated host dispatcher + KVM; not deployed router topology",
+      "revision": "88a432cad3c976978b4d62f01244ea8b66b6471e",
+      "controllerSha256": "b66247dbf0c3b21f7c0232921b1944037e133a347984dbaa49e33a0f997a1458",
+      "dirty": true
+    },
+    "run": {
+      "name": "harness-proof",
+      "namespace": "celln-harness-proof-1719787",
+      "uid": "b29d1c38-36f4-4a68-8591-95f24cce4c1c",
+      "status": {
+        "cellnActionId": "harness-proof-b29d1c38-36f4-4a68-8591-95f24cce4c1c",
+        "cellnReceipt": "{\"apiVersion\":\"celln.dev/v1alpha2\",\"requestId\":\"harness-proof-b29d1c38-36f4-4a68-8591-95f24cce4c1c\",\"phase\":\"succeeded\",\"node\":\"harness-proof-node\",\"startedAt\":\"2026-09-07T09:28:34Z\",\"completedAt\":\"2026-09-07T09:28:36Z\",\"cellId\":\"4bf8c38c936a\",\"resolved\":{\"mote\":\"blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530\",\"tools\":[\"blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626\"],\"inputs\":[]},\"output\":{\"hash\":\"blake3:473f166fd9d24e9e3662b7c358ee6550310befd321b9ffcf66fa4808757220ac\",\"mediaType\":\"application/octet-stream\",\"bytes\":1396}}",
+        "cellnRequest": "{\"harness\":{\"contractVersion\":\"celln.reference-functions/v1\",\"modelGrant\":{\"hash\":\"blake3:db2860a06e9003d1cab7908eb325ae517e1fe5fcc96d0991de105bb94d9a1796\"},\"model\":\"deepseek-chat\",\"task\":\"Use add with args [\\\"37\\\",\\\"5\\\"], wait for its result, then multiply that result by \\\"2\\\". Reply with exactly the final integer.\",\"borrowedTools\":[{\"name\":\"add\",\"path\":\"/add\",\"hash\":\"blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020\",\"description\":\"Add two integer strings.\"},{\"name\":\"multiply\",\"path\":\"/multiply\",\"hash\":\"blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1\",\"description\":\"Multiply two integer strings.\"}]},\"apiVersion\":\"celln.dev/v1alpha2\",\"id\":\"harness-proof-b29d1c38-36f4-4a68-8591-95f24cce4c1c\",\"workload\":{\"id\":\"reference\",\"caller\":\"sympozium:celln-harness-proof-1719787/harness-proof\"},\"mote\":{\"hash\":\"blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530\"},\"tools\":[{\"alias\":\"/harness\",\"hash\":\"blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626\",\"closure\":{\"hash\":\"blake3:93a643e7783169183bf1906be2269412aca0a505470d65f88b24fcee34903bef\"}}],\"invocation\":{\"alias\":\"/harness\"},\"capabilities\":{\"workspace\":\"none\",\"egress\":[\"https://api.deepseek.com\"],\"timeoutMs\":180000,\"memoryBytes\":268435456,\"outputBytes\":65536},\"execution\":{\"lane\":\"agent\",\"requireHardwareIsolation\":true}}",
+        "completedAt": "2026-09-07T09:28:39Z",
+        "phase": "Succeeded",
+        "result": "CELLN_HARNESS_EVENT {\"id\":\"b8a4fe7d-8fa7-4b6a-af9b-841515e815a4\",\"model\":\"deepseek-v4-flash\",\"turn\":0,\"type\":\"model\",\"usage\":{\"completion_tokens\":40,\"prompt_cache_hit_tokens\":384,\"prompt_cache_miss_tokens\":25,\"prompt_tokens\":409,\"prompt_tokens_details\":{\"cached_tokens\":384},\"total_tokens\":449}}\nCELLN_HARNESS_EVENT {\"args\":[\"37\",\"5\"],\"hash\":\"blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020\",\"id\":\"call_00_LGwwmbCbEXGi7cvW2zmc9064\",\"name\":\"add\",\"result\":\"42\\n\",\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"id\":\"99fdfcdf-4284-4efb-8211-6128bde1a427\",\"model\":\"deepseek-v4-flash\",\"turn\":1,\"type\":\"model\",\"usage\":{\"completion_tokens\":41,\"prompt_cache_hit_tokens\":384,\"prompt_cache_miss_tokens\":86,\"prompt_tokens\":470,\"prompt_tokens_details\":{\"cached_tokens\":384},\"total_tokens\":511}}\nCELLN_HARNESS_EVENT {\"args\":[\"42\",\"2\"],\"hash\":\"blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1\",\"id\":\"call_00_pgTLv7gASqImReg912sM8140\",\"name\":\"multiply\",\"result\":\"84\\n\",\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"id\":\"6ac4ce76-f862-4e0e-8cb4-0d6c74ce3e8f\",\"model\":\"deepseek-v4-flash\",\"turn\":2,\"type\":\"model\",\"usage\":{\"completion_tokens\":1,\"prompt_cache_hit_tokens\":512,\"prompt_cache_miss_tokens\":13,\"prompt_tokens\":525,\"prompt_tokens_details\":{\"cached_tokens\":512},\"total_tokens\":526}}\nCELLN_HARNESS_EVENT {\"answer\":\"84\",\"calls\":2,\"toolsUsed\":[\"add\",\"multiply\"],\"type\":\"completed\"}\n",
+        "startedAt": "2026-09-07T09:28:34Z"
+      }
+    },
+    "audit": {
+      "apiVersion": "celln.dev/audit-v1alpha1",
+      "requestId": "harness-proof-b29d1c38-36f4-4a68-8591-95f24cce4c1c",
+      "caller": "sympozium:celln-harness-proof-1719787/harness-proof",
+      "workload": "reference",
+      "node": "harness-proof-node",
+      "events": [
+        {
+          "sequence": 0,
+          "at": "2026-09-07T09:28:34Z",
+          "phase": "Admitting"
+        },
+        {
+          "sequence": 1,
+          "at": "2026-09-07T09:28:34Z",
+          "phase": "Resolving"
+        },
+        {
+          "sequence": 2,
+          "at": "2026-09-07T09:28:34Z",
+          "phase": "CellRunning"
+        },
+        {
+          "sequence": 3,
+          "at": "2026-09-07T09:28:36Z",
+          "phase": "Dissolved"
+        },
+        {
+          "sequence": 4,
+          "at": "2026-09-07T09:28:36Z",
+          "phase": "Succeeded"
+        }
+      ],
+      "execution": {
+        "cellId": "4bf8c38c936a",
+        "substrate": {
+          "closure": {
+            "hash": "blake3:93a643e7783169183bf1906be2269412aca0a505470d65f88b24fcee34903bef",
+            "publisher": "df20a7b76d8b78331f72a085af34b1bc3af43e2eee8004630ec2d850edf571c3",
+            "toolfs": "blake3:aeda5bd5171aa26ae0bbd722e578a5418490d8420a6ed6c76b8a812fee7fddad",
+            "members": {
+              "/add": {
+                "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+                "dependencies": []
+              },
+              "/harness": {
+                "hash": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+                "dependencies": [
+                  "/add",
+                  "/multiply",
+                  "/pilot-fetch"
+                ]
+              },
+              "/multiply": {
+                "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+                "dependencies": []
+              },
+              "/pilot-fetch": {
+                "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e",
+                "dependencies": []
+              }
+            }
+          },
+          "kernel": "blake3:93f20d4f258dcf1a567faa54fa5b125a8b55433f5af381ee08530bdd50c78048",
+          "initrd": "blake3:1707294872258b71bbda52ecd51736a3c07ccab939e3224627b7690250d1473d",
+          "toolfs": "blake3:aeda5bd5171aa26ae0bbd722e578a5418490d8420a6ed6c76b8a812fee7fddad",
+          "invocation": "blake3:c80ce29ea4e97933e7d18c58d7124178103d292615cea56e29f577dfb2ff8c4b"
+        },
+        "pilot": {
+          "tool": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+          "lane": "agent",
+          "workspace": "none",
+          "fetch": true
+        },
+        "granted": {
+          "workspace": "none",
+          "egress": [
+            "https://api.deepseek.com"
+          ],
+          "timeoutMs": 180000,
+          "memoryBytes": 268435456,
+          "outputBytes": 65536
+        },
+        "modelGrant": "blake3:db2860a06e9003d1cab7908eb325ae517e1fe5fcc96d0991de105bb94d9a1796",
+        "inputs": [],
+        "broker": {
+          "requests": 3,
+          "denied": 0,
+          "responseBytes": 1710
+        },
+        "exitCode": 0,
+        "signal": null,
+        "watchdogStopped": false
+      },
+      "receipt": {
+        "apiVersion": "celln.dev/v1alpha2",
+        "requestId": "harness-proof-b29d1c38-36f4-4a68-8591-95f24cce4c1c",
+        "phase": "succeeded",
+        "node": "harness-proof-node",
+        "cellId": "4bf8c38c936a",
+        "resolved": {
+          "mote": "blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530",
+          "tools": [
+            "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+          ],
+          "inputs": []
+        },
+        "output": {
+          "hash": "blake3:473f166fd9d24e9e3662b7c358ee6550310befd321b9ffcf66fa4808757220ac",
+          "mediaType": "application/octet-stream",
+          "bytes": 1396
+        },
+        "startedAt": "2026-09-07T09:28:34Z",
+        "completedAt": "2026-09-07T09:28:36Z"
+      }
+    },
+    "nodeAfter": {
+      "availability_is_advisory": true,
+      "configured_egress_slots": 1,
+      "configured_memory_bytes": 268435456,
+      "node": {
+        "cpu_virtualization": true,
+        "egress_slots": 1,
+        "guest_kernel": true,
+        "kvm": true,
+        "live_cells": 0,
+        "max_cells": 1,
+        "memory_bytes": 268435456,
+        "mote_store": true,
+        "node_name": "harness-proof-node",
+        "tool_store": true
+      },
+      "preflight_only": true,
+      "warm": [
+        {
+          "guest_memory_bytes": 268435456,
+          "mote": "blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530",
+          "tools": [
+            "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+          ]
+        }
+      ]
+    },
+    "jobsCreated": 0
+  }
+}

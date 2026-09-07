@@ -29,6 +29,12 @@ requested runtime and authority are actually delivered.
 
 ## Current baseline and gaps
 
+Latest progress: [versioned Harness dispatch](HARNESS_DISPATCH.md) now has an
+actual Sympozium AgentRun/controller + in-cell model/tool proof on the isolated
+Kind API and authenticated host dispatcher. The shipped-selector and deployed
+router/DaemonSet gates remain open; the baseline limitations below describe
+v1alpha1, not the new narrow experimental v1alpha2 binding.
+
 Prototype progress: the [borrowed-tools reference proof](HARNESS_BORROWED_TOOLS_PROOF.md)
 now demonstrates a real model/tool/result loop inside a warm-forked cell with
 two separately hashed executables. This does not remove the baseline production

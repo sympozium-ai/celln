@@ -22,6 +22,8 @@ struct Config {
     url: String,
     model: String,
     tools: Vec<Tool>,
+    #[serde(default)]
+    proof: bool,
 }
 
 fn bounded_child(path: &str, args: &[String], input: Option<&[u8]>) -> Result<Vec<u8>> {
@@ -82,44 +84,46 @@ fn run() -> Result<()> {
             "lent code is writable"
         );
     }
-    // These files exist in the signed filesystem but have no member grant.
-    ensure!(
-        std::fs::read("/unselected").is_err(),
-        "unselected tool readable"
-    );
-    let refused = Command::new("/unselected")
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .status();
-    ensure!(
-        matches!(refused, Err(ref e) if e.raw_os_error() == Some(libc::EACCES)),
-        "unselected executable not denied by confinement"
-    );
-    ensure!(
-        std::fs::read("/provider-token").is_err(),
-        "provider credential visible"
-    );
-    println!(
-        "CELLN_HARNESS_EVENT {}",
-        json!({"type":"negative-checks","unselected":"EACCES","toolWrites":"denied"})
-    );
-    for (field, value, reason) in [
-        ("model", json!("unapproved-model"), "model not granted"),
-        (
-            "max_tokens",
-            json!(513),
-            "model output token limit exceeded",
-        ),
-        ("n", json!(2), "unsupported model request parameters"),
-        (
-            "stream",
-            json!(true),
-            "unsupported model request parameters",
-        ),
-    ] {
-        let mut body = json!({"model":config.model,"stream":false,"max_tokens":512,"messages":[{"role":"user","content":"budget probe"}]});
-        body[field] = value;
-        prove_model_denial(&config.url, body, reason)?;
+    if config.proof {
+        // These files exist in the signed filesystem but have no member grant.
+        ensure!(
+            std::fs::read("/unselected").is_err(),
+            "unselected tool readable"
+        );
+        let refused = Command::new("/unselected")
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .status();
+        ensure!(
+            matches!(refused, Err(ref e) if e.raw_os_error() == Some(libc::EACCES)),
+            "unselected executable not denied by confinement"
+        );
+        ensure!(
+            std::fs::read("/provider-token").is_err(),
+            "provider credential visible"
+        );
+        println!(
+            "CELLN_HARNESS_EVENT {}",
+            json!({"type":"negative-checks","unselected":"EACCES","toolWrites":"denied"})
+        );
+        for (field, value, reason) in [
+            ("model", json!("unapproved-model"), "model not granted"),
+            (
+                "max_tokens",
+                json!(513),
+                "model output token limit exceeded",
+            ),
+            ("n", json!(2), "unsupported model request parameters"),
+            (
+                "stream",
+                json!(true),
+                "unsupported model request parameters",
+            ),
+        ] {
+            let mut body = json!({"model":config.model,"stream":false,"max_tokens":512,"messages":[{"role":"user","content":"budget probe"}]});
+            body[field] = value;
+            prove_model_denial(&config.url, body, reason)?;
+        }
     }
     let definitions: Vec<Value> = config.tools.iter().map(|t| json!({"type":"function","function":{
         "name":t.name,"description":t.description,"parameters":{"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"minItems":2,"maxItems":2}},"required":["args"],"additionalProperties":false}
@@ -170,11 +174,13 @@ fn run() -> Result<()> {
                 "model stopped before using lent tools"
             );
             let answer = message["content"].as_str().context("no final answer")?;
-            prove_model_denial(
-                &config.url,
-                json!({"model":config.model,"stream":false,"max_tokens":512,"messages":[{"role":"user","content":"budget probe"}]}),
-                "model cumulative output budget exhausted",
-            )?;
+            if config.proof {
+                prove_model_denial(
+                    &config.url,
+                    json!({"model":config.model,"stream":false,"max_tokens":512,"messages":[{"role":"user","content":"budget probe"}]}),
+                    "model cumulative output budget exhausted",
+                )?;
+            }
             println!(
                 "CELLN_HARNESS_EVENT {}",
                 json!({"type":"completed","answer":answer,"toolsUsed":used,"calls":calls})

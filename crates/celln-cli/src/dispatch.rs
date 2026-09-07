@@ -12,6 +12,8 @@ use std::path::Path;
 
 #[path = "dispatch_closure.rs"]
 pub(crate) mod closure;
+#[path = "dispatch_harness.rs"]
+pub(crate) mod harness;
 
 #[path = "dispatch_substrate.rs"]
 mod substrate;
@@ -72,6 +74,12 @@ pub struct ResolvedBundle {
 pub(crate) fn check_supported_authority(request: &ExecutionRequest) -> Result<(), String> {
     celln_control::check().map_err(|e| e.to_string())?;
     inputs::validate(request)?;
+    if request.harness.is_some() {
+        if !request.problems().is_empty() {
+            return Err("invalid Harness binding".into());
+        }
+        return Ok(());
+    }
     if request.tools.iter().any(|tool| tool.closure.is_some())
         && (request.forge.is_some()
             || !request.inputs.is_empty()
@@ -522,7 +530,7 @@ fn run_cell(
         .map(|record| record.id.clone())
         .unwrap_or_default();
 
-    if !request.capabilities.egress.is_empty() {
+    if request.harness.is_none() && !request.capabilities.egress.is_empty() {
         let hosts: Vec<String> = request
             .capabilities
             .egress

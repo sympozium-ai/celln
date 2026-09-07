@@ -97,6 +97,7 @@ pub(crate) fn launch_declared(
     let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
     let local_agent = local_agent_constraint(&resolved.program_hash, state_root)?;
     let closure = super::closure::resolve(request, &resolved, state_root)?;
+    let harness = super::harness::resolve(request, closure.as_ref(), state_root)?;
     if !matches!(
         resolved.format.as_deref(),
         Some("celln.warm-static-v1" | "celln.warm-closure-v1")
@@ -131,7 +132,7 @@ pub(crate) fn launch_declared(
             "root": closure.as_ref().map(|_| "/tools"),
             "closure_members": closure.as_ref().map(|c| &c.signed.closure.members),
             "alias": invocation.alias,
-            "args": invocation.args, "expected_hash": resolved.program_hash,
+            "args": harness.as_ref().map_or(&invocation.args, |h|&h.args), "expected_hash": resolved.program_hash,
             "agent_authored_input": request.execution.lane == celln_spec::RequestedLane::Agent,
             "force_agent_lane": force_agent,
             "allow_fetch": !request.capabilities.egress.is_empty(),
@@ -171,6 +172,11 @@ pub(crate) fn launch_declared(
             Ok((cfg, resolved.toolfs_bytes.clone()))
         })?;
         cell.set_invocation(&run).map_err(|e| e.to_string())?;
+        // Re-read the operator grant after potentially slow warm preparation.
+        if let Some(h) = super::harness::resolve(request, closure.as_ref(), state_root)? {
+            super::harness::claim(request, state_root)?;
+            cell.enable_http_fetch(h.policy);
+        }
         let mut outcome = super::run_cell(request, &invocation.alias, cell, state_root)?;
         outcome.substrate = Some(identity);
         super::validate_executed_tool(&mut outcome, &resolved.program_hash);
