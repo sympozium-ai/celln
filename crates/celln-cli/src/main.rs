@@ -336,6 +336,9 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum ClosureCmd {
+    /// Hash signed closure members inside a sealed cell without executing them.
+    /// Requires an operator-pinned declared request, with empty args and no egress.
+    CheckMembers { request: PathBuf },
     /// Offline signing; write the signed descriptor to stdout (never the key).
     Sign {
         descriptor: PathBuf,
@@ -438,6 +441,15 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             key_file,
         }) => closure_cli::sign(descriptor, key_file),
         Cmd::Closure(ClosureCmd::Admit { descriptor }) => closure_cli::admit(descriptor, &root),
+        Cmd::Closure(ClosureCmd::CheckMembers { request }) => {
+            let bytes = closure_policy::read_bounded(request).map_err(anyhow::Error::msg)?;
+            let request = serde_json::from_slice(&bytes)?;
+            let report =
+                dispatch::check_members(&request, &root.join("motes"), &root.join("tools"), &root)
+                    .map_err(anyhow::Error::msg)?;
+            println!("{}", serde_json::to_string(&report)?);
+            Ok(0)
+        }
         Cmd::Closure(ClosureCmd::Verify {
             descriptor,
             expected_hash,

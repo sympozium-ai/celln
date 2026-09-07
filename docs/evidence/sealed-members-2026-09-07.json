@@ -1,0 +1,104 @@
+{
+  "additionalToolAllocations": 0,
+  "closure": "blake3:3ec54ccc82ca4c3f39c28cd5d50916293090ce3ec3ae8915afa98dd1f3fcdef2",
+  "daxRevocationKilledGuest": true,
+  "dependencyRevocationDenied": true,
+  "executableScratchMappingDenied": true,
+  "executionSamples": "prewarmed-by-member-check",
+  "liveForkSurvivedEviction": true,
+  "materialisationMicros": 407480,
+  "memberCheckIncludingPreparationMicros": 2746416,
+  "memberMismatchDenied": true,
+  "members": {
+    "/bin/program": {
+      "dependencies": [
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib64/libc.so.6",
+        "/lib64/libgcc_s.so.1"
+      ],
+      "hash": "blake3:5e2ee6c9dc3c928a5e08d0786539d55916ed7e35a8147cd3108b816df77306e1"
+    },
+    "/lib64/ld-linux-x86-64.so.2": {
+      "dependencies": [],
+      "hash": "blake3:d7f70e3bf8867805e3456d4a21623ad07c345076a6c64439cb4e731a3e121541"
+    },
+    "/lib64/libc.so.6": {
+      "dependencies": [],
+      "hash": "blake3:63a42174f3226dcbf4416f186c34da12643ca46da4dbb7a30d8f5f35cdb9a5e4"
+    },
+    "/lib64/libgcc_s.so.1": {
+      "dependencies": [],
+      "hash": "blake3:b69e42521beba7959bea17be219b67241af5c0724e4b17107416247821cd4fc2"
+    }
+  },
+  "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+  "publisherWithdrawalDenied": true,
+  "replacementDenied": true,
+  "runs": [
+    {
+      "elapsedMicros": 145385,
+      "workspace": "none"
+    },
+    {
+      "elapsedMicros": 131380,
+      "workspace": "read-only"
+    },
+    {
+      "elapsedMicros": 132844,
+      "workspace": "read-write"
+    }
+  ],
+  "sealedMemberCLICheck": {
+    "apiVersion": "celln.dev/sealed-members-verification-v1",
+    "artifactReadiness": "not_checked",
+    "cellDissolved": true,
+    "challenge": "blake3:69e34c34628968224903d204a564ecd73562bc72310f1b8a397ea4e68b9a8436",
+    "closure": "blake3:3ec54ccc82ca4c3f39c28cd5d50916293090ce3ec3ae8915afa98dd1f3fcdef2",
+    "conformance": "not_checked",
+    "initrd": "blake3:288828207d1c2dbc0544b3689825110fed953a8e6b24a72d473e9c72723d3f01",
+    "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+    "memberCount": 4,
+    "memberIntegrity": "verified-in-sealed-cell",
+    "mote": "blake3:7330208526f5dac199eda94008d2a5173ff58a51c2df03d17d210c02b712af54",
+    "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "requestHash": "blake3:09d1cf5a69095c4cdd9900dcf05c86d20bdb5ae7376329ac48fe134ccf9e1531",
+    "scope": "sealed-member-identities-only",
+    "toolExecution": false,
+    "toolfs": "blake3:24a3e3b4758450c0dafedc7d308d0559d32dd7df1c6bdcc40b8df96818e4d2a0"
+  },
+  "sealedMemberCheck": {
+    "apiVersion": "celln.dev/sealed-members-verification-v1",
+    "artifactReadiness": "not_checked",
+    "cellDissolved": true,
+    "challenge": "blake3:9bc50f93aafe262d5e00b396bd692c468d179cb9496e3189b0e66e858361479b",
+    "closure": "blake3:3ec54ccc82ca4c3f39c28cd5d50916293090ce3ec3ae8915afa98dd1f3fcdef2",
+    "conformance": "not_checked",
+    "initrd": "blake3:288828207d1c2dbc0544b3689825110fed953a8e6b24a72d473e9c72723d3f01",
+    "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+    "memberCount": 4,
+    "memberIntegrity": "verified-in-sealed-cell",
+    "mote": "blake3:7330208526f5dac199eda94008d2a5173ff58a51c2df03d17d210c02b712af54",
+    "publisher": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "requestHash": "blake3:06553eefb8c207926abfa2fb06259e52c99c1d7377587874954f25ab12993a20",
+    "scope": "sealed-member-identities-only",
+    "toolExecution": false,
+    "toolfs": "blake3:24a3e3b4758450c0dafedc7d308d0559d32dd7df1c6bdcc40b8df96818e4d2a0"
+  },
+  "sharedToolBytes": 33554432,
+  "signatureForgeryDenied": true,
+  "simultaneousForks": 8,
+  "status": "passed",
+  "symlinkMemberDenied": true,
+  "toolfsBytes": 33554432,
+  "unusedPagesCollected": true,
+  "warmPreparations": 1,
+  "provenance": {
+    "baseRevision": "a71147c",
+    "workingTreeChanges": true,
+    "scope": "sealed member identity and existing signed-closure regressions; not full Harness conformance",
+    "binarySHA256": [
+      "01c77ef7cce5d0e0b6802408524bfaaea476ef967d410958c1bf326dbd64b8e4  target/validation/debug/celln",
+      "d58329cf48410d867533511dca50f6e189306e0b85d00bc2dc8a452cae667a07  target/validation/x86_64-unknown-linux-musl/release/celln-pilot"
+    ]
+  }
+}

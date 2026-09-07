@@ -1100,6 +1100,15 @@ fn run_requested(manifest: &Manifest) {
     } else {
         return; // nothing asked of this cell
     };
+    // A separate envelope with no executable path/alias: older pilots run
+    // nothing, and mixed-mode envelopes must never fall through to execution.
+    if serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .is_some_and(|v| v.get("verify_closure").is_some())
+    {
+        check_sealed_members(&bytes);
+        return;
+    }
     let file: RunFile = match serde_json::from_slice(&bytes) {
         Ok(r) => r,
         Err(e) => {
@@ -1134,6 +1143,31 @@ fn run_requested(manifest: &Manifest) {
         }
         run_one(manifest, &req);
     }
+}
+
+fn check_sealed_members(bytes: &[u8]) {
+    use pilot::closure_check::{Envelope, Report, PREFIX, VERSION};
+    let Ok(envelope) = serde_json::from_slice::<Envelope>(bytes) else {
+        return;
+    };
+    let request = envelope.verify_closure;
+    let verified = request.valid()
+        && request.members.iter().all(|(path, member)| {
+            sealed_member_path(path)
+                && open_and_hash(&format!("/tools{path}"))
+                    .is_ok_and(|(_, hash)| hash.0 == member.hash)
+        });
+    let report = Report {
+        version: VERSION.into(),
+        challenge: request.challenge,
+        request_hash: Hash::of(bytes).0,
+        verified,
+        member_count: request.members.len(),
+    };
+    println!(
+        "{PREFIX}{}",
+        serde_json::to_string(&report).expect("serializable check report")
+    );
 }
 
 /// One-shot host data, not executable authority. The I/O permission is revoked
@@ -1385,6 +1419,14 @@ fn finish(code: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn member_check_envelope_has_no_legacy_execution_fallback() {
+        let bytes = br#"{"verify_closure":{"version":"celln.dev/sealed-members-v1","challenge":"test","members":{}}}"#;
+        // RunFile intentionally retains the pre-extension execution parser.
+        let legacy: RunFile = serde_json::from_slice(bytes).unwrap();
+        assert!(legacy.invocations().is_empty());
+    }
 
     #[test]
     fn replacing_the_verified_path_cannot_change_what_executes() {

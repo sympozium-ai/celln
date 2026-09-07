@@ -184,6 +184,135 @@ pub(crate) fn launch_declared(
     }
 }
 
+/// Offline operator verification, using the same pinned warm substrate and
+/// sealed image as execution. No executable invocation or broker is delivered.
+pub(crate) fn check_members(
+    request: &ExecutionRequest,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+) -> Result<serde_json::Value, String> {
+    if !request.problems().is_empty()
+        || request.harness.is_some()
+        || request.forge.is_some()
+        || !request.inputs.is_empty()
+        || !request.capabilities.egress.is_empty()
+        || request.capabilities.workspace != celln_spec::WorkspaceAccess::None
+        || request
+            .invocation
+            .as_ref()
+            .map_or(true, |i| !i.args.is_empty())
+    {
+        return Err("member check requires a valid closure request with no args, inputs, workspace, forge, harness or egress".into());
+    }
+    super::check_supported_authority(request)?;
+    authorize(request, state_root)?;
+    let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
+    let closure = super::closure::resolve(request, &resolved, state_root)?
+        .ok_or("signed closure required for member verification")?;
+    for member in closure.signed.closure.members.values() {
+        local_agent_constraint(&member.hash, state_root)?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("Unsupported: sealed member verification requires Linux KVM".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use pilot::closure_check::{Envelope, Report, Request, PREFIX, VERSION};
+        use std::io::Read;
+        let work = crate::agent::tempdir().map_err(|e| e.to_string())?;
+        let kernel = work.path().join("kernel");
+        let initrd = work.path().join("initrd");
+        if !resolved.initrd_bytes.starts_with(b"070701") {
+            return Err("unsupported initrd: warm format requires uncompressed newc".into());
+        }
+        let mut random = [0u8; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut random))
+            .map_err(|e| e.to_string())?;
+        let envelope = Envelope {
+            verify_closure: Request {
+                version: VERSION.into(),
+                challenge: celln_manifest::Hash::of(&random).0,
+                members: closure.signed.closure.members.clone(),
+            },
+        };
+        if !envelope.verify_closure.valid() {
+            return Err("unsupported closure member check".into());
+        }
+        let run = serde_json::to_vec(&envelope).map_err(|e| e.to_string())?;
+        if run.len() > warden::MAX_INVOCATION_BYTES {
+            return Err("member check exceeds bounded invocation channel".into());
+        }
+        let mut initrd_bytes = resolved.initrd_bytes.clone();
+        while initrd_bytes.len() % 4 != 0 {
+            initrd_bytes.push(0);
+        }
+        initrd_bytes.extend(file_archive("celln/dispatch-warm", b"pio-v1\n"));
+        let mut cell = super::warm::fork(
+            format!(
+                "{}:{}",
+                resolved.bundle_hash, request.capabilities.memory_bytes
+            ),
+            vec![],
+            || {
+                std::fs::write(&kernel, &resolved.kernel_bytes).map_err(|e| e.to_string())?;
+                std::fs::write(&initrd, &initrd_bytes).map_err(|e| e.to_string())?;
+                let mut cfg = warden::vmm::boot::BootConfig::new(kernel)
+                    .with_initrd(initrd)
+                    .with_pmem(resolved.toolfs_bytes.len());
+                cfg.mem_size = request.capabilities.memory_bytes as usize;
+                Ok((cfg, resolved.toolfs_bytes.clone()))
+            },
+        )?;
+        cell.set_invocation(&run).map_err(|e| e.to_string())?;
+        cell.set_timeout(std::time::Duration::from_millis(
+            request.capabilities.timeout_ms.min(10000),
+        ));
+        let result = cell.run().map_err(|e| e.to_string())?;
+        drop(cell);
+        if result.end != warden::vmm::boot::BootEnd::Shutdown {
+            return Err("sealed member check did not shut down cleanly".into());
+        }
+        if result.console.contains("CELLN:out-begin")
+            || result.console.contains("\"kind\":\"started\"")
+        {
+            return Err("unexpected executable invocation during member check".into());
+        }
+        let mut reports = result
+            .console
+            .lines()
+            .filter_map(|line| line.strip_prefix(PREFIX));
+        let report: Report = serde_json::from_str(
+            reports
+                .next()
+                .ok_or("Unsupported: pilot did not report sealed-member verification")?,
+        )
+        .map_err(|_| "invalid sealed-member report")?;
+        if reports.next().is_some() || !report.matches(&envelope, &run) {
+            return Err("sealed-member verification failed or report is unbound".into());
+        }
+        // A potentially slow preparation/check cannot exempt later revocation.
+        authorize(request, state_root)?;
+        super::closure::resolve(request, &resolved, state_root)?;
+        for member in closure.signed.closure.members.values() {
+            local_agent_constraint(&member.hash, state_root)?;
+        }
+        Ok(serde_json::json!({
+            "apiVersion":"celln.dev/sealed-members-verification-v1",
+            "scope":"sealed-member-identities-only", "mote":resolved.bundle_hash,
+            "closure":closure.provenance.hash, "publisher":closure.provenance.publisher,
+            "toolfs":resolved.toolfs_hash, "kernel":resolved.kernel_hash,
+            "initrd":celln_manifest::Hash::of(&initrd_bytes).0,
+            "memberCount":report.member_count, "requestHash":report.request_hash,
+            "challenge":report.challenge, "memberIntegrity":"verified-in-sealed-cell",
+            "toolExecution":false, "cellDissolved":true,
+            "conformance":"not_checked", "artifactReadiness":"not_checked"
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
