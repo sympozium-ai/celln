@@ -32,7 +32,7 @@ pub(super) fn evict() {
 pub(super) static PREPARATIONS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
-pub(super) static PROOF_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static PROOF_LOCK: Mutex<()> = Mutex::new(());
 
 pub(super) fn fork(
     key: String,

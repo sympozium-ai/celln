@@ -1,0 +1,61 @@
+{
+  "apiVersion": "celln.dev/v1alpha2",
+  "id": "reference-harness-example",
+  "workload": {
+    "id": "reference",
+    "caller": "sympozium:example/harness-run"
+  },
+  "harness": {
+    "contractVersion": "celln.reference-functions/v1",
+    "modelGrant": {
+      "hash": "blake3:db2860a06e9003d1cab7908eb325ae517e1fe5fcc96d0991de105bb94d9a1796"
+    },
+    "model": "deepseek-chat",
+    "task": "Use add with args [\"37\",\"5\"], wait for its result, then multiply that result by \"2\". Reply with exactly the final integer.",
+    "borrowedTools": [
+      {
+        "name": "add",
+        "path": "/add",
+        "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+        "description": "Add two integer strings."
+      },
+      {
+        "name": "multiply",
+        "path": "/multiply",
+        "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+        "description": "Multiply two integer strings."
+      }
+    ]
+  },
+  "mote": {
+    "hash": "blake3:2f781f8922e2971f0d4c1dd5e1cf237977985e3d8eddc9fa557930d69bff2530"
+  },
+  "inputs": [],
+  "tools": [
+    {
+      "alias": "/harness",
+      "hash": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+      "closure": {
+        "hash": "blake3:93a643e7783169183bf1906be2269412aca0a505470d65f88b24fcee34903bef"
+      }
+    }
+  ],
+  "invocation": {
+    "alias": "/harness",
+    "args": []
+  },
+  "forge": null,
+  "capabilities": {
+    "workspace": "none",
+    "egress": [
+      "https://api.deepseek.com"
+    ],
+    "timeoutMs": 180000,
+    "memoryBytes": 268435456,
+    "outputBytes": 65536
+  },
+  "execution": {
+    "lane": "agent",
+    "requireHardwareIsolation": true
+  }
+}

@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod harness;
+pub use harness::{BorrowedTool, HarnessBinding};
+
 /// A cell specification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -199,6 +202,8 @@ pub struct ExecutionRequest {
     pub api_version: String,
     pub id: String,
     pub workload: WorkloadIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessBinding>,
     /// The declared mote/tool source. Exactly one of `mote` or `forge` must
     /// be set — a request either names a pre-declared, hash-pinned program,
     /// or asks for one to be written. See [`ExecutionRequest::problems`].
@@ -401,6 +406,7 @@ pub enum ExecutionProblemCode {
     InvalidEgress,
     InvalidLimit,
     InvalidForge,
+    InvalidHarness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -415,12 +421,18 @@ impl ExecutionRequest {
     /// availability are deliberately separate decisions made by the node agent.
     pub fn problems(&self) -> Vec<ExecutionProblem> {
         let mut problems = Vec::new();
-        if self.api_version != "celln.dev/v1alpha1" {
+        if !matches!(
+            self.api_version.as_str(),
+            "celln.dev/v1alpha1" | "celln.dev/v1alpha2"
+        ) {
             problems.push(ExecutionProblem {
                 code: ExecutionProblemCode::UnsupportedVersion,
                 field: "apiVersion".into(),
-                message: "must be celln.dev/v1alpha1".into(),
+                message: "must be celln.dev/v1alpha1 or celln.dev/v1alpha2".into(),
             });
+        }
+        if !harness::valid(self) {
+            problems.push(ExecutionProblem { code: ExecutionProblemCode::InvalidHarness, field:"harness".into(), message:"v1alpha2 requires a bounded declared reference Harness binding; v1alpha1 forbids one".into() });
         }
         for (field, value) in [
             ("id", self.id.as_str()),
@@ -623,7 +635,10 @@ impl ExecutionReceipt {
     /// Validate a result before a control plane records or forwards it.
     pub fn problems(&self) -> Vec<ExecutionProblem> {
         let mut problems = Vec::new();
-        if self.api_version != "celln.dev/v1alpha1" {
+        if !matches!(
+            self.api_version.as_str(),
+            "celln.dev/v1alpha1" | "celln.dev/v1alpha2"
+        ) {
             problems.push(ExecutionProblem {
                 code: ExecutionProblemCode::UnsupportedVersion,
                 field: "apiVersion".into(),

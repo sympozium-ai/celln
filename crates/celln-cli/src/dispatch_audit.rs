@@ -37,6 +37,9 @@ pub struct Execution {
     /// Only populated after pilot's installed-grant acknowledgement matches
     /// host-enforced bounds. A refused setup does not grant requested authority.
     pub granted: Option<CapabilityRequest>,
+    /// Operator policy revision, never its credential path or task payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_grant: Option<String>,
     pub inputs: Vec<String>,
     pub broker: BrokerActivity,
     pub exit_code: Option<i32>,
@@ -102,6 +105,11 @@ impl Audit {
                 .execution
                 .as_ref()
                 .map(|_| request.capabilities.clone()),
+            model_grant: outcome
+                .execution
+                .as_ref()
+                .and(request.harness.as_ref())
+                .map(|h| h.model_grant.hash.clone()),
             inputs: outcome.input_hashes.clone(),
             broker: outcome.broker.clone(),
             exit_code: outcome.exit_code,

@@ -23,10 +23,6 @@ fn main() -> Result<()> {
         std::env::var_os("CELLN_PILOT_DIR")
             .context("set CELLN_PILOT_DIR to static guest binaries")?,
     );
-    let token = PathBuf::from(
-        std::env::var_os("CELLN_MODEL_TOKEN_FILE")
-            .context("set CELLN_MODEL_TOKEN_FILE to a private host credential file")?,
-    );
     let work = std::env::temp_dir().join(format!("celln-harness-proof-{}", std::process::id()));
     std::fs::create_dir(&work)?;
     std::fs::copy(
@@ -118,6 +114,14 @@ fn main() -> Result<()> {
             .success(),
         "initrd build failed"
     );
+    if std::env::args().any(|arg| arg == "--package-only") {
+        println!("PACKAGED: {}", work.display());
+        return Ok(());
+    }
+    let token = PathBuf::from(
+        std::env::var_os("CELLN_MODEL_TOKEN_FILE")
+            .context("set CELLN_MODEL_TOKEN_FILE to a private host credential file")?,
+    );
     let kernel = BootConfig::host_kernel().context("no host kernel")?;
     let mut template = LinuxCell::boot(
         BootConfig::new(kernel)
@@ -149,6 +153,8 @@ fn main() -> Result<()> {
         {"name":"add","path":"/add","hash":members["/add"].hash,"description":"Add two integer strings; returns their sum."},
         {"name":"multiply","path":"/multiply","hash":members["/multiply"].hash,"description":"Multiply two integer strings; returns their product."}
     ]});
+    let mut config = config;
+    config["proof"] = true.into();
     cell.set_invocation(&serde_json::to_vec(&json!({"path":"/harness","alias":"/harness","root":"/tools","args":[config.to_string()],"force_agent_lane":true,"agent_authored_input":true,"allow_fetch":true,"expected_hash":members["/harness"].hash,"workspace_access":"none","closure_members":members}))?)?;
     let report = cell.run()?;
     std::fs::write(work.join("console.log"), &report.console)?;
