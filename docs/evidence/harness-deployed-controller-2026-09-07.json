@@ -1,0 +1,211 @@
+{
+  "scope": "actual in-cluster controller -> Service/router -> KVM reference Harness",
+  "agentrun": {
+    "name": "harness-deployed-proof-v2",
+    "uid": "6acc0cde-5da2-4aab-9a51-d00c63ef0f24",
+    "phase": "Succeeded",
+    "request": {
+      "harness": {
+        "contractVersion": "celln.reference-functions/v1",
+        "modelGrant": {
+          "hash": "blake3:193ee6bf52aa5327e145c08d5407be77ec1c48474373e918ef5720f70484ecc6"
+        },
+        "model": "deepseek-chat",
+        "task": "Use add with args [\"37\",\"5\"], wait for its result, then multiply that result by \"2\". Reply with exactly the final integer.",
+        "borrowedTools": [
+          {
+            "name": "add",
+            "path": "/add",
+            "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+            "description": "Add two integer strings."
+          },
+          {
+            "name": "multiply",
+            "path": "/multiply",
+            "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+            "description": "Multiply two integer strings."
+          }
+        ]
+      },
+      "apiVersion": "celln.dev/v1alpha2",
+      "id": "harness-deployed-proof-v2-6acc0cde-5da2-4aab-9a51-d00c63ef0f24",
+      "workload": {
+        "id": "reference",
+        "caller": "sympozium:sympozium-system/harness-deployed-proof-v2"
+      },
+      "mote": {
+        "hash": "blake3:4bb3200fa5106eca9e40f62ef67a23d7aff3552bf5a41b52276223fde321b5c7"
+      },
+      "tools": [
+        {
+          "alias": "/harness",
+          "hash": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+          "closure": {
+            "hash": "blake3:05e5004405d3cb0a210795d4dbb392c6dd04d3c05593b5f6e351878f1097fbc2"
+          }
+        }
+      ],
+      "invocation": {
+        "alias": "/harness"
+      },
+      "capabilities": {
+        "workspace": "none",
+        "egress": [
+          "https://api.deepseek.com"
+        ],
+        "timeoutMs": 180000,
+        "memoryBytes": 268435456,
+        "outputBytes": 65536
+      },
+      "execution": {
+        "lane": "agent",
+        "requireHardwareIsolation": true
+      }
+    },
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha2",
+      "requestId": "harness-deployed-proof-v2-6acc0cde-5da2-4aab-9a51-d00c63ef0f24",
+      "phase": "succeeded",
+      "node": "celln-deployed-worker",
+      "startedAt": "2026-09-07T10:40:43Z",
+      "completedAt": "2026-09-07T10:40:53Z",
+      "cellId": "f3fe8616650b",
+      "resolved": {
+        "mote": "blake3:4bb3200fa5106eca9e40f62ef67a23d7aff3552bf5a41b52276223fde321b5c7",
+        "tools": [
+          "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+        ],
+        "inputs": []
+      },
+      "output": {
+        "hash": "blake3:b80b2cb6c959bebbe47782686e291701c589600b9d310af421ad3e7ab201dfbd",
+        "mediaType": "application/octet-stream",
+        "bytes": 1396
+      }
+    },
+    "result": "CELLN_HARNESS_EVENT {\"id\":\"5d5b9484-e597-4111-b673-ae6d67663943\",\"model\":\"deepseek-v4-flash\",\"turn\":0,\"type\":\"model\",\"usage\":{\"completion_tokens\":40,\"prompt_cache_hit_tokens\":384,\"prompt_cache_miss_tokens\":25,\"prompt_tokens\":409,\"prompt_tokens_details\":{\"cached_tokens\":384},\"total_tokens\":449}}\nCELLN_HARNESS_EVENT {\"args\":[\"37\",\"5\"],\"hash\":\"blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020\",\"id\":\"call_00_vBsn0XG6q4jhEt3kZoD41484\",\"name\":\"add\",\"result\":\"42\\n\",\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"id\":\"14cc4869-f46a-498f-863a-58eda6162f20\",\"model\":\"deepseek-v4-flash\",\"turn\":1,\"type\":\"model\",\"usage\":{\"completion_tokens\":41,\"prompt_cache_hit_tokens\":384,\"prompt_cache_miss_tokens\":86,\"prompt_tokens\":470,\"prompt_tokens_details\":{\"cached_tokens\":384},\"total_tokens\":511}}\nCELLN_HARNESS_EVENT {\"args\":[\"42\",\"2\"],\"hash\":\"blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1\",\"id\":\"call_00_AHpqWyOWpuUXbFi1zSuP6506\",\"name\":\"multiply\",\"result\":\"84\\n\",\"type\":\"tool\"}\nCELLN_HARNESS_EVENT {\"id\":\"7eb89841-5b32-4274-8570-5baa60ae7462\",\"model\":\"deepseek-v4-flash\",\"turn\":2,\"type\":\"model\",\"usage\":{\"completion_tokens\":1,\"prompt_cache_hit_tokens\":512,\"prompt_cache_miss_tokens\":13,\"prompt_tokens\":525,\"prompt_tokens_details\":{\"cached_tokens\":512},\"total_tokens\":526}}\nCELLN_HARNESS_EVENT {\"answer\":\"84\",\"calls\":2,\"toolsUsed\":[\"add\",\"multiply\"],\"type\":\"completed\"}\n"
+  },
+  "audit": {
+    "apiVersion": "celln.dev/audit-v1alpha1",
+    "requestId": "harness-deployed-proof-v2-6acc0cde-5da2-4aab-9a51-d00c63ef0f24",
+    "caller": "sympozium:sympozium-system/harness-deployed-proof-v2",
+    "workload": "reference",
+    "node": "celln-deployed-worker",
+    "events": [
+      {
+        "sequence": 0,
+        "at": "2026-09-07T10:40:43Z",
+        "phase": "Admitting"
+      },
+      {
+        "sequence": 1,
+        "at": "2026-09-07T10:40:43Z",
+        "phase": "Resolving"
+      },
+      {
+        "sequence": 2,
+        "at": "2026-09-07T10:40:50Z",
+        "phase": "CellRunning"
+      },
+      {
+        "sequence": 3,
+        "at": "2026-09-07T10:40:53Z",
+        "phase": "Dissolved"
+      },
+      {
+        "sequence": 4,
+        "at": "2026-09-07T10:40:53Z",
+        "phase": "Succeeded"
+      }
+    ],
+    "execution": {
+      "cellId": "f3fe8616650b",
+      "substrate": {
+        "closure": {
+          "hash": "blake3:05e5004405d3cb0a210795d4dbb392c6dd04d3c05593b5f6e351878f1097fbc2",
+          "publisher": "8cd816c482497ab1ae02e17e6188abb429b9d3e4fd629ad3f7c86bb9f1d52c95",
+          "toolfs": "blake3:4b8accff76b665bd064bb8bc95d6adf35f2eee5dc74ade577933747553197357",
+          "members": {
+            "/add": {
+              "hash": "blake3:d25dee37d4c633b1a46ab2b824b00010f24ec10cb4ac78c9d1b5ecded854f020",
+              "dependencies": []
+            },
+            "/harness": {
+              "hash": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+              "dependencies": [
+                "/add",
+                "/multiply",
+                "/pilot-fetch"
+              ]
+            },
+            "/multiply": {
+              "hash": "blake3:de79be33d977d7b31a2c787476b5849949f9017d309fe76ef0b02dd9c47890c1",
+              "dependencies": []
+            },
+            "/pilot-fetch": {
+              "hash": "blake3:9afcf605962e29d25fd95fcd3d3a719210f644cd1ee0893ff3d5578eeb86888e",
+              "dependencies": []
+            }
+          }
+        },
+        "kernel": "blake3:e8e05482b24c4d9019ff7298f42f6f2730fcf656cbcb429ec44150ceac0e4ca8",
+        "initrd": "blake3:1c0cdb964a54307c8f719fd64a4ed4d88c988c1ee7841da09bf5a1be1a7e46ad",
+        "toolfs": "blake3:4b8accff76b665bd064bb8bc95d6adf35f2eee5dc74ade577933747553197357",
+        "invocation": "blake3:c80ce29ea4e97933e7d18c58d7124178103d292615cea56e29f577dfb2ff8c4b"
+      },
+      "pilot": {
+        "tool": "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626",
+        "lane": "agent",
+        "workspace": "none",
+        "fetch": true
+      },
+      "granted": {
+        "workspace": "none",
+        "egress": [
+          "https://api.deepseek.com"
+        ],
+        "timeoutMs": 180000,
+        "memoryBytes": 268435456,
+        "outputBytes": 65536
+      },
+      "modelGrant": "blake3:193ee6bf52aa5327e145c08d5407be77ec1c48474373e918ef5720f70484ecc6",
+      "inputs": [],
+      "broker": {
+        "requests": 3,
+        "denied": 0,
+        "responseBytes": 1710
+      },
+      "exitCode": 0,
+      "signal": null,
+      "watchdogStopped": false
+    },
+    "receipt": {
+      "apiVersion": "celln.dev/v1alpha2",
+      "requestId": "harness-deployed-proof-v2-6acc0cde-5da2-4aab-9a51-d00c63ef0f24",
+      "phase": "succeeded",
+      "node": "celln-deployed-worker",
+      "cellId": "f3fe8616650b",
+      "resolved": {
+        "mote": "blake3:4bb3200fa5106eca9e40f62ef67a23d7aff3552bf5a41b52276223fde321b5c7",
+        "tools": [
+          "blake3:7e41c9ea4ea3553de6d835f22a3a411cd6367263d5f3c0a14e885218d657b626"
+        ],
+        "inputs": []
+      },
+      "output": {
+        "hash": "blake3:b80b2cb6c959bebbe47782686e291701c589600b9d310af421ad3e7ab201dfbd",
+        "mediaType": "application/octet-stream",
+        "bytes": 1396
+      },
+      "startedAt": "2026-09-07T10:40:43Z",
+      "completedAt": "2026-09-07T10:40:53Z"
+    }
+  },
+  "checks": {
+    "noJob": true,
+    "zeroLiveCellsOnBothNodes": true,
+    "auditIdenticalAfterBothRoutersRestarted": true,
+    "modelSecretDeleted": true,
+    "tokenMountsAbsent": true
+  }
+}
