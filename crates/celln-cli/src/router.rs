@@ -175,13 +175,48 @@ struct RouterState {
 }
 
 fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
+    let result = handle_request(&mut stream, state);
+    finish_response(&mut stream);
+    result
+}
+
+// A close with unread request bytes may reset TCP and discard even an already
+// written refusal at an HTTP proxy. Send FIN first, then discard a bounded tail.
+// Never parse, authorize or forward this tail; peers exceeding the limits still
+// lose the connection. A total deadline prevents slow byte-at-a-time uploads
+// from extending the per-read timeout indefinitely.
+fn finish_response(stream: &mut TcpStream) {
+    use std::net::Shutdown;
+    use std::time::Instant;
+    if stream.shutdown(Shutdown::Write).is_err() {
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let mut remaining = 65536;
+    let mut buffer = [0u8; 4096];
+    while remaining > 0 {
+        let Some(timeout) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        if stream.set_read_timeout(Some(timeout)).is_err() {
+            break;
+        }
+        let limit = remaining.min(buffer.len());
+        match stream.read(&mut buffer[..limit]) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => remaining -= n,
+        }
+    }
+}
+
+fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let request_line = read_bounded_line(&mut reader, MAX_REQUEST_LINE)?;
     let Some((method, raw_path)) = request_line.trim_end().split_once(' ') else {
         return reply(
-            &mut stream,
+            stream,
             400,
             &serde_json::json!({"error":"malformed request line"}),
         );
@@ -212,16 +247,12 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
             bail!("too many headers (max {MAX_HEADER_COUNT})");
         }
         let Some((name, value)) = header.split_once(':') else {
-            return reply(
-                &mut stream,
-                400,
-                &serde_json::json!({"error":"invalid header"}),
-            );
+            return reply(stream, 400, &serde_json::json!({"error":"invalid header"}));
         };
         if name.eq_ignore_ascii_case("authorization") {
             if authorization.is_some() {
                 return reply(
-                    &mut stream,
+                    stream,
                     400,
                     &serde_json::json!({"error":"duplicate authorization"}),
                 );
@@ -230,7 +261,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         } else if name.eq_ignore_ascii_case("x-celln-backend") {
             if pinned_backend.is_some() {
                 return reply(
-                    &mut stream,
+                    stream,
                     400,
                     &serde_json::json!({"error":"duplicate backend pin"}),
                 );
@@ -239,7 +270,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         } else if name.eq_ignore_ascii_case("content-length") {
             if seen_length || !value.trim().bytes().all(|b| b.is_ascii_digit()) {
                 return reply(
-                    &mut stream,
+                    stream,
                     400,
                     &serde_json::json!({"error":"invalid content length"}),
                 );
@@ -247,7 +278,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
             seen_length = true;
             let Ok(parsed) = value.trim().parse() else {
                 return reply(
-                    &mut stream,
+                    stream,
                     400,
                     &serde_json::json!({"error":"invalid content length"}),
                 );
@@ -255,7 +286,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
             length = parsed;
         } else if name.eq_ignore_ascii_case("transfer-encoding") {
             return reply(
-                &mut stream,
+                stream,
                 400,
                 &serde_json::json!({"error":"transfer encoding unsupported"}),
             );
@@ -264,7 +295,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
 
     let Ok((client_token, backend_token, read_token)) = credentials(state) else {
         return reply(
-            &mut stream,
+            stream,
             503,
             &serde_json::json!({"error":"router credentials unavailable"}),
         );
@@ -282,11 +313,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
                     .is_some_and(|read| constant_time_eq(token.as_bytes(), read.as_bytes())))
     });
     if !authorized {
-        return reply(
-            &mut stream,
-            401,
-            &serde_json::json!({"error":"unauthorized"}),
-        );
+        return reply(stream, 401, &serde_json::json!({"error":"unauthorized"}));
     }
     let backend_token = Some(backend_token);
     // Pins are trusted-controller routing intent, not tenant URLs. Match only
@@ -294,23 +321,23 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     if let Some(backend) = &pinned_backend {
         if backend.len() > 1024 || !state.backends.contains(backend) {
             return reply(
-                &mut stream,
+                stream,
                 400,
                 &serde_json::json!({"error":"backend pin is not configured"}),
             );
         }
         if method != "POST" || (path != "/v1/executions" && path != "/v1/artifacts/prewarm") {
             return reply(
-                &mut stream,
+                stream,
                 400,
                 &serde_json::json!({"error":"backend pin only applies to submission or prewarm"}),
             );
         }
     }
     match (method.as_str(), path.as_str()) {
-        ("GET", "/v1/capabilities") => capability_report(state, &mut stream, &backend_token)?,
+        ("GET", "/v1/capabilities") => capability_report(state, stream, &backend_token)?,
         ("POST", "/v1/artifacts/prewarm") => forward_prewarm(
-            &mut stream,
+            stream,
             &mut reader,
             length,
             pinned_backend.as_deref(),
@@ -318,7 +345,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         )?,
         ("POST", "/v1/executions") => forward_submission(
             state,
-            &mut stream,
+            stream,
             &mut reader,
             length,
             "/v1/executions",
@@ -328,18 +355,18 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         ("POST", path) if execution_path_id(path, true).is_some() => {
             if length != 0 {
                 return reply(
-                    &mut stream,
+                    stream,
                     400,
                     &serde_json::json!({"error":"cancel body must be empty"}),
                 );
             }
-            forward_existing(state, &mut stream, "POST", path, true, &backend_token)?;
+            forward_existing(state, stream, "POST", path, true, &backend_token)?;
         }
         ("GET", path) if execution_path_id(path, false).is_some() => {
-            forward_existing(state, &mut stream, "GET", path, false, &backend_token)?
+            forward_existing(state, stream, "GET", path, false, &backend_token)?
         }
         _ => {
-            reply(&mut stream, 404, &serde_json::json!({"error":"not found"}))?;
+            reply(stream, 404, &serde_json::json!({"error":"not found"}))?;
         }
     }
     Ok(())
@@ -1385,15 +1412,76 @@ mod tests {
             let server = scope.spawn(move || handle(listener.accept().unwrap().0, state));
             write!(client, "{method} {path} HTTP/1.1\r\n{headers}\r\n{body}").unwrap();
             let mut response = String::new();
-            if let Err(error) = client.read_to_string(&mut response) {
-                // Early refusal may close with unread request bytes. Linux
-                // then resets the connection after delivering the response.
-                assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
-                assert!(!response.is_empty());
-            }
+            client.read_to_string(&mut response).unwrap();
+            drop(client);
             server.join().unwrap().unwrap();
             response
         })
+    }
+
+    #[test]
+    fn unauthorized_buffered_body_receives_complete_response_without_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state(dir.path());
+        std::thread::scope(|scope| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let (ready, sent) = std::sync::mpsc::channel();
+            let server = scope.spawn(move || {
+                let stream = listener.accept().unwrap().0;
+                sent.recv().unwrap();
+                handle(stream, &state)
+            });
+            // Queue more than BufReader can prefetch before the server reads
+            // headers. Early auth refusal must not reset unread body bytes.
+            let body = vec![b'x'; 32768];
+            write!(
+                client,
+                "POST /v1/executions HTTP/1.1\r\nHost: router\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            client.write_all(&body).unwrap();
+            client.shutdown(std::net::Shutdown::Write).unwrap();
+            ready.send(()).unwrap();
+            let mut response = String::new();
+            let result = client.read_to_string(&mut response);
+            server.join().unwrap().unwrap();
+            assert!(result.is_ok(), "refusal response reset: {result:?}");
+            assert_eq!(parse_status(&response), 401);
+            assert_eq!(extract_body(&response), r#"{"error":"unauthorized"}"#);
+        });
+    }
+
+    #[test]
+    fn response_tail_drain_has_a_total_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_write_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        let (done, completed) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            finish_response(&mut server);
+            done.send(()).unwrap();
+        });
+        let writer = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if client.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        completed
+            .recv_timeout(Duration::from_millis(750))
+            .expect("slow body extended the total drain deadline");
+        worker.join().unwrap();
+        writer.join().unwrap();
     }
 
     #[test]
