@@ -167,6 +167,30 @@ fn signed_closure_on_real_kvm() {
     Store::open(&tools).unwrap().put(&program_bytes).unwrap();
     let kernel_hash = store.put(&std::fs::read(kernel).unwrap()).unwrap();
     let initrd_hash = store.put(&std::fs::read(&initrd).unwrap()).unwrap();
+    // Candidate verification must work before this test grants any production
+    // mote admission, and must not manufacture that admission as a side effect.
+    let candidate = work.path().join("candidate");
+    std::fs::create_dir(&candidate).unwrap();
+    let template = serde_json::to_vec(&json!({"apiVersion":"celln.dev/mote-template-v1","kernel":kernel_hash.0,"initrd":initrd_hash.0,"runtimeExecutable":program_hash.0,"runtimeEntryPoint":signed.closure.entrypoint,"composerPublisher":signed.publisher})).unwrap();
+    std::fs::write(candidate.join("template.json"), &template).unwrap();
+    std::fs::write(
+        candidate.join("signed-closure.json"),
+        serde_json::to_vec(&signed).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(candidate.join("toolfs.ext2"), &image_bytes).unwrap();
+    let candidate_report =
+        crate::mote_check::check(&candidate, &Hash::of(&template).0, &motes, &tools, &state)
+            .unwrap();
+    assert_eq!(
+        candidate_report["members"]["memberIntegrity"],
+        "verified-in-sealed-cell"
+    );
+    assert_eq!(candidate_report["members"]["toolExecution"], false);
+    assert_eq!(candidate_report["members"]["cellDissolved"], true);
+    assert_eq!(candidate_report["admitted"], false);
+    assert!(!state.join("trusted-motes.json").exists());
+    eprintln!("CANDIDATE_MEMBER_PROOF={candidate_report}");
     store.put(&image_bytes).unwrap();
     let bundle = store.put(&serde_json::to_vec(&json!({"apiVersion":"celln.dev/v1alpha1", "format":"celln.warm-closure-v1", "kernel":kernel_hash.0,"initrd":initrd_hash.0,"toolfs":image_hash.0,"invocation":{"alias":"/closure/program","toolHash":program_hash.0}})).unwrap()).unwrap();
     std::fs::write(

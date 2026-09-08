@@ -54,6 +54,29 @@ pub fn run(
     output: &Path,
     root: &Path,
 ) -> Result<u8> {
+    let report = prepare(
+        template_path,
+        expected_template,
+        descriptor,
+        toolfs,
+        mote_store,
+        output,
+        root,
+    )?;
+    println!("{}", report);
+    Ok(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare(
+    template_path: &Path,
+    expected_template: &str,
+    descriptor: &Path,
+    toolfs: &Path,
+    mote_store: &Path,
+    output: &Path,
+    root: &Path,
+) -> Result<serde_json::Value> {
     let template_bytes = read_regular(template_path, 16384)?;
     ensure!(
         Hash::of(&template_bytes).0 == expected_template,
@@ -127,8 +150,7 @@ pub fn run(
     completion.sync_all()?;
     #[cfg(unix)]
     fs::File::open(output)?.sync_all()?;
-    println!("{}", report);
-    Ok(0)
+    Ok(report)
 }
 
 #[cfg(test)]

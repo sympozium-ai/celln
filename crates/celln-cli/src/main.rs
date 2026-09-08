@@ -13,6 +13,7 @@ mod dispatch_conformance;
 mod dispatch_http;
 mod host;
 mod image;
+mod mote_check;
 mod mote_prepare;
 mod node;
 mod out;
@@ -348,6 +349,17 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum ClosureCmd {
+    /// Check pinned candidate members in an isolated sealed cell before production admission.
+    CheckPrepared {
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        template_hash: String,
+        #[arg(long)]
+        mote_store: PathBuf,
+        #[arg(long)]
+        tool_store: PathBuf,
+    },
     /// Cold-path preparation from an exact operator-reviewed template. Does not admit or boot.
     PrepareMote {
         #[arg(long)]
@@ -468,6 +480,18 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::HarnessBinding { request } => dispatch::harness::inspect_binding(request),
+        Cmd::Closure(ClosureCmd::CheckPrepared {
+            candidate,
+            template_hash,
+            mote_store,
+            tool_store,
+        }) => {
+            println!(
+                "{}",
+                mote_check::check(candidate, template_hash, mote_store, tool_store, &root)?
+            );
+            Ok(0)
+        }
         Cmd::Closure(ClosureCmd::PrepareMote {
             template,
             template_hash,

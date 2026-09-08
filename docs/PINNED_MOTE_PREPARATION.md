@@ -55,6 +55,32 @@ rechecked after input reads, but this is an observation, not a policy lease.
 
 ## Remaining admission/distribution workflow
 
+### Verify members before production admission
+
+`celln closure check-prepared --candidate <directory> --template-hash <trusted-hash>
+--mote-store <store> --tool-store <store>` regenerates the candidate from verified
+inputs, then checks signed members with actual guest code in a sealed cell.
+The explicit template hash must still come from trusted operator configuration.
+The runtime executable must exist by hash in the tool store.
+
+The check uses an owned temporary verification root with a copy of the current
+closure policy and local manifest constraints. Only that temporary root gets a
+single-candidate allowlist; production mote policy is never changed. The request
+has no arguments, inputs, workspace or egress and requires hardware isolation.
+Current production policy and manifest are checked again after the guest exits.
+Unavailable hardware or an unsupported pilot refuses, never certifies success.
+
+The report binds the template, candidate and signed closure to a fresh sealed
+member challenge. It still says `admitted: false`: member integrity is not full
+runtime functional conformance, model authorization, capacity or serving-host
+readiness. Do not accept a user-supplied copy of this report as an admission token.
+
+The explicit real-KVM signed-closure regression exercises this path before
+creating any production mote allowlist, asserts guest verification and teardown,
+then runs the existing hostile-guest mutation and revocation tests.
+
+### Admission and distribution still required
+
 Before a production controller may use the candidate, the host admission
 service must independently revalidate template authorization, exact selected
 source closures and their current grants, verify sealed members with actual
