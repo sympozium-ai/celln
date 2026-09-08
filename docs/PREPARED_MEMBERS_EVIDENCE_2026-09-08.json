@@ -1,0 +1,20 @@
+{
+  "status": "passed",
+  "scope": "Real-KVM isolated candidate sealed-member check before production admission, followed by existing signed-closure hostile-guest and revocation regression",
+  "source": "check-prepared implementation and regression committed alongside this evidence",
+  "command": "CELLN_PILOT_DIR=<checkout>/target/validation/x86_64-unknown-linux-musl/release CELLN_TEST_BINARY=<checkout>/target/validation/debug/celln CARGO_TARGET_DIR=target/validation cargo test -p celln-cli signed_closure_on_real_kvm -- --ignored --nocapture",
+  "guestBuild": "CARGO_TARGET_DIR=target/validation cargo build --release --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch",
+  "durationSeconds": 28.60,
+  "template": "blake3:6aff192b6bda0f056bd2bf439bc066148aaf94634d8aea94923dfbffabb9ec10",
+  "mote": "blake3:fef47c533499806a272a9aa6a7ba87efe42c58ab73ae2c1c5307327d31cbcaa2",
+  "closure": "blake3:6641cfa153c7bf9d5516234d2e62a015d4f0889153c0612febd5cd452272badb",
+  "challenge": "blake3:21eaa60e1a1b7a49c651f11fb1e32d8c81985fd351598dcb146df23a1ea7d3b1",
+  "requestHash": "blake3:ee49b2a0ccc65d9e05fef26e0d8f3581a40ea98464d692b9dae3f65051ea4384",
+  "memberCount": 4,
+  "memberIntegrity": "verified-in-sealed-cell",
+  "toolExecution": false,
+  "cellDissolved": true,
+  "productionMoteAllowlistAbsentAfterCheck": true,
+  "admitted": false,
+  "limitations": ["No full native Harness functional conformance or model run in candidate check", "No production admission, distribution or readiness claim", "Initial attempt skipped for missing guest-binary path; explicit rebuilt guest path rerun exercised hardware", "Subsequent bounded manifest read hardening is covered by portable checks and does not change the guest challenge path"]
+}
