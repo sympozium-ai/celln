@@ -79,9 +79,60 @@ The explicit real-KVM signed-closure regression exercises this path before
 creating any production mote allowlist, asserts guest verification and teardown,
 then runs the existing hostile-guest mutation and revocation tests.
 
-### Admission and distribution still required
+### Administrator-assisted MLP admission
 
-Before a production controller may use the candidate, the host admission
+On the intended serving host, an administrator can now explicitly approve the
+exact reviewed candidate with:
+
+```sh
+celln --root /var/lib/celln closure admit-prepared \
+  --candidate /var/lib/celln/build/new-candidate \
+  --template-hash blake3:<trusted-template-digest> \
+  --approve-mote blake3:<reviewed-candidate-mote-digest> \
+  --mote-store /var/lib/celln/motes --tool-store /var/lib/celln/tools
+```
+
+This is an authority-changing operator command, not a tenant endpoint. Run it
+under the host service account with exclusive custody of the policy/store;
+new files are private to that account. The administrator is responsible for
+runtime/tool functional review in addition to the mandatory member check.
+Do not derive trusted template approval from a tenant's uploaded report.
+
+Admission repeats preparation and real-KVM checking. It durably publishes the
+kernel/initrd/filesystem/descriptor objects, verifies even deduplicated objects,
+records check evidence, then atomically replaces the exact-mote allowlist.
+Cooperating admission/withdrawal commands use a nonblocking Linux file lock;
+other tools must not edit this policy concurrently. Observed external edits
+refuse. All existing allowlist entries are preserved. Corrupt stored objects
+refuse rather than being overwritten. No model grant or execution is issued.
+
+Failure before the allowlist commit may leave unused immutable blobs/evidence,
+but does not authorize a new mote. A lost success acknowledgement may occur
+after the commit: inspect current host policy or repeat the exact command. A
+retry rechecks policy and hardware; it never submits execution. Evidence alone
+is not current admission. Storage must provide local Linux lock, atomic rename
+and fsync semantics; shared/distributed filesystems are not qualified here.
+
+To prevent new use of one exact mote:
+
+```sh
+celln --root /var/lib/celln closure withdraw-mote --mote blake3:<mote-digest>
+```
+
+Withdrawal atomically removes only that entry and retains artifacts/evidence.
+It is repeatable, but **does not cancel active cells**. Withdraw relevant model
+and tool approvals and cancel active AgentRuns separately; wait for terminal
+teardown. Do not call this fleet-wide live revocation.
+
+Register the admitted mote/closure pair with the Sympozium catalogue controller
+only after installation on its explicitly pinned serving host. The controller
+still performs current run/model/tool authority checks and serving-process
+prewarm. Automated distribution, production deployment qualification and the
+full borrowed-tool user journey remain separate completion gates.
+
+### Automated service/distribution follow-up
+
+Before an automated production controller may admit a new candidate, its host admission
 service must independently revalidate template authorization, exact selected
 source closures and their current grants, verify sealed members with actual
 guest attempts, and commit a revocable admission record. It must distribute

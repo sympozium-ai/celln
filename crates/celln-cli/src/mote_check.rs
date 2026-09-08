@@ -5,7 +5,7 @@ use celln_store::Store;
 use serde_json::{json, Value};
 use std::{fs, io::Read, path::Path};
 
-fn read_manifest(path: &Path) -> Result<Option<Vec<u8>>> {
+pub(crate) fn read_manifest(path: &Path) -> Result<Option<Vec<u8>>> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -26,31 +26,6 @@ fn read_manifest(path: &Path) -> Result<Option<Vec<u8>>> {
     file.take((8 << 20) + 1).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 8 << 20, "local manifest exceeds check limit");
     Ok(Some(bytes))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn local_manifest_read_is_bounded_and_refuses_nonregular_inputs() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("manifest");
-        assert!(read_manifest(&path).unwrap().is_none());
-        fs::write(&path, b"{}").unwrap();
-        assert_eq!(read_manifest(&path).unwrap(), Some(b"{}".to_vec()));
-        fs::File::create(&path)
-            .unwrap()
-            .set_len((8 << 20) + 1)
-            .unwrap();
-        assert!(read_manifest(&path).is_err());
-        assert!(read_manifest(dir.path()).is_err());
-        #[cfg(unix)]
-        {
-            let link = dir.path().join("link");
-            std::os::unix::fs::symlink(&path, &link).unwrap();
-            assert!(read_manifest(&link).is_err());
-        }
-    }
 }
 
 pub fn check(
@@ -125,6 +100,31 @@ pub fn check(
         "local manifest changed during member check"
     );
     Ok(
-        json!({"apiVersion":"celln.dev/prepared-members-check-v1","template":template_hash,"mote":report["mote"],"closure":report["closure"],"policyHash":report["policyHash"],"members":members,"admitted":false,"executionAuthorized":false,"runtimeConformance":"not_checked","readiness":"not_established"}),
+        json!({"apiVersion":"celln.dev/prepared-members-check-v1","template":template_hash,"mote":report["mote"],"closure":report["closure"],"policyHash":report["policyHash"],"localManifestHash":manifest.as_ref().map(|b|Hash::of(b).0),"members":members,"admitted":false,"executionAuthorized":false,"runtimeConformance":"not_checked","readiness":"not_established"}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn local_manifest_read_is_bounded_and_refuses_nonregular_inputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest");
+        assert!(read_manifest(&path).unwrap().is_none());
+        fs::write(&path, b"{}").unwrap();
+        assert_eq!(read_manifest(&path).unwrap(), Some(b"{}".to_vec()));
+        fs::File::create(&path)
+            .unwrap()
+            .set_len((8 << 20) + 1)
+            .unwrap();
+        assert!(read_manifest(&path).is_err());
+        assert!(read_manifest(dir.path()).is_err());
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            assert!(read_manifest(&link).is_err());
+        }
+    }
 }

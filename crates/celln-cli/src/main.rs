@@ -13,6 +13,7 @@ mod dispatch_conformance;
 mod dispatch_http;
 mod host;
 mod image;
+mod mote_admit;
 mod mote_check;
 mod mote_prepare;
 mod node;
@@ -349,6 +350,24 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum ClosureCmd {
+    /// Administrator approval: verify a candidate on KVM, publish bytes and admit its exact mote.
+    AdmitPrepared {
+        #[arg(long)]
+        candidate: PathBuf,
+        #[arg(long)]
+        template_hash: String,
+        #[arg(long)]
+        approve_mote: String,
+        #[arg(long)]
+        mote_store: PathBuf,
+        #[arg(long)]
+        tool_store: PathBuf,
+    },
+    /// Remove an exact mote from host admission. Does not cancel already-running cells.
+    WithdrawMote {
+        #[arg(long)]
+        mote: String,
+    },
     /// Check pinned candidate members in an isolated sealed cell before production admission.
     CheckPrepared {
         #[arg(long)]
@@ -480,6 +499,30 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::HarnessBinding { request } => dispatch::harness::inspect_binding(request),
+        Cmd::Closure(ClosureCmd::AdmitPrepared {
+            candidate,
+            template_hash,
+            approve_mote,
+            mote_store,
+            tool_store,
+        }) => {
+            println!(
+                "{}",
+                mote_admit::admit(
+                    candidate,
+                    template_hash,
+                    approve_mote,
+                    mote_store,
+                    tool_store,
+                    &root
+                )?
+            );
+            Ok(0)
+        }
+        Cmd::Closure(ClosureCmd::WithdrawMote { mote }) => {
+            mote_admit::withdraw(mote, &root)?;
+            Ok(0)
+        }
         Cmd::Closure(ClosureCmd::CheckPrepared {
             candidate,
             template_hash,

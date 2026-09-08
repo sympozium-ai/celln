@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "scope": "Administrator-assisted candidate admission and exact mote withdrawal using real KVM member verification, followed by existing signed-closure guest-attack/revocation regression",
+  "source": "mote_admit implementation and regression committed alongside this evidence",
+  "command": "CELLN_PILOT_DIR=<checkout>/target/validation/x86_64-unknown-linux-musl/release CELLN_TEST_BINARY=<checkout>/target/validation/debug/celln CARGO_TARGET_DIR=target/validation cargo test -p celln-cli signed_closure_on_real_kvm -- --ignored --nocapture",
+  "durationSeconds": 22.75,
+  "template": "blake3:5fac10ea071c913553586cb1db4fe1c26cb2ca3abe41870428ca6b378d2dd58a",
+  "mote": "blake3:a7de49b311ed776925b2637f6a0664f7fd9e69ac0b4144661c9f1bb5f3b33a9d",
+  "closure": "blake3:d6dfbfd3696e85ba4b71606d66d6900757b093c4c8e05f1d097c86c83be2a593",
+  "localManifestHash": "blake3:6ba9f7eb06f5fe2e174ac88a6abfb8b9e6fd5c1595c73ca764f341d53b3fc7e1",
+  "memberCount": 4,
+  "admittedThenWithdrawn": true,
+  "artifactsRetained": true,
+  "portableChecks": ["corrupt dedup refuses without overwrite", "nonblocking lock contention", "outside-policy-change refusal", "withdrawal preserves other entries and is repeatable", "invalid approval refuses before authority creation"],
+  "validation": "make ci passed after correcting a test-module placement Clippy warning",
+  "limitations": ["Local Linux filesystem semantics, not distributed storage qualification", "Withdrawal denies new admission but does not cancel running cells", "No native Harness/real-model admission-path proof yet", "No automatic distribution or production deployment qualification"]
+}

@@ -191,6 +191,24 @@ fn signed_closure_on_real_kvm() {
     assert_eq!(candidate_report["admitted"], false);
     assert!(!state.join("trusted-motes.json").exists());
     eprintln!("CANDIDATE_MEMBER_PROOF={candidate_report}");
+    let admitted = crate::mote_admit::admit(
+        &candidate,
+        &Hash::of(&template).0,
+        candidate_report["mote"]["hash"].as_str().unwrap(),
+        &motes,
+        &tools,
+        &state,
+    )
+    .unwrap();
+    assert_eq!(admitted["admitted"], true);
+    crate::mote_admit::withdraw(candidate_report["mote"]["hash"].as_str().unwrap(), &state)
+        .unwrap();
+    let withdrawn: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state.join("trusted-motes.json")).unwrap()).unwrap();
+    assert!(withdrawn["bundles"].as_array().unwrap().is_empty());
+    eprintln!(
+        "CANDIDATE_ADMISSION_PROOF={admitted}; exact mote withdrawn, stored artifacts retained"
+    );
     store.put(&image_bytes).unwrap();
     let bundle = store.put(&serde_json::to_vec(&json!({"apiVersion":"celln.dev/v1alpha1", "format":"celln.warm-closure-v1", "kernel":kernel_hash.0,"initrd":initrd_hash.0,"toolfs":image_hash.0,"invocation":{"alias":"/closure/program","toolHash":program_hash.0}})).unwrap()).unwrap();
     std::fs::write(
