@@ -13,6 +13,7 @@ mod dispatch_conformance;
 mod dispatch_http;
 mod host;
 mod image;
+mod mote_prepare;
 mod node;
 mod out;
 mod router;
@@ -347,6 +348,21 @@ enum NodeCmd {
 
 #[derive(Subcommand)]
 enum ClosureCmd {
+    /// Cold-path preparation from an exact operator-reviewed template. Does not admit or boot.
+    PrepareMote {
+        #[arg(long)]
+        template: PathBuf,
+        #[arg(long)]
+        template_hash: String,
+        #[arg(long)]
+        descriptor: PathBuf,
+        #[arg(long)]
+        toolfs: PathBuf,
+        #[arg(long)]
+        mote_store: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
     /// Build and sign a filesystem from exact approved source closures and member blobs.
     Compose {
         plan: PathBuf,
@@ -452,6 +468,22 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
         Cmd::HarnessBinding { request } => dispatch::harness::inspect_binding(request),
+        Cmd::Closure(ClosureCmd::PrepareMote {
+            template,
+            template_hash,
+            descriptor,
+            toolfs,
+            mote_store,
+            output_dir,
+        }) => mote_prepare::run(
+            template,
+            template_hash,
+            descriptor,
+            toolfs,
+            mote_store,
+            output_dir,
+            &root,
+        ),
         Cmd::HarnessProfileClock => dispatch::harness::inspect_clock(),
         Cmd::HarnessGrant { request, profile } => dispatch::harness::issue(request, profile, &root),
         Cmd::Closure(ClosureCmd::Compose {
