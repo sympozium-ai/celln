@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-08",
+  "base": "064b568 (Celln #93)",
+  "scope": "Authenticated configured-host routing and prewarm forwarding",
+  "validation": {
+    "routerTests": "17 passed, including real TCP protocol fixtures",
+    "makeCI": "passed",
+    "workspaceClippyAllTargetsAllFeatures": "passed with warnings denied",
+    "newCoverage": [
+      "Exact request/response bytes and backend credential separation",
+      "Prewarm never claims execution ownership",
+      "Lost acceptance does not replay a POST after fresh router state",
+      "Different pin refuses with 409 while preserving owner",
+      "Unavailable pinned backend never contacts spare",
+      "Unconfigured/duplicate/misplaced pins, missing/read-only credentials and empty/oversized prewarm refuse"
+    ]
+  },
+  "limitations": [
+    "Router tests use TCP protocol fixtures, not KVM or real model execution",
+    "Explicitly ignored hardware integration tests in ordinary CI are not isolation passes",
+    "No new TLS implementation or cryptographic host identity",
+    "Issuer-to-serving-host binding, controller integration and deployed readiness qualification remain open",
+    "Prewarm observation is not readiness or continuing execution authority"
+  ]
+}
