@@ -196,6 +196,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
     let mut length = 0usize;
     let mut seen_length = false;
     let mut authorization = None;
+    let mut pinned_backend = None;
     let mut header_count = 0usize;
     loop {
         let header = read_bounded_line(&mut reader, MAX_HEADER_LINE)?;
@@ -226,6 +227,15 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
                 );
             }
             authorization = Some(value.trim().to_owned());
+        } else if name.eq_ignore_ascii_case("x-celln-backend") {
+            if pinned_backend.is_some() {
+                return reply(
+                    &mut stream,
+                    400,
+                    &serde_json::json!({"error":"duplicate backend pin"}),
+                );
+            }
+            pinned_backend = Some(value.trim().to_owned());
         } else if name.eq_ignore_ascii_case("content-length") {
             if seen_length || !value.trim().bytes().all(|b| b.is_ascii_digit()) {
                 return reply(
@@ -279,8 +289,33 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
         );
     }
     let backend_token = Some(backend_token);
+    // Pins are trusted-controller routing intent, not tenant URLs. Match only
+    // an exact operator-configured endpoint and never probe/select a fallback.
+    if let Some(backend) = &pinned_backend {
+        if backend.len() > 1024 || !state.backends.contains(backend) {
+            return reply(
+                &mut stream,
+                400,
+                &serde_json::json!({"error":"backend pin is not configured"}),
+            );
+        }
+        if method != "POST" || (path != "/v1/executions" && path != "/v1/artifacts/prewarm") {
+            return reply(
+                &mut stream,
+                400,
+                &serde_json::json!({"error":"backend pin only applies to submission or prewarm"}),
+            );
+        }
+    }
     match (method.as_str(), path.as_str()) {
         ("GET", "/v1/capabilities") => capability_report(state, &mut stream, &backend_token)?,
+        ("POST", "/v1/artifacts/prewarm") => forward_prewarm(
+            &mut stream,
+            &mut reader,
+            length,
+            pinned_backend.as_deref(),
+            &backend_token,
+        )?,
         ("POST", "/v1/executions") => forward_submission(
             state,
             &mut stream,
@@ -288,6 +323,7 @@ fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
             length,
             "/v1/executions",
             &backend_token,
+            pinned_backend.as_deref(),
         )?,
         ("POST", path) if execution_path_id(path, true).is_some() => {
             if length != 0 {
@@ -387,6 +423,7 @@ fn forward_submission(
     length: usize,
     endpoint: &str,
     token: &Option<String>,
+    pinned_backend: Option<&str>,
 ) -> Result<()> {
     if length == 0 || length > 64 * 1024 {
         return reply(
@@ -409,10 +446,10 @@ fn forward_submission(
         }
     };
 
-    let claim = match state
-        .executions
-        .claim(&id, &body, || pick_backend(state, &id, token))
-    {
+    let claim = match state.executions.claim(&id, &body, || match pinned_backend {
+        Some(backend) => Ok(backend.to_owned()),
+        None => pick_backend(state, &id, token),
+    }) {
         Ok(claim) => claim,
         Err(_) => {
             return reply(
@@ -433,6 +470,15 @@ fn forward_submission(
             503,
             &serde_json::json!({"error":"ownership capacity exhausted; operator reconciliation required"}),
         ),
+        ownership::Claim::Existing(owner)
+            if pinned_backend.is_some_and(|pin| pin != owner.backend) =>
+        {
+            reply(
+                stream,
+                409,
+                &serde_json::json!({"error":"execution already binds a different backend; no reroute"}),
+            )
+        }
         ownership::Claim::Existing(owner) => forward_owned(
             state,
             stream,
@@ -451,6 +497,42 @@ fn forward_submission(
                 ),
             }
         }
+    }
+}
+
+// Prewarm is an observation in one serving process, not an execution or an
+// ownership claim. Require an explicit configured target; preserve body/response
+// bytes and leave artifact validation, sealing and admission to that dispatcher.
+fn forward_prewarm(
+    stream: &mut TcpStream,
+    reader: &mut BufReader<TcpStream>,
+    length: usize,
+    backend: Option<&str>,
+    token: &Option<String>,
+) -> Result<()> {
+    let Some(backend) = backend else {
+        return reply(
+            stream,
+            400,
+            &serde_json::json!({"error":"prewarm requires an explicit backend pin"}),
+        );
+    };
+    if length == 0 || length > 64 * 1024 {
+        return reply(
+            stream,
+            413,
+            &serde_json::json!({"error":"prewarm body exceeds 64 KiB or is empty"}),
+        );
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    match forward_post(backend, "/v1/artifacts/prewarm", &body, token) {
+        Ok(response) => raw_reply(stream, &response),
+        Err(_) => reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"pinned prewarm unavailable; no fallback"}),
+        ),
     }
 }
 
@@ -1072,6 +1154,223 @@ mod tests {
             capability_token_file: None,
             capability_probe_active: AtomicBool::new(false),
         }
+    }
+
+    #[test]
+    fn pinned_prewarm_and_submission_keep_exact_owner_without_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = state(dir.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        let spare = TcpListener::bind("127.0.0.1:0").unwrap();
+        spare.set_nonblocking(true).unwrap();
+        let spare_url = format!("http://{}", spare.local_addr().unwrap());
+        first.backends = vec![spare_url.clone(), backend.clone()];
+        let body = r#"{"id":"pinned","unchanged":"exact bytes"}"#;
+        let server = std::thread::spawn(move || {
+            for (method, path, status) in [
+                ("POST", "/v1/artifacts/prewarm", 200),
+                ("POST", "/v1/executions", 0),
+                ("GET", "/v1/executions/pinned", 200),
+            ] {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "expected {method} {path}"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(e) => panic!("accept: {e}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                assert_eq!(
+                    read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap(),
+                    format!("{method} {path} HTTP/1.1\r\n")
+                );
+                let mut length = 0;
+                let mut auth = false;
+                loop {
+                    let line = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if line == format!("Authorization: Bearer {BACKEND_TOKEN}\r\n") {
+                        auth = true;
+                    }
+                    assert!(!line.to_ascii_lowercase().starts_with("x-celln-backend:"));
+                    if let Some(n) = line.strip_prefix("Content-Length: ") {
+                        length = n.trim().parse().unwrap();
+                    }
+                }
+                assert!(auth, "router must use backend credential, not caller token");
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                if method == "POST" {
+                    assert_eq!(bytes, body.as_bytes());
+                }
+                if status == 0 {
+                    continue;
+                }
+                let payload = r#"{"observation":"unchanged"}"#;
+                write!(stream, "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}", payload.len()).unwrap();
+            }
+        });
+        let headers = format!("Authorization: Bearer {CLIENT_TOKEN}\r\nX-Celln-Backend: {backend}\r\nContent-Length: {}\r\n", body.len());
+        let observed = request(&first, "POST", "/v1/artifacts/prewarm", &headers, body);
+        assert_eq!(parse_status(&observed), 200);
+        assert!(observed.ends_with(r#"{"observation":"unchanged"}"#));
+        assert!(
+            first.executions.lookup("pinned").unwrap().is_none(),
+            "prewarm must not claim an execution"
+        );
+        assert_eq!(
+            parse_status(&request(&first, "POST", "/v1/executions", &headers, body)),
+            503
+        );
+        assert_eq!(
+            first.executions.lookup("pinned").unwrap().unwrap().backend,
+            backend
+        );
+        drop(first);
+        let mut replica = state(dir.path());
+        replica.backends = vec![backend.clone(), spare_url.clone()];
+        let changed_pin = headers.replace(&backend, &spare_url);
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/executions",
+                &changed_pin,
+                body
+            )),
+            409
+        );
+        assert_eq!(
+            parse_status(&request(&replica, "POST", "/v1/executions", &headers, body)),
+            200
+        );
+        server.join().unwrap();
+        let unavailable_body = r#"{"id":"unavailable"}"#;
+        let unavailable_headers = format!("Authorization: Bearer {CLIENT_TOKEN}\r\nX-Celln-Backend: {backend}\r\nContent-Length: {}\r\n", unavailable_body.len());
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/executions",
+                &unavailable_headers,
+                unavailable_body
+            )),
+            503
+        );
+        assert_eq!(
+            replica
+                .executions
+                .lookup("unavailable")
+                .unwrap()
+                .unwrap()
+                .backend,
+            backend
+        );
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/artifacts/prewarm",
+                &headers,
+                body
+            )),
+            503
+        );
+        assert_eq!(
+            parse_status(&request(&replica, "POST", "/v1/executions", &headers, body)),
+            503
+        );
+        assert!(matches!(spare.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock));
+    }
+
+    #[test]
+    fn backend_pin_refuses_untrusted_ambiguous_and_unbounded_requests() {
+        const READ_TOKEN: &str = "read-only-pinned-test-credential-24";
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        state.backends = vec!["http://127.0.0.1:1".into()];
+        let auth = format!("Authorization: Bearer {CLIENT_TOKEN}\r\n");
+        let pin = "X-Celln-Backend: http://127.0.0.1:1\r\n";
+        for (method, path, headers, status) in [
+            (
+                "POST",
+                "/v1/artifacts/prewarm",
+                format!("{pin}Content-Length: 2\r\n"),
+                401,
+            ),
+            (
+                "POST",
+                "/v1/artifacts/prewarm",
+                format!("{auth}Content-Length: 2\r\n"),
+                400,
+            ),
+            (
+                "POST",
+                "/v1/artifacts/prewarm",
+                format!("{auth}{pin}{pin}Content-Length: 2\r\n"),
+                400,
+            ),
+            (
+                "POST",
+                "/v1/artifacts/prewarm",
+                format!(
+                    "{auth}X-Celln-Backend: http://unconfigured.invalid\r\nContent-Length: 2\r\n"
+                ),
+                400,
+            ),
+            (
+                "POST",
+                "/v1/artifacts/prewarm",
+                format!("{auth}{pin}Content-Length: 65537\r\n"),
+                413,
+            ),
+            (
+                "POST",
+                "/v1/artifacts/prewarm",
+                format!("{auth}{pin}Content-Length: 0\r\n"),
+                413,
+            ),
+            ("GET", "/v1/executions/pinned", format!("{auth}{pin}"), 400),
+            (
+                "POST",
+                "/v1/executions/pinned/cancel",
+                format!("{auth}{pin}"),
+                400,
+            ),
+        ] {
+            assert_eq!(
+                parse_status(&request(&state, method, path, &headers, "{}")),
+                status
+            );
+        }
+        let read_file = dir.path().join("read-token");
+        std::fs::write(&read_file, READ_TOKEN).unwrap();
+        state.capability_token_file = Some(read_file);
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "POST",
+                "/v1/artifacts/prewarm",
+                &format!("Authorization: Bearer {READ_TOKEN}\r\n{pin}Content-Length: 2\r\n"),
+                "{}"
+            )),
+            401
+        );
+        assert!(state.executions.lookup("pinned").unwrap().is_none());
     }
 
     // Actual TCP request parsing/forwarding; backend is a protocol fixture,
