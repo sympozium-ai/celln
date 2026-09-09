@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+mod configuration;
 mod harness;
+pub use configuration::ConfigurationRole;
 pub use harness::{BorrowedTool, HarnessBinding, JsonHarnessOptions, JsonToolIo};
 
 /// A cell specification.

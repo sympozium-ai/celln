@@ -11,6 +11,15 @@ use std::time::Duration;
 mod post;
 pub use post::JsonPostGrant;
 
+/// Independent credential-free GET authority for native starter tools.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetGrant {
+    pub allow_hosts: Vec<String>,
+    pub max_requests: usize,
+    pub max_response_bytes: usize,
+    pub timeout: Duration,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpPolicy {
     /// Exact DNS names this cell may contact. Empty means no egress.
@@ -21,6 +30,11 @@ pub struct HttpPolicy {
     /// Additional operator-owned authority. A GET host grant never implies
     /// POST or access to provider credentials.
     pub json_posts: Vec<JsonPostGrant>,
+    /// Independent run-data authority; HTTPS/model grants never imply this.
+    pub workspace: Option<crate::workspace_broker::Grant>,
+    /// None preserves the legacy shared GET/model budget. Some uses an
+    /// independent GET budget; an empty allowlist explicitly denies all GETs.
+    pub get: Option<GetGrant>,
 }
 
 impl HttpPolicy {
@@ -31,6 +45,8 @@ impl HttpPolicy {
             max_response_bytes: 1 << 20,
             timeout: Duration::from_secs(10),
             json_posts: Vec::new(),
+            workspace: None,
+            get: None,
         }
     }
 }
@@ -56,6 +72,7 @@ pub enum FetchDenied {
 pub struct HttpBroker {
     policy: HttpPolicy,
     used: usize,
+    get_used: usize,
     post_output_reserved: std::collections::BTreeMap<String, u64>,
 }
 
@@ -64,6 +81,7 @@ impl HttpBroker {
         Self {
             policy,
             used: 0,
+            get_used: 0,
             post_output_reserved: Default::default(),
         }
     }
@@ -138,20 +156,67 @@ impl HttpBroker {
             ));
         }
         if raw.starts_with('{') {
+            let value: serde_json::Value = serde_json::from_str(raw)
+                .map_err(|_| FetchDenied::Fetch("invalid broker request".into()))?;
+            if value.get("apiVersion").and_then(|v| v.as_str()) == Some("celln.workspace/v1") {
+                return self
+                    .policy
+                    .workspace
+                    .as_ref()
+                    .ok_or_else(|| FetchDenied::Fetch("workspace access not granted".into()))?
+                    .request(raw)
+                    .map_err(FetchDenied::Fetch);
+            }
             return self.post_json(raw);
         }
         let mut url = raw.to_owned();
         for _ in 0..=5 {
-            if self.used >= self.policy.max_requests {
+            let (max_requests, max_response_bytes, timeout, used) = match &self.policy.get {
+                Some(grant) => (
+                    grant.max_requests,
+                    grant.max_response_bytes,
+                    grant.timeout,
+                    self.get_used,
+                ),
+                None => (
+                    self.policy.max_requests,
+                    self.policy.max_response_bytes,
+                    self.policy.timeout,
+                    self.used,
+                ),
+            };
+            if used >= max_requests {
                 return Err(FetchDenied::Budget);
+            }
+            // Validate the independent GET allowlist before any DNS or I/O.
+            if let Some(grant) = &self.policy.get {
+                let authority = url
+                    .strip_prefix("https://")
+                    .ok_or(FetchDenied::Scheme)?
+                    .split('/')
+                    .next()
+                    .unwrap_or_default();
+                let host = authority.split(':').next().unwrap_or_default();
+                if !grant
+                    .allow_hosts
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(host))
+                {
+                    return Err(FetchDenied::Host(host.into()));
+                }
             }
             let (host, ip) = self.authorize(&url)?;
             self.used += 1;
+            self.get_used += 1;
             let header =
                 tempfile::NamedTempFile::new().map_err(|e| FetchDenied::Fetch(e.to_string()))?;
             let out = celln_control::process::output_with_timeout(
                 Command::new("curl")
                     .args([
+                        "--disable",
+                        "--globoff",
+                        "--noproxy",
+                        "*",
                         "--silent",
                         "--show-error",
                         "--proto",
@@ -160,15 +225,15 @@ impl HttpBroker {
                         "0",
                     ])
                     .arg("--max-time")
-                    .arg(self.policy.timeout.as_secs().to_string())
+                    .arg(timeout.as_secs_f64().to_string())
                     .arg("--max-filesize")
-                    .arg(self.policy.max_response_bytes.to_string())
+                    .arg(max_response_bytes.to_string())
                     .arg("--resolve")
                     .arg(format!("{host}:443:{ip}"))
                     .arg("--dump-header")
                     .arg(header.path())
                     .arg(&url),
-                Some(self.policy.timeout),
+                Some(timeout),
             )
             .map_err(|e| FetchDenied::Fetch(e.to_string()))?;
             let headers = std::fs::read_to_string(header.path()).unwrap_or_default();
@@ -177,7 +242,7 @@ impl HttpBroker {
                     String::from_utf8_lossy(&out.stderr).trim().into(),
                 ));
             }
-            if out.stdout.len() > self.policy.max_response_bytes {
+            if out.stdout.len() > max_response_bytes {
                 return Err(FetchDenied::Fetch("response exceeded byte budget".into()));
             }
             let (status, location) = response_status_and_location(&headers)

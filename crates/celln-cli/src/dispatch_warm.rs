@@ -4,9 +4,8 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use warden::vmm::boot::{BootConfig, BootEnd, LinuxCell, Mote};
 
-// One retained template bounds idle RAM to one configured guest. In-flight
-// forks keep their own references. This is separate from active guest-RAM
-// reservations; it is not included in a process-RSS guarantee.
+// The cache retains one template. Explicit pins and in-flight forks can retain
+// evicted templates too; their owners must account for that memory separately.
 type Cached = Option<(String, Arc<Mote>, Availability)>;
 
 #[derive(Clone, serde::Serialize)]
@@ -39,6 +38,30 @@ pub(super) fn fork(
     tools: Vec<String>,
     prepare: impl FnOnce() -> Result<(BootConfig, Vec<u8>), String>,
 ) -> Result<LinuxCell, String> {
+    pin(key, tools, prepare)?.fork()
+}
+
+/// A prepared substrate retained independently of cache eviction. It carries
+/// no per-cell invocation, model credentials, or execution authorization.
+/// An enduring owner must acquire this before accepting turns, account for its
+/// retained memory, and recheck live admission/grants before each child fork.
+pub(super) struct PinnedMote {
+    mote: Arc<Mote>,
+}
+
+impl PinnedMote {
+    /// Strictly fork-only: no cache lookup, preparation callback or boot path.
+    pub(super) fn fork(&self) -> Result<LinuxCell, String> {
+        celln_control::check().map_err(|e| e.to_string())?;
+        LinuxCell::fork_from(&self.mote).map_err(|e| e.to_string())
+    }
+}
+
+pub(super) fn pin(
+    key: String,
+    tools: Vec<String>,
+    prepare: impl FnOnce() -> Result<(BootConfig, Vec<u8>), String>,
+) -> Result<PinnedMote, String> {
     let mote = {
         let mutex = CACHE.get_or_init(|| Mutex::new(None));
         let mut cache = loop {
@@ -87,12 +110,63 @@ pub(super) fn fork(
         }
     };
     celln_control::check().map_err(|e| e.to_string())?;
-    LinuxCell::fork_from(&mote).map_err(|e| e.to_string())
+    Ok(PinnedMote { mote })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_mote_forks_after_eviction_while_parent_retains_context() {
+        let Some(initrd) = std::env::var_os("CELLN_PARENT_PROBE_INITRD") else {
+            eprintln!("skipping: requires CELLN_PARENT_PROBE_INITRD from mkparent-probe.sh");
+            return;
+        };
+        let Some(kernel) = BootConfig::host_kernel() else {
+            return;
+        };
+        if !std::path::Path::new("/dev/kvm").exists() {
+            return;
+        }
+        let _guard = PROOF_LOCK.lock().unwrap();
+        let pin = pin("parent-pin-proof".into(), vec![], || {
+            Ok((
+                BootConfig::new(kernel).with_initrd(std::path::PathBuf::from(initrd)),
+                vec![0; 4096],
+            ))
+        })
+        .unwrap();
+        let mut parent = pin.fork().unwrap();
+        parent.enable_parent_mailbox().unwrap();
+        parent
+            .deliver_parent_message(b"remember:parent-only")
+            .unwrap();
+        assert_eq!(parent.run().unwrap().end, BootEnd::Parked);
+        assert_eq!(
+            parent.take_parent_response().unwrap().unwrap(),
+            b"1:parent-only"
+        );
+        evict();
+        // The cache is empty. These calls cannot prepare or boot a template.
+        for turn in 2..=3 {
+            let mut child = pin.fork().unwrap();
+            child.enable_parent_mailbox().unwrap();
+            child.deliver_parent_message(b"recall").unwrap();
+            let report = child.run().unwrap();
+            assert_eq!(report.end, BootEnd::Parked, "{}", report.tail(20));
+            assert!(!report.console.contains("Linux version"));
+            assert_eq!(child.take_parent_response().unwrap().unwrap(), b"1:");
+            drop(child);
+            parent.deliver_parent_message(b"recall").unwrap();
+            assert_eq!(parent.run().unwrap().end, BootEnd::Parked);
+            assert_eq!(
+                parent.take_parent_response().unwrap().unwrap(),
+                format!("{turn}:parent-only").as_bytes()
+            );
+        }
+        eprintln!("pinned mote proof: cache evicted, two real child VMs dropped, parent guest state retained");
+    }
     #[test]
     fn deadline_interrupts_waiting_for_another_preparation() {
         let _guard = CACHE.get_or_init(|| Mutex::new(None)).lock().unwrap();

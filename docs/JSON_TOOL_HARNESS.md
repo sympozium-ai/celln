@@ -20,6 +20,21 @@ Host configuration is one bounded JSON argument (at most 64 KiB) containing:
 
 - `contract: celln.json-tools/v1`, `task`, `system`, `url`, `model`.
 - `max_turns` (1–6), `max_calls` (0–16) and `tools` (0–16 entries).
+- Optional `require_tool_call: true` requires at least one actual tool execution
+  before reporting successful completion. It requires a nonempty selected tool
+  list, at least one call and at least two model turns. The first request uses
+  `tool_choice: required`; after execution the model can return a final answer.
+  A provider response that skips the required call fails locally without an
+  automatic retry or a fabricated successful result. Only already-lent tools
+  remain callable. This does not require every selected tool or a particular tool.
+  Omission/false preserves the previous optional-call behaviour and serialized
+  template bytes. Enabling it changes the immutable native turn-template binding
+  and therefore requires fresh corresponding host approval; it cannot be toggled
+  through turn message data. Older binaries refuse the new field rather than
+  silently ignoring it. Sympozium's enduring-run development integration maps
+  explicit `enduring.requireToolCall` intent through matching prepared parent
+  registration. The one-shot catalogue issuer is unchanged.
+  Provider semantics: [DeepSeek chat completions](https://api-docs.deepseek.com/api/create-chat-completion/).
 - Each tool has `name`, canonical absolute `path`, executable BLAKE3 `hash`,
   `description`, `input_schema`, `output_schema`, `input_bytes`, `output_bytes`
   and `timeout_ms`.

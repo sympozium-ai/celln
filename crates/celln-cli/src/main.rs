@@ -69,6 +69,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Publish one run's parent authority from an independently authorized local plan; does not launch.
+    ParentProvision {
+        plan: PathBuf,
+        #[arg(long)]
+        principal: String,
+    },
     /// Inspect a request binding for operator review; grants no authority.
     HarnessBinding { request: PathBuf },
     /// Inspect this host's boot clock for bounded model-profile expiry (no authority).
@@ -498,6 +504,17 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::ParentProvision { plan, principal } => {
+            #[cfg(target_os = "linux")]
+            {
+                dispatch::parent_create::provision_file(&root, plan, principal)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (plan, principal);
+                anyhow::bail!("parent provisioning requires Linux host authority")
+            }
+        }
         Cmd::HarnessBinding { request } => dispatch::harness::inspect_binding(request),
         Cmd::Closure(ClosureCmd::AdmitPrepared {
             candidate,

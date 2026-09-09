@@ -223,9 +223,9 @@ pub enum BootEnd {
     TimedOut,
     /// The vCPU halted with nothing left to wake it.
     Halted,
-    /// The guest printed the marker set by
-    /// [`LinuxCell::stop_when_guest_prints`]. The vCPU is at a clean exit
-    /// boundary and can be parked with [`LinuxCell::park`].
+    /// The guest reached a configured marker/live signal or committed a parent
+    /// mailbox response. A parent must resume this same VM; it cannot be made
+    /// into a reusable mote. Inspect `take_parent_response` for mailbox data.
     Parked,
 }
 
@@ -838,6 +838,8 @@ pub struct LinuxCell {
     fetch_response: VecDeque<u8>,
     /// Per-cell, one-shot invocation data. Never captured in a mote.
     invocation: Option<VecDeque<u8>>,
+    /// Live parent data is never captured into a reusable mote.
+    parent_mailbox: Option<crate::parent_mailbox::ParentMailbox>,
     /// The PCI configuration address latch (port 0xcf8).
     ///
     /// We emulate no PCI devices, but the kernel must still *detect* a type-1
@@ -984,6 +986,7 @@ impl LinuxCell {
             fetch_activity: (0, 0, 0),
             fetch_response: VecDeque::new(),
             invocation: None,
+            parent_mailbox: None,
             pci_cf8: 0,
             revoke_trigger: None,
             stop_marker: None,
@@ -1053,6 +1056,32 @@ impl LinuxCell {
         Ok(())
     }
 
+    /// Enable the optional parent data transport once. Admission, lease and
+    /// child authorization remain the owner's responsibility.
+    pub fn enable_parent_mailbox(&mut self) -> Result<(), VmmError> {
+        if self.parent_mailbox.is_some() {
+            return Err(VmmError::Backend("parent mailbox already enabled".into()));
+        }
+        self.parent_mailbox = Some(Default::default());
+        Ok(())
+    }
+
+    pub fn deliver_parent_message(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
+        self.parent_mailbox
+            .as_mut()
+            .ok_or_else(|| VmmError::Backend("parent mailbox disabled".into()))?
+            .deliver(bytes)
+            .map_err(|e| VmmError::Backend(e.to_string()))
+    }
+
+    pub fn take_parent_response(&mut self) -> Result<Option<Vec<u8>>, VmmError> {
+        self.parent_mailbox
+            .as_mut()
+            .ok_or_else(|| VmmError::Backend("parent mailbox disabled".into()))?
+            .take_response()
+            .map_err(|e| VmmError::Backend(e.to_string()))
+    }
+
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.cfg.timeout = timeout;
     }
@@ -1105,14 +1134,19 @@ impl LinuxCell {
         self.stop_marker = Some(marker.as_bytes().to_vec());
     }
 
+    /// Resume without re-triggering a completed host-selected startup marker.
+    pub fn clear_stop_marker(&mut self) {
+        self.stop_marker = None;
+    }
+
     /// Park this booted guest as a [`Mote`] that cells can be forked from.
     ///
     /// Call after a run that stopped at a marker, so the vCPU is at an
     /// instruction boundary with no I/O completion outstanding.
     pub fn park(&self) -> Result<Mote, VmmError> {
-        if self.invocation.is_some() || self.http.is_some() {
+        if self.invocation.is_some() || self.http.is_some() || self.parent_mailbox.is_some() {
             return Err(VmmError::Backend(
-                "cannot park per-cell invocation or egress authority".into(),
+                "cannot park per-cell invocation, parent mailbox or egress authority".into(),
             ));
         }
         let vcpu = &self.vcpu;
@@ -1350,6 +1384,7 @@ impl LinuxCell {
                 fetch_activity: (0, 0, 0),
                 fetch_response: VecDeque::new(),
                 invocation: None,
+                parent_mailbox: None,
                 pci_cf8: 0,
                 revoke_trigger: None,
                 stop_marker: None,
@@ -1486,6 +1521,17 @@ impl LinuxCell {
                                         }
                                     }
                                 }
+                            } else if port == crate::parent_mailbox::TX {
+                                if let Some(mailbox) = self.parent_mailbox.as_mut() {
+                                    mailbox.write(data);
+                                }
+                            } else if port == crate::parent_mailbox::COMMIT {
+                                if let Some(mailbox) = self.parent_mailbox.as_mut() {
+                                    mailbox.commit(data);
+                                    // Resume this same vCPU, never snapshot it:
+                                    // KVM completes the pending OUT on re-entry.
+                                    stop_at_marker = true;
+                                }
                             } else if port == PILOT_FETCH_TX {
                                 // Bounded before allocation: a malicious cell
                                 // cannot make the host buffer an unbounded URL.
@@ -1522,6 +1568,12 @@ impl LinuxCell {
                                         .as_mut()
                                         .and_then(|q| q.pop_front())
                                         .unwrap_or(0xff);
+                                }
+                            } else if port == crate::parent_mailbox::RX {
+                                if let Some(mailbox) = self.parent_mailbox.as_mut() {
+                                    mailbox.read(data);
+                                } else {
+                                    data.fill(0xff);
                                 }
                             } else if port == PILOT_FETCH_RX {
                                 for b in data.iter_mut() {
@@ -1738,6 +1790,202 @@ fn set_long_mode(vcpu: &VcpuFd) -> Result<(), VmmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_owner_cancels_real_guest_and_joins_vm_owner() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = std::env::var_os("CELLN_PARENT_PROBE_INITRD") else {
+            eprintln!("skipping: explicit parent probe initrd required");
+            return;
+        };
+        let (entered, observe) = std::sync::mpsc::sync_channel(1);
+        let owner = crate::parent_owner::ParentOwner::spawn(Duration::from_secs(30), move || {
+            let prepare = || -> Result<LinuxCell, VmmError> {
+                let mut template =
+                    LinuxCell::boot(BootConfig::new(kernel).with_initrd(PathBuf::from(initrd)))?;
+                template.stop_when_guest_prints("CELLN:parent_fixture=parked");
+                if template.run()?.end != BootEnd::Parked {
+                    return Err(VmmError::Backend("template failed".into()));
+                }
+                let mote = template.park()?;
+                drop(template);
+                let mut cell = LinuxCell::fork_from(&mote)?;
+                cell.enable_parent_mailbox()?;
+                Ok(cell)
+            };
+            let mut cell = prepare().map_err(|e| e.to_string())?;
+            Ok(move |bytes: &[u8]| {
+                cell.deliver_parent_message(bytes)
+                    .map_err(|e| e.to_string())?;
+                cell.stop_when_guest_prints("CELLN:parent_busy=entered");
+                let report = cell.run().map_err(|e| e.to_string())?;
+                if report.end != BootEnd::Parked
+                    || !report.console.contains("CELLN:parent_busy=entered")
+                {
+                    return Err("guest did not reach busy probe".into());
+                }
+                entered.send(()).map_err(|e| e.to_string())?;
+                cell.stop_when_guest_prints("CELLN:never-emitted-after-busy");
+                let result = cell.run().map_err(|e| e.to_string());
+                match result {
+                    Ok(report) if report.end == BootEnd::TimedOut => {
+                        Err("guest execution cancelled".into())
+                    }
+                    Err(error) => Err(error),
+                    Ok(report) => Err(format!(
+                        "unexpected guest termination {:?}: {}",
+                        report.end,
+                        report.tail(10)
+                    )),
+                }
+            })
+        })
+        .unwrap();
+        let reply = owner.submit(b"busy").unwrap();
+        observe
+            .recv_timeout(Duration::from_secs(20))
+            .expect("real guest busy marker");
+        // Let the owner re-enter KVM. The assertion below requires its run
+        // report, so cancellation before entry cannot masquerade as this proof.
+        std::thread::sleep(Duration::from_millis(20));
+        owner.cancel();
+        let result = reply
+            .recv_timeout(Duration::from_secs(2))
+            .expect("KVM stopped promptly");
+        assert_eq!(result.unwrap_err(), "guest execution cancelled");
+        owner.stop_and_join().unwrap();
+        eprintln!("parent owner proof: guest reached busy code, cancellation returned, VM-owning thread joined");
+    }
+
+    /// Real guest heap and instruction continuation, not a host transcript.
+    /// This fixture proves transport/state retention only, not Harness admission.
+    #[test]
+    fn child_cancellation_preserves_live_parent_guest_context() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = std::env::var_os("CELLN_PARENT_PROBE_INITRD") else {
+            eprintln!("skipping: explicit parent probe initrd required");
+            return;
+        };
+        let control = celln_control::Control::new(Duration::from_secs(60)).unwrap();
+        control.scope(|| {
+            let mut template = LinuxCell::boot(BootConfig::new(kernel).with_initrd(PathBuf::from(initrd))).unwrap();
+            template.stop_when_guest_prints("CELLN:parent_fixture=parked");
+            assert_eq!(template.run().unwrap().end, BootEnd::Parked);
+            let mote = template.park().unwrap();
+            drop(template);
+            let mut parent = LinuxCell::fork_from(&mote).unwrap();
+            parent.enable_parent_mailbox().unwrap();
+            parent.deliver_parent_message(b"remember:survives-child-cancel").unwrap();
+            let report = parent.run().unwrap();
+            assert_eq!(report.end, BootEnd::Parked);
+            assert!(!report.console.contains("Linux version"));
+            assert_eq!(parent.take_parent_response().unwrap().unwrap(), b"1:survives-child-cancel");
+
+            let child_control = control.child(Duration::from_secs(30)).unwrap();
+            let mut child = LinuxCell::fork_from(&mote).unwrap();
+            child.enable_parent_mailbox().unwrap();
+            child.deliver_parent_message(b"busy").unwrap();
+            child.stop_when_guest_prints("CELLN:parent_busy=entered");
+            let entered = child_control.scope(|| child.run()).unwrap();
+            assert_eq!(entered.end, BootEnd::Parked);
+            assert!(entered.console.contains("CELLN:parent_busy=entered"));
+            assert!(!entered.console.contains("Linux version"));
+            child.stop_when_guest_prints("CELLN:never-emitted-after-busy");
+            let cancel = child_control.clone();
+            let canceller = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(20));
+                cancel.cancel();
+            });
+            let started = std::time::Instant::now();
+            let stopped = child_control.scope(|| child.run());
+            canceller.join().unwrap();
+            assert_eq!(stopped.unwrap().end, BootEnd::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(3));
+            drop(child); // Actual VM owner gone before parent continuation.
+            assert!(control.check().is_ok());
+            parent.deliver_parent_message(b"recall").unwrap();
+            let report = parent.run().unwrap();
+            assert_eq!(report.end, BootEnd::Parked);
+            assert!(!report.console.contains("Linux version"));
+            assert_eq!(parent.take_parent_response().unwrap().unwrap(), b"2:survives-child-cancel");
+
+            let mut next = LinuxCell::fork_from(&mote).unwrap();
+            next.enable_parent_mailbox().unwrap();
+            next.deliver_parent_message(b"recall").unwrap();
+            let next_control = control.child(Duration::from_secs(10)).unwrap();
+            assert_eq!(next_control.scope(|| next.run()).unwrap().end, BootEnd::Parked);
+            assert_eq!(next.take_parent_response().unwrap().unwrap(), b"1:");
+            drop(next);
+            drop(parent);
+            eprintln!("child cancellation proof: real busy child stopped/destroyed; original parent recalled private guest context; fresh child executed with independent state");
+        });
+    }
+
+    /// Real guest heap and instruction continuation, not a host transcript.
+    /// This fixture proves transport/state retention only, not Harness admission.
+    #[test]
+    fn parent_guest_retains_heap_across_mailbox_turns() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let Some(initrd) = std::env::var_os("CELLN_PARENT_PROBE_INITRD") else {
+            eprintln!(
+                "skipping: build scripts/mkparent-probe.sh and set CELLN_PARENT_PROBE_INITRD"
+            );
+            return;
+        };
+        let mut template =
+            LinuxCell::boot(BootConfig::new(kernel).with_initrd(PathBuf::from(initrd))).unwrap();
+        template.stop_when_guest_prints("CELLN:parent_fixture=parked");
+        let boot = template.run().unwrap();
+        assert_eq!(boot.end, BootEnd::Parked, "{}", boot.tail(20));
+        let mote = template.park().unwrap();
+        let mut parent = LinuxCell::fork_from(&mote).unwrap();
+        parent.enable_parent_mailbox().unwrap();
+        for (input, expected) in [
+            (
+                &b"remember:guest-private-context"[..],
+                &b"1:guest-private-context"[..],
+            ),
+            (&b"recall"[..], &b"2:guest-private-context"[..]),
+            (&b"recall"[..], &b"3:guest-private-context"[..]),
+        ] {
+            parent.deliver_parent_message(input).unwrap();
+            let report = parent.run().unwrap();
+            assert_eq!(report.end, BootEnd::Parked, "{}", report.tail(20));
+            assert!(!report.console.contains("Linux version"));
+            assert_eq!(parent.take_parent_response().unwrap().unwrap(), expected);
+            assert!(parent.park().is_err());
+        }
+        let mut other = LinuxCell::fork_from(&mote).unwrap();
+        other.enable_parent_mailbox().unwrap();
+        other.deliver_parent_message(b"recall").unwrap();
+        let report = other.run().unwrap();
+        assert_eq!(report.end, BootEnd::Parked, "{}", report.tail(20));
+        assert_eq!(other.take_parent_response().unwrap().unwrap(), b"1:");
+        eprintln!(
+            "parent proof: 3 turns, retained guest heap, independent warm fork has no context"
+        );
+    }
+
+    #[test]
+    fn parent_mailbox_cannot_be_reenabled_or_captured_in_a_mote() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        let mut cell = LinuxCell::boot(BootConfig::new(kernel)).unwrap();
+        assert!(cell.deliver_parent_message(b"hello").is_err());
+        assert!(cell.take_parent_response().is_err());
+        cell.enable_parent_mailbox().unwrap();
+        assert!(cell.enable_parent_mailbox().is_err());
+        assert!(cell.park().is_err());
+        cell.deliver_parent_message(b"hello").unwrap();
+        assert!(cell.deliver_parent_message(b"overwrite").is_err());
+    }
 
     #[test]
     fn invocation_is_bounded_one_shot_and_cannot_be_parked() {

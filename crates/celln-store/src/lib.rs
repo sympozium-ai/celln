@@ -8,6 +8,7 @@
 //! No KVM here — this is plain filesystem work and is fully tested.
 
 use celln_manifest::Hash;
+pub mod workspace;
 use std::fs;
 use std::io;
 use std::io::Read;

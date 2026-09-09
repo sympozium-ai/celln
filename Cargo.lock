@@ -192,12 +192,14 @@ version = "0.5.7"
 dependencies = [
  "anyhow",
  "celln-assay",
+ "celln-control",
  "celln-manifest",
  "celln-store",
  "celln-warden",
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -205,6 +207,7 @@ dependencies = [
 name = "celln-spec"
 version = "0.5.7"
 dependencies = [
+ "celln-manifest",
  "serde",
  "serde_json",
  "thiserror",
@@ -227,6 +230,7 @@ version = "0.5.7"
 dependencies = [
  "celln-control",
  "celln-manifest",
+ "celln-store",
  "kvm-bindings",
  "kvm-ioctls",
  "libc",

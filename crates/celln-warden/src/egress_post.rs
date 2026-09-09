@@ -189,7 +189,12 @@ impl HttpBroker {
         let request = parse(raw)?;
         let grant = self.grant_for(&request)?.clone();
         let output_tokens = validate_chat(&request.body, &grant)?;
-        if self.used >= self.policy.max_requests {
+        let used = if self.policy.get.is_some() {
+            self.used - self.get_used
+        } else {
+            self.used
+        };
+        if used >= self.policy.max_requests {
             return Err(FetchDenied::Budget);
         }
         let reserved = self
@@ -290,6 +295,37 @@ mod tests {
     fn chat_body() -> serde_json::Value {
         serde_json::json!({"model":"approved","stream":false,"max_tokens":512,
             "messages":[{"role":"user","content":"hello"}]})
+    }
+
+    #[test]
+    fn independent_get_budget_cannot_buy_more_model_requests() {
+        let mut policy = model_policy();
+        policy.max_requests = 1;
+        policy.get = Some(crate::egress::GetGrant {
+            allow_hosts: vec!["fetch.invalid".into()],
+            max_requests: 3,
+            max_response_bytes: 1024,
+            timeout: std::time::Duration::from_secs(1),
+        });
+        let mut broker = HttpBroker::new(policy);
+        // Model allowance spent, GET allowance partially spent. Refusal must
+        // occur before DNS or credential access, regardless of GET headroom.
+        broker.used = 2;
+        broker.get_used = 1;
+        let request = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
+            "url":"https://provider.invalid/chat","body":chat_body()})
+        .to_string();
+        assert_eq!(broker.fetch(&request), Err(FetchDenied::Budget));
+        assert_eq!(
+            broker.fetch("https://provider.invalid/chat"),
+            Err(FetchDenied::Host("provider.invalid".into()))
+        );
+        broker.get_used = 3;
+        broker.used = 4;
+        assert_eq!(
+            broker.fetch("https://fetch.invalid/file"),
+            Err(FetchDenied::Budget)
+        );
     }
 
     #[test]
