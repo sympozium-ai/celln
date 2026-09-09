@@ -1,5 +1,11 @@
 # Native starter cold packaging
 
+Release archives from v0.5.8 include all binaries below under `share/celln/pilot`,
+alongside `share/celln/scripts` and `share/celln/guest`. Verify the archive SHA-256
+before extraction. `share/celln/SOURCE_REVISION` records the source commit.
+The archive does not include a kernel, publisher key, signed operator package,
+model credential or grant: those remain explicit local preparation steps.
+
 `celln starter-package` replaces the test-only artifact builder with a normal
 operator CLI. It does not launch a dispatcher, call a model, use Kubernetes,
 admit artifacts, or claim hardware conformance. It requires Linux, gcc, cpio,

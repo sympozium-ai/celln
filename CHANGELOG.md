@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.5.8
+
+### Added
+
+- Native persistent Harness parents with disposable per-turn cells, bounded
+  host-model access and explicitly borrowed workspace read/write and HTTPS tools.
+- Operator-signed starter packaging, hardware admission and reviewed configuration
+  commands. Linux amd64 archives now include the native parent, turn worker and
+  starter tool binaries; a matching versioned router/provisioner image is published.
+
+### Fixed
+
+- Preserve execution ownership and receipts across authenticated router restarts.
+- Confirm crashed native-owner cleanup from its recorded prelaunch process identity
+  without replaying work or claiming restored context.
+
+### Limits
+
+- Persistent means live context, not crash recovery. Parent loss loses volatile
+  context/files; old journals and host reboot cases remain conservatively fenced.
+- Native starter support is Linux amd64/KVM only. Python, shell, arbitrary OCI
+  Harness compatibility, checkpoints and pause/resume are not included.
+
 ## 0.5.7
 
 ### Added

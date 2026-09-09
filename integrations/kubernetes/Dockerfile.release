@@ -1,0 +1,8 @@
+# Static release CLI for the router and trusted native-parent provisioner.
+# This is not a guest image or a privileged host installer.
+FROM gcr.io/distroless/static:nonroot
+COPY bin/celln /usr/local/bin/celln
+COPY share/celln /opt/celln/runtime
+ENV CELLN_RUNTIME_DIR=/opt/celln/runtime
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/celln"]
