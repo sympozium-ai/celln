@@ -24,7 +24,7 @@ const PROGRAMS: &[(&str, &str)] = &[
     ("/https-fetch", "celln-https-fetch"),
 ];
 
-fn regular(path: &Path, bound: usize) -> Result<Vec<u8>> {
+pub(crate) fn regular(path: &Path, bound: usize) -> Result<Vec<u8>> {
     let file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -75,11 +75,14 @@ fn executable(path: &Path) -> Result<Vec<u8>> {
 
 pub fn run(runtime: &Path, guest: &Path, kernel: &Path, key: &Path, output: &Path) -> Result<u8> {
     let report = prepare(runtime, guest, kernel, key, output)?;
-    println!("{}", serde_json::to_string(&report)?);
+    println!(
+        "{}",
+        json!({"packageHash":Hash::of(&regular(&output.join("package.json"), 65536)?), "package":report})
+    );
     Ok(0)
 }
 
-fn prepare(
+pub(crate) fn prepare(
     runtime: &Path,
     guest: &Path,
     kernel: &Path,

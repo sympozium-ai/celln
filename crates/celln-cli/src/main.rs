@@ -22,6 +22,10 @@ mod router;
 mod run;
 mod schema_cli;
 #[cfg(target_os = "linux")]
+mod starter_admit;
+#[cfg(target_os = "linux")]
+mod starter_configure;
+#[cfg(target_os = "linux")]
 mod starter_package;
 
 use anyhow::{Context, Result};
@@ -71,6 +75,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Publish the bounded native starter model profile and installation metadata.
+    StarterConfigure {
+        plan: PathBuf,
+        #[arg(long)]
+        approve_starter_effects: bool,
+    },
+    /// Hash package metadata for operator review; does not verify or admit artifacts.
+    StarterInspect { package: PathBuf },
+    /// Verify and explicitly admit a reviewed starter package using existing publisher policy.
+    StarterAdmit {
+        package: PathBuf,
+        #[arg(long)]
+        package_hash: String,
+    },
     /// Cold-package the native parent/worker and three starter tools; grants no authority.
     StarterPackage {
         #[arg(long)]
@@ -519,6 +537,59 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::StarterConfigure {
+            plan,
+            approve_starter_effects,
+        } => {
+            anyhow::ensure!(
+                *approve_starter_effects && cli.root.is_some(),
+                "explicit --root and --approve-starter-effects required"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                starter_configure::run(plan, &root)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = plan;
+                anyhow::bail!("Unsupported: native starter requires Linux")
+            }
+        }
+        Cmd::StarterInspect { package } => {
+            #[cfg(target_os = "linux")]
+            {
+                let raw = starter_package::regular(&package.join("package.json"), 65536)?;
+                let metadata: serde_json::Value = serde_json::from_slice(&raw)?;
+                println!(
+                    "{}",
+                    serde_json::json!({"packageHash":celln_manifest::Hash::of(&raw),"metadata":metadata,"verified":false,"executionAuthorized":false})
+                );
+                Ok(0)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = package;
+                anyhow::bail!("Unsupported: starter packaging requires Linux")
+            }
+        }
+        Cmd::StarterAdmit {
+            package,
+            package_hash,
+        } => {
+            anyhow::ensure!(
+                cli.root.is_some(),
+                "starter admission requires explicit --root authority directory"
+            );
+            #[cfg(target_os = "linux")]
+            {
+                starter_admit::run(package, package_hash, &root)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (package, package_hash);
+                anyhow::bail!("Unsupported: starter admission requires Linux")
+            }
+        }
         Cmd::StarterPackage {
             runtime_dir,
             guest_dir,

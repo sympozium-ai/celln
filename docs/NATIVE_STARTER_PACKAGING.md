@@ -42,10 +42,60 @@ builds retain incomplete output without a completion marker. Inspect them and
 retry with a new directory; never overwrite an existing package or live authority
 root. Package files are private to the build user until deliberately distributed.
 
-Further installation work must independently validate the package, approve the
-publisher/motes, import verified artifacts, create bounded model/tool grants and
-bind Sympozium's installed catalogue identities. Packaging alone is not an
-installed native Harness.
+## Reviewed admission and starter configuration
+
+`starter-inspect PACKAGE` prints the metadata hash for operator review, without
+asserting verification. Independently approve the publisher in the authority
+root's `trusted-closures.json`; never derive trust merely from the package.
+
+```sh
+celln --root /var/lib/sympozium-celln/starter/authority starter-admit \
+  /var/lib/celln-packages/REVIEWED_PACKAGE \
+  --package-hash blake3:REVIEWED_PACKAGE_JSON_HASH
+```
+
+This verifies all five bundles and their signatures before store writes, then
+uses the existing hardware admission path: guest code hashes actual sealed
+closure members before each mote is added to policy. KVM, the build toolchain
+and compatible kernel are required. Failure can leave earlier admissions and
+evidence; it does not roll back authority or claim an atomic five-mote update.
+
+`celln --root ROOT starter-configure PLAN.json --approve-starter-effects`
+requires all five motes already admitted. The strict plan is:
+
+```json
+{
+  "apiVersion": "celln.native-starter-config/v1",
+  "package": "/var/lib/celln-packages/REVIEWED_PACKAGE",
+  "packageHash": "blake3:REVIEWED_PACKAGE_JSON_HASH",
+  "principal": "sympozium:celln-agents",
+  "credentialFile": "/etc/celln-native/model-token",
+  "output": "/var/lib/celln-configurations/NEW_CONFIGURATION"
+}
+```
+
+This explicitly approves the fixed first profile: DeepSeek `deepseek-chat`,
+three borrowed tools (run-owned read/write and bounded `example.com` HTTPS),
+one-hour parent lease, twelve turns, at most 36 model requests and 18432 output
+tokens. Per-turn limits are three model requests and 1536 output tokens; files
+are bounded to eight, 4096 bytes each, 16384 bytes total. Read/write and HTTPS
+effects each have four-operation limits. This is not arbitrary tool or model
+configuration. The credential path must be outside controller-mounted state;
+the command never reads the credential itself.
+
+Output `catalogue.json`, `native-template.json` and `configured.json` pins exact
+package/configuration hashes. A hash-addressed model profile is installed in
+the authority root. No per-run permit, parent or Kubernetes resource is created.
+Sympozium's `celln-tool install-native` binds actual installed Kubernetes UIDs
+and the three grant layers; do not copy fixture identities. Partial output is
+retained on failure, never silently adopted or overwritten.
+
+The owner also needs an independent `trusted-parent-clients.json` policy using
+`celln.parent-clients/v1`, with `clients` entries binding `principal` to the
+BLAKE3 hash of a high-entropy bearer token (without a trailing newline). This
+policy is separate from the dispatcher's generic `--token-file`. Missing parent
+authentication policy fails closed with 503; unauthenticated requests with a
+valid policy get 401. Keep plaintext credentials and signing seeds private.
 
 ## Evidence — 2026-09-09
 
