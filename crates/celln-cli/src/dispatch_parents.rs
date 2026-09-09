@@ -194,8 +194,23 @@ pub(super) fn handle(
             )
             .unwrap_or(false) =>
         {
-            // Durable ownership permits reading evidence, never turn delivery,
-            // cancellation or a claim that teardown was confirmed after restart.
+            // No replay or cancellation without the live owner. Stop may
+            // acknowledge teardown only from the pre-launch host-process
+            // identity and an actual same-host process-exit observation.
+            if method == "POST"
+                && action == Some("stop")
+                && turn.is_none()
+                && warden::parent_journal::historical_teardown(
+                    &state.root.join("parent-journal"),
+                    &id,
+                    &principal,
+                )
+                .unwrap_or(false)
+            {
+                // Preserve the existing strict stop-response ABI. Historical
+                // GET still reports ContextLost and retryAuthorized:false.
+                return reply(stream, 200, &json!({"teardownConfirmed":true}));
+            }
             if method != "GET" {
                 return reply(
                     stream,

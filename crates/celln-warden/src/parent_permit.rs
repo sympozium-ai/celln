@@ -425,6 +425,7 @@ pub fn claim(
         expected.incarnation.clone(),
     )?;
     journal.bind_owner(principal)?;
+    journal.bind_process()?;
     Ok((lease, journal))
 }
 
