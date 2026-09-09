@@ -21,6 +21,8 @@ mod out;
 mod router;
 mod run;
 mod schema_cli;
+#[cfg(target_os = "linux")]
+mod starter_package;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -69,6 +71,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Cold-package the native parent/worker and three starter tools; grants no authority.
+    StarterPackage {
+        #[arg(long)]
+        runtime_dir: PathBuf,
+        #[arg(long)]
+        guest_dir: PathBuf,
+        #[arg(long)]
+        kernel: PathBuf,
+        #[arg(long)]
+        signing_key: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Publish one run's parent authority from an independently authorized local plan; does not launch.
     ParentProvision {
         plan: PathBuf,
@@ -504,6 +519,23 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::StarterPackage {
+            runtime_dir,
+            guest_dir,
+            kernel,
+            signing_key,
+            output,
+        } => {
+            #[cfg(target_os = "linux")]
+            {
+                starter_package::run(runtime_dir, guest_dir, kernel, signing_key, output)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (runtime_dir, guest_dir, kernel, signing_key, output);
+                anyhow::bail!("Unsupported: native starter packaging requires Linux")
+            }
+        }
         Cmd::ParentProvision { plan, principal } => {
             #[cfg(target_os = "linux")]
             {
