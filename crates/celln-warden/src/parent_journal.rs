@@ -65,6 +65,104 @@ struct OwnerRecord {
     principal: String,
 }
 
+/// Host-process identity, not a checkpoint or authority to restart. Kept in a
+/// separate record so journals from older owners remain readable but cannot
+/// acquire a teardown guarantee retroactively.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessRecord {
+    version: u8,
+    parent: Hash,
+    boot: String,
+    pid_namespace: u64,
+    uid: u32,
+    pid: u32,
+    start_ticks: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn process_context() -> io::Result<(String, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+    let boot = boot.trim().to_owned();
+    if boot.len() != 36 || !boot.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+        return Err(invalid());
+    }
+    Ok((boot, fs::metadata("/proc/self/ns/pid")?.ino()))
+}
+
+#[cfg(target_os = "linux")]
+fn process_start(pid: u32) -> io::Result<u64> {
+    let mut stat = String::new();
+    fs::File::open(format!("/proc/{pid}/stat"))?
+        .take(16385)
+        .read_to_string(&mut stat)?;
+    if stat.len() > 16384 {
+        return Err(invalid());
+    }
+    // comm (field 2) may contain whitespace and parentheses. Field 22 is
+    // starttime; parse only after the final closing parenthesis.
+    stat.rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|ticks| ticks.parse::<u64>().ok())
+        .filter(|ticks| *ticks != 0)
+        .ok_or_else(invalid)
+}
+
+/// Confirm the original *whole host process* is gone on the same Linux boot
+/// and PID namespace. Native parent/child KVM fds live in that process, never
+/// a detached VMM process. Missing registry entries alone prove nothing.
+/// Different boots/namespaces, legacy journals and unreadable procfs refuse.
+/// This must not be reused for an out-of-process VMM backend.
+pub fn historical_teardown(root: &Path, parent: &Hash, principal: &str) -> io::Result<bool> {
+    if !historical_owner(root, parent, principal)? {
+        return Ok(false);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let process: ProcessRecord =
+            read_record(&parent_directory(root, parent).join("process.json"))?;
+        let (boot, namespace) = process_context()?;
+        use std::os::unix::fs::MetadataExt;
+        if process.version != 1
+            || process.parent != *parent
+            || process.pid == 0
+            || process.start_ticks == 0
+            || process.boot != boot
+            || process.pid_namespace != namespace
+            || process.uid != fs::metadata("/proc/self")?.uid()
+        {
+            return Err(invalid());
+        }
+        match process_start(process.pid) {
+            Ok(start) => Ok(start != process.start_ticks), // PID reused: old group has exited.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // procfs may hide another process. ESRCH from the kernel's
+                // signal-zero lookup independently confirms absence; EPERM
+                // and a successful lookup are never teardown evidence.
+                #[cfg(feature = "kvm")]
+                {
+                    let pid = i32::try_from(process.pid).map_err(|_| invalid())?;
+                    let result = unsafe { libc::kill(pid, 0) };
+                    Ok(result == -1
+                        && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH))
+                }
+                #[cfg(not(feature = "kvm"))]
+                Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "process exit confirmation requires native backend",
+                ))
+            }
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "host process teardown requires Linux procfs",
+    ))
+}
+
 /// Authorize historical reads only. Never reconstruct an owner from this record
 /// or accept its principal from an unauthenticated request body.
 pub fn historical_owner(root: &Path, parent: &Hash, principal: &str) -> io::Result<bool> {
@@ -180,6 +278,34 @@ fn publish(directory: &Path, name: &str, value: &impl Serialize) -> io::Result<(
 }
 
 impl ParentJournal {
+    /// Called before native VM launch, while running in the process which owns
+    /// all native parent/child KVM file descriptors. Never backfill old journals.
+    pub fn bind_process(&self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let (boot, pid_namespace) = process_context()?;
+            let pid = std::process::id();
+            use std::os::unix::fs::MetadataExt;
+            publish(
+                &self.directory,
+                "process.json",
+                &ProcessRecord {
+                    version: 1,
+                    parent: self.parent.clone(),
+                    boot,
+                    pid_namespace,
+                    uid: fs::metadata("/proc/self")?.uid(),
+                    pid,
+                    start_ticks: process_start(pid)?,
+                },
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "host process identity requires Linux procfs",
+        ))
+    }
     /// Persist the independently authenticated owner before runtime creation.
     /// A missing/partial record permits no historical access and no replay.
     pub fn bind_owner(&self, principal: &str) -> io::Result<()> {
@@ -330,6 +456,49 @@ impl ParentJournal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn process_identity_helper() {
+        let Some(root) = std::env::var_os("CELLN_PROCESS_IDENTITY_TEST_ROOT") else {
+            return;
+        };
+        let journal = ParentJournal::create(Path::new(&root), Hash::of(b"process-test")).unwrap();
+        journal.bind_owner("tenant").unwrap();
+        journal.bind_process().unwrap();
+        // Parent kills and joins this real process after reading its record.
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "linux", feature = "kvm"))]
+    fn historical_teardown_requires_real_process_exit_and_preserves_tombstone() {
+        let root = tempfile::tempdir().unwrap();
+        let id = Hash::of(b"process-test");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "parent_journal::tests::process_identity_helper"])
+            .env("CELLN_PROCESS_IDENTITY_TEST_ROOT", root.path())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let path = parent_directory(root.path(), &id).join("process.json");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !path.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let live = historical_teardown(root.path(), &id, "tenant");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!live.unwrap());
+        assert!(!historical_teardown(root.path(), &id, "other").unwrap());
+        assert!(historical_teardown(root.path(), &id, "tenant").unwrap());
+        assert!(ParentJournal::create(root.path(), id.clone()).is_err());
+        let mut record: ProcessRecord = read_record(&path).unwrap();
+        record.pid_namespace += 1;
+        fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+        assert!(historical_teardown(root.path(), &id, "tenant").is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(historical_teardown(root.path(), &id, "tenant").is_err());
+    }
     #[test]
     fn historical_owner_is_immutable_scoped_and_not_execution_authority() {
         let root = tempfile::tempdir().unwrap();

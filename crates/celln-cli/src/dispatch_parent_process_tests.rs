@@ -219,7 +219,12 @@ pub(super) fn prove(root: &Path, borrowed: bool, binary: &Path) -> Vec<serde_jso
                 && status.contains("\"statusIsLiveOwnerObservation\":false"),
             "{status}"
         );
-        for action in ["turns", "stop", "cancel"] {
+        let stop = http(address, "POST", &format!("{path}/stop"), parent_token, "");
+        assert!(
+            stop.starts_with("HTTP/1.1 200") && stop.contains("\"teardownConfirmed\":true"),
+            "{stop}"
+        );
+        for action in ["turns", "cancel"] {
             assert!(http(
                 address,
                 "POST",

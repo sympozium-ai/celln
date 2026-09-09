@@ -78,3 +78,19 @@ automatic expiry. Do not publish the directory or mount it into guest workloads.
 An audit failure refuses result commitment after the child is destroyed; it
 does not refund the turn or make it retryable. Disable retention by removing the
 opt-in directory only when stopped, after handling any retained files explicitly.
+# Owner-process loss and cleanup
+
+New native parent claims persist the host process identity before launching a
+VM: Linux boot ID, PID namespace, UID, PID and process start ticks. After an
+owner-process restart, the authenticated stop route can confirm teardown only
+when that original process has exited in the same boot/namespace/user context.
+The native parent and its child KVM file descriptors are owned inside that
+process. A missing registry entry is not evidence of teardown; procfs errors,
+identity mismatches and legacy journals without the record fail closed.
+
+This acknowledges resource cleanup, **not context recovery**. Historical reads
+still report `ContextLost`, no turn is replayed, and the incarnation tombstone
+remains occupied. The stop response retains its existing wire format. This
+proof must not be reused for a backend which delegates VMM ownership to another
+process. Cross-reboot/migrated journals require separate operator reconciliation;
+never backfill process identities or delete journals to make cleanup succeed.
