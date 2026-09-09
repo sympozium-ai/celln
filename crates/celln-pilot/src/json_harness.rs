@@ -2,29 +2,42 @@
 //! already lent name; schemas and limits are immutable host-provided ceilings.
 use anyhow::{bail, ensure, Context, Result};
 use celln_manifest::{tool_schema::ToolSchema, Hash};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
 pub const CONTRACT: &str = "celln.json-tools/v1";
+
+/// Committed text context from the native parent, never system instructions,
+/// tool definitions, credentials, or unfinished tool calls.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Exchange {
+    pub user: String,
+    pub assistant: String,
+}
 
 #[cfg(test)]
 #[path = "json_harness_tests.rs"]
 mod tests;
 
 pub fn validate(config: &Config) -> Result<()> {
-    let tools = compile(config)?;
-    model_request(config, &tools, &initial_messages(config)).map(|_| ())
+    validate_with_history(config, &[])
 }
 
-#[derive(Deserialize)]
+pub fn validate_with_history(config: &Config, history: &[Exchange]) -> Result<()> {
+    let tools = compile(config)?;
+    model_request(config, &tools, &contextual_messages(config, history)?, 0).map(|_| ())
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Schema {
     pub bytes: String,
     pub hash: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tool {
     pub name: String,
@@ -38,7 +51,7 @@ pub struct Tool {
     pub timeout_ms: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub contract: String,
@@ -49,6 +62,14 @@ pub struct Config {
     pub tools: Vec<Tool>,
     pub max_turns: usize,
     pub max_calls: usize,
+    /// Explicit host-template requirement, not a grant to any additional tool.
+    /// Omission preserves the original serialized template and optional calls.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub require_tool_call: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 struct CheckedTool<'a> {
@@ -76,6 +97,11 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
         "turn/call/tool limit exceeds contract"
     );
     let mut names = BTreeSet::new();
+    ensure!(
+        !config.require_tool_call
+            || (!config.tools.is_empty() && config.max_calls > 0 && config.max_turns >= 2),
+        "required tool call needs a selected tool and call/result budgets"
+    );
     let mut paths = BTreeSet::new();
     config.tools.iter().map(|tool| {
         ensure!(!tool.name.is_empty() && tool.name.len() <= 64 && tool.name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
@@ -100,16 +126,28 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
 /// Tool transport receives exact model argument bytes AFTER schema validation.
 pub fn run(
     config: &Config,
+    broker: impl FnMut(&[u8]) -> Result<Vec<u8>>,
+    execute: impl FnMut(&Tool, &[u8]) -> Result<Vec<u8>>,
+    event: impl FnMut(Value),
+) -> Result<String> {
+    run_with_history(config, &[], broker, execute, event)
+}
+
+/// Explicit native turn-worker entry point. The one-shot adapter calls `run`
+/// with no history; existing config and grant formats remain unchanged.
+pub fn run_with_history(
+    config: &Config,
+    history: &[Exchange],
     mut broker: impl FnMut(&[u8]) -> Result<Vec<u8>>,
     mut execute: impl FnMut(&Tool, &[u8]) -> Result<Vec<u8>>,
     mut event: impl FnMut(Value),
 ) -> Result<String> {
     let tools = compile(config)?;
-    let mut messages = initial_messages(config);
+    let mut messages = contextual_messages(config, history)?;
     let mut ids = BTreeSet::new();
     let mut calls = 0usize;
     for turn in 0..config.max_turns {
-        let wire = model_request(config, &tools, &messages)?;
+        let wire = model_request(config, &tools, &messages, calls)?;
         let response = broker(&wire)?;
         ensure!(response.len() <= 1_048_576, "model response exceeds limit");
         let response: Value = serde_json::from_slice(&response)?;
@@ -130,6 +168,10 @@ pub fn run(
         );
         event(json!({"type":"model","turn":turn,"model":config.model}));
         if tool_calls.is_empty() {
+            ensure!(
+                !config.require_tool_call || calls > 0,
+                "model completed without required tool execution"
+            );
             let answer = message["content"]
                 .as_str()
                 .context("missing final answer")?;
@@ -210,16 +252,49 @@ fn initial_messages(config: &Config) -> Vec<Value> {
     messages
 }
 
+fn contextual_messages(config: &Config, history: &[Exchange]) -> Result<Vec<Value>> {
+    ensure!(history.len() <= 16, "parent history count exceeds limit");
+    let mut bytes = 0usize;
+    for exchange in history {
+        for text in [&exchange.user, &exchange.assistant] {
+            ensure!(
+                !text.trim().is_empty() && !text.contains('\0'),
+                "invalid parent history text"
+            );
+            bytes = bytes
+                .checked_add(text.len())
+                .context("parent history overflow")?;
+            ensure!(bytes <= 4096, "parent history exceeds byte limit");
+        }
+    }
+    let mut messages = initial_messages(config);
+    let current = messages.pop().expect("initial user message always present");
+    for exchange in history {
+        messages.push(json!({"role":"user", "content":exchange.user}));
+        messages.push(json!({"role":"assistant", "content":exchange.assistant}));
+    }
+    messages.push(current);
+    Ok(messages)
+}
+
 fn model_request(
     config: &Config,
     tools: &[CheckedTool<'_>],
     messages: &[Value],
+    calls: usize,
 ) -> Result<Vec<u8>> {
     let mut body =
         json!({"model":config.model,"stream":false,"max_tokens":512,"messages":messages});
     if !tools.is_empty() {
         body["tools"] = json!(tools.iter().map(|t| &t.definition).collect::<Vec<_>>());
-        body["tool_choice"] = json!("auto");
+        // Provider request is advisory; completion is independently checked
+        // above. Once a tool has run, allow the final answer without forcing
+        // another side effect or replenishing the existing call budget.
+        body["tool_choice"] = json!(if config.require_tool_call && calls == 0 {
+            "required"
+        } else {
+            "auto"
+        });
     }
     let wire = serde_json::to_vec(
         &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":config.url,"body":body}),

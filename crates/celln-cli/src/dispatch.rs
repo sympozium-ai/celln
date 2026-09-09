@@ -19,6 +19,8 @@ pub(crate) mod harness;
 mod substrate;
 pub(crate) use substrate::check_members;
 pub(crate) use substrate::launch_declared;
+#[cfg(target_os = "linux")]
+pub(crate) use substrate::parent_create;
 pub(crate) use substrate::validate_member_request;
 #[path = "dispatch_inputs.rs"]
 pub(crate) mod inputs;
@@ -512,8 +514,21 @@ fn validate_executed_tool(outcome: &mut LaunchOutcome, expected: &str) {
 fn run_cell(
     request: &ExecutionRequest,
     alias: &str,
+    cell: warden::vmm::boot::LinuxCell,
+    state_root: &Path,
+) -> Result<LaunchOutcome, String> {
+    run_cell_with_broker(request, alias, cell, state_root, None)
+}
+
+/// Internal explicit broker path for an independently admitted native worker.
+/// An explicit policy must not be replaced by the legacy direct-exec GET policy.
+#[cfg(target_os = "linux")]
+fn run_cell_with_broker(
+    request: &ExecutionRequest,
+    alias: &str,
     mut cell: warden::vmm::boot::LinuxCell,
     state_root: &Path,
+    broker: Option<warden::egress::HttpPolicy>,
 ) -> Result<LaunchOutcome, String> {
     cell.set_timeout(std::time::Duration::from_millis(
         request.capabilities.timeout_ms.max(1),
@@ -532,7 +547,9 @@ fn run_cell(
         .map(|record| record.id.clone())
         .unwrap_or_default();
 
-    if request.harness.is_none() && !request.capabilities.egress.is_empty() {
+    if let Some(policy) = broker {
+        cell.enable_http_fetch(policy);
+    } else if request.harness.is_none() && !request.capabilities.egress.is_empty() {
         let hosts: Vec<String> = request
             .capabilities
             .egress

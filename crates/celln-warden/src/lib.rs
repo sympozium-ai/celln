@@ -10,6 +10,14 @@
 //! feature-gated stub, because it needs bare metal.
 
 pub mod egress;
+pub mod parent_child_control;
+pub mod parent_journal;
+pub mod parent_lease;
+pub mod parent_mailbox;
+pub mod parent_owner;
+pub mod parent_permit;
+pub mod parent_protocol;
+pub mod parent_registry;
 pub mod ratchet;
 pub mod vmm;
 /// Maximum one-shot invocation data, including bounded immutable inputs.
@@ -136,3 +144,4 @@ mod tests {
         assert_eq!(cell.phase(), Phase::Dissolve);
     }
 }
+pub mod workspace_broker;

@@ -69,6 +69,7 @@ pub(super) fn prove_prewarm_on_kvm(request: &ExecutionRequest, root: &Path, sour
 }
 fn state(root: &Path) -> State {
     State {
+        parents: warden::parent_registry::ParentRegistry::new(1024, 268435456).unwrap(),
         token_file: PathBuf::new(),
         token: "public-prewarm-test-token-24bytes".into(),
         egress_policy: EgressPolicy::new(&[]).unwrap(),

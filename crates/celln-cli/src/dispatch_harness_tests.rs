@@ -198,6 +198,7 @@ fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool) {
         return;
     }
     let state = State {
+        parents: warden::parent_registry::ParentRegistry::new(1024, 268435456).unwrap(),
         prewarm: Mutex::new(None),
         token_file: PathBuf::new(),
         token: "test-token-at-least-24-bytes".into(),

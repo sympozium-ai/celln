@@ -16,7 +16,12 @@ pub mod closure_check;
 pub mod dispatch_report;
 #[cfg(target_os = "linux")]
 pub mod harness_io;
+#[cfg(target_os = "linux")]
+pub mod json_guest;
 pub mod json_harness;
+pub mod parent_harness;
+pub mod parent_session;
+pub mod turn_worker;
 
 /// The result of asking pilot to run something.
 #[derive(Debug, PartialEq, Eq)]
@@ -136,3 +141,5 @@ mod tests {
         }
     }
 }
+#[cfg(target_os = "linux")]
+pub mod starter_tools;

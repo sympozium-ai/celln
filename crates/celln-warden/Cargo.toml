@@ -22,6 +22,7 @@ kvm = ["dep:kvm-ioctls", "dep:kvm-bindings", "dep:libc"]
 tempfile.workspace = true
 celln-control.workspace = true
 celln-manifest.workspace = true
+celln-store.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true

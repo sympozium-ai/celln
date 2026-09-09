@@ -6,6 +6,23 @@ use celln_spec::ExecutionRequest;
 use serde::Deserialize;
 use std::path::Path;
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "dispatch_parent_launcher_tests.rs"]
+mod parent_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "dispatch_parent_pair_tests.rs"]
+mod pair_tests;
+
+#[path = "dispatch_parent_model.rs"]
+#[allow(dead_code)] // Composed worker launch is not exposed by creation yet.
+mod parent_model;
+
+#[cfg(target_os = "linux")]
+#[path = "dispatch_parent_worker.rs"]
+#[allow(dead_code)] // Creation awaits composition of parent and worker handles.
+mod parent_worker;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TrustedMotes {
@@ -85,12 +102,335 @@ fn file_archive(name: &str, bytes: &[u8]) -> Vec<u8> {
     archive
 }
 
+#[cfg(target_os = "linux")]
+struct PreparedDeclared {
+    request_binding: celln_manifest::Hash,
+    mote: super::warm::PinnedMote,
+    invocation: Vec<u8>,
+    identity: super::SubstrateIdentity,
+    resolved: ResolvedBundle,
+}
+
+#[cfg(not(target_os = "linux"))]
+struct PreparedDeclared;
+
+// Internal launcher building block. Public creation remains disabled until the
+// paired worker/broker admission is composed; mailbox permission is never
+// inferred from a signed executable or from an ordinary ExecutionRequest.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(super) struct PreparedParent {
+    declared: PreparedDeclared,
+    request: ExecutionRequest,
+    state_root: std::path::PathBuf,
+    permit_hash: celln_manifest::Hash,
+    binding: warden::parent_permit::Binding,
+    principal: String,
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(super) struct ForkedParent {
+    pub cell: warden::vmm::boot::LinuxCell,
+    pub lease: warden::parent_lease::ParentLease,
+    pub journal: warden::parent_journal::ParentJournal,
+    pub identity: super::SubstrateIdentity,
+}
+
+#[cfg(target_os = "linux")]
+fn validate_parent_request(
+    request: &ExecutionRequest,
+    binding: &warden::parent_permit::Binding,
+) -> Result<(), String> {
+    if request.configuration_binding(celln_spec::ConfigurationRole::Parent)?
+        != binding.parent_configuration
+        || request.harness.is_some()
+        || request.forge.is_some()
+        || !request.inputs.is_empty()
+        || !request.capabilities.egress.is_empty()
+        || request.capabilities.workspace != celln_spec::WorkspaceAccess::None
+        || request.execution.lane != celln_spec::RequestedLane::Agent
+        || !request.execution.require_hardware_isolation
+        || request.capabilities.memory_bytes != binding.parent_memory_bytes
+        || request.capabilities.timeout_ms != binding.lifetime_ms
+        || request.workload.caller != binding.principal
+        || request.tools.len() != 1
+        || request.tools[0].closure.is_none()
+        || !request
+            .invocation
+            .as_ref()
+            .is_some_and(|i| i.args.is_empty())
+    {
+        return Err("parent request is not bound to the confined mailbox contract".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub(super) fn prepare_parent(
+    request: &ExecutionRequest,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    permit_hash: &celln_manifest::Hash,
+    binding: &warden::parent_permit::Binding,
+    principal: &str,
+) -> Result<PreparedParent, String> {
+    validate_parent_request(request, binding)?;
+    // Early refusal precedes expensive warm preparation; final launch rechecks.
+    warden::parent_permit::authorize(state_root, permit_hash, binding, principal)
+        .map_err(|e| e.to_string())?;
+    let declared = prepare_declared(request, mote_root, tool_root, state_root)?;
+    if declared.identity.closure.is_none() {
+        return Err("parent requires admitted signed closure".into());
+    }
+    Ok(PreparedParent {
+        declared,
+        request: request.clone(),
+        state_root: state_root.into(),
+        permit_hash: permit_hash.clone(),
+        binding: binding.clone(),
+        principal: principal.into(),
+    })
+}
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+impl PreparedParent {
+    /// Compose only matching, independently prepared handles on the live owner
+    /// thread. Each mailbox response also checks Pilot's actual execution grant.
+    fn into_session(
+        self,
+        worker: parent_worker::PreparedWorker,
+    ) -> Result<DeclaredParentSession, String> {
+        self.into_claimed_session(worker, None, None)
+    }
+
+    fn into_claimed_session(
+        self,
+        mut worker: parent_worker::PreparedWorker,
+        claim: Option<ParentClaim>,
+        children: Option<std::sync::Arc<warden::parent_child_control::ChildControlSlot>>,
+    ) -> Result<DeclaredParentSession, String> {
+        if !worker.matches_parent(&self.binding) {
+            return Err("parent/worker permit mismatch".into());
+        }
+        let owner_control =
+            celln_control::current().ok_or("native parent requires serving-owner control")?;
+        let child_control = children.unwrap_or_else(|| {
+            std::sync::Arc::new(warden::parent_child_control::ChildControlSlot::new(
+                self.binding.incarnation.clone(),
+                owner_control,
+            ))
+        });
+        let expected = self.declared.resolved.program_hash.clone();
+        let ForkedParent {
+            mut cell,
+            lease,
+            journal,
+            ..
+        } = self.launch_claimed(claim)?;
+        let transport = move |bytes: &[u8]| -> anyhow::Result<Vec<u8>> {
+            cell.deliver_parent_message(bytes)?;
+            let report = cell.run()?;
+            anyhow::ensure!(
+                report.end == warden::vmm::boot::BootEnd::Parked,
+                "parent did not yield a mailbox response"
+            );
+            anyhow::ensure!(
+                !report.console.contains("Linux version"),
+                "unexpected parent hot boot"
+            );
+            let mut grants = 0;
+            for line in report
+                .console
+                .lines()
+                .filter_map(|l| l.strip_prefix(pilot::dispatch_report::PREFIX))
+            {
+                match serde_json::from_str::<pilot::dispatch_report::Frame>(line)? {
+                    pilot::dispatch_report::Frame::Started { grant } => {
+                        anyhow::ensure!(
+                            grant.tool == expected
+                                && grant.lane == "agent"
+                                && !grant.fetch
+                                && grant.workspace.as_deref() == Some("none"),
+                            "parent execution grant mismatch"
+                        );
+                        grants += 1;
+                    }
+                    pilot::dispatch_report::Frame::Failed { .. }
+                    | pilot::dispatch_report::Frame::Signal { .. }
+                    | pilot::dispatch_report::Frame::Exit { .. } => {
+                        anyhow::bail!("parent execution ended unexpectedly")
+                    }
+                    _ => {}
+                }
+            }
+            anyhow::ensure!(grants == 1, "missing or duplicate parent execution grant");
+            cell.take_parent_response()?
+                .ok_or_else(|| anyhow::anyhow!("parent response missing"))
+        };
+        let session: DeclaredParentSession = pilot::parent_session::ParentSession::new(
+            Box::new(transport),
+            Box::new(move |turn| worker.execute(turn).map_err(anyhow::Error::msg)),
+            lease,
+            journal,
+        );
+        Ok(session.with_child_control(child_control))
+    }
+    /// Call on the admitted owner thread after paired-worker verification and
+    /// node reservation. Claim precedes fork; a failed fork retains the durable
+    /// incarnation tombstone. Run only to Pilot's parent exec acknowledgement;
+    /// no turn is delivered and no worker is spawned here.
+    pub(super) fn launch(self) -> Result<ForkedParent, String> {
+        self.launch_claimed(None)
+    }
+
+    fn launch_claimed(mut self, claim: Option<ParentClaim>) -> Result<ForkedParent, String> {
+        validate_parent_request(&self.request, &self.binding)?;
+        authorize(&self.request, &self.state_root)?;
+        let closure =
+            super::closure::resolve(&self.request, &self.declared.resolved, &self.state_root)?
+                .ok_or("parent signed closure unavailable")?;
+        for member in closure.signed.closure.members.values() {
+            local_agent_constraint(&member.hash, &self.state_root)?;
+        }
+        let mut invocation: serde_json::Value =
+            serde_json::from_slice(&self.declared.invocation).map_err(|e| e.to_string())?;
+        invocation["allow_parent_mailbox"] = serde_json::json!(true);
+        let invocation = serde_json::to_vec(&invocation).map_err(|e| e.to_string())?;
+        if invocation.len() > warden::MAX_INVOCATION_BYTES {
+            return Err("parent invocation exceeds bound".into());
+        }
+        // Recheck revocation/admission expiry even when creation claimed before
+        // preparation. Never reset the original lease's elapsed lifetime.
+        warden::parent_permit::authorize(
+            &self.state_root,
+            &self.permit_hash,
+            &self.binding,
+            &self.principal,
+        )
+        .map_err(|e| e.to_string())?;
+        let (lease, journal) = match claim {
+            Some(claim) => claim,
+            None => warden::parent_permit::claim(
+                &self.state_root,
+                &self.permit_hash,
+                &self.binding,
+                &self.principal,
+            )
+            .map_err(|e| e.to_string())?,
+        };
+        let mut cell = self.declared.mote.fork()?;
+        cell.set_timeout(std::time::Duration::from_millis(self.binding.lifetime_ms));
+        cell.set_invocation(&invocation)
+            .map_err(|e| e.to_string())?;
+        cell.enable_parent_mailbox().map_err(|e| e.to_string())?;
+        // The workload may use its mailbox before the guest supervisor gets
+        // scheduled to report exec success. Wait for that protected report
+        // before delivering any turn; do not weaken subsequent grant checks.
+        let marker = format!(
+            "{}{}",
+            pilot::dispatch_report::PREFIX,
+            serde_json::to_string(&pilot::dispatch_report::Frame::Started {
+                grant: pilot::dispatch_report::ExecutionGrant {
+                    tool: self.declared.resolved.program_hash.clone(),
+                    lane: "agent".into(),
+                    workspace: Some("none".into()),
+                    fetch: false,
+                }
+            })
+            .map_err(|e| e.to_string())?
+        );
+        cell.stop_when_guest_prints(&marker);
+        let started = cell.run().map_err(|e| e.to_string())?;
+        if started.end != warden::vmm::boot::BootEnd::Parked
+            || !started.console.ends_with(&marker)
+            || started.console.contains("Linux version")
+        {
+            return Err("parent startup execution grant was not confirmed".into());
+        }
+        cell.clear_stop_marker();
+        self.declared.identity.invocation = celln_manifest::Hash::of(&invocation).0;
+        Ok(ForkedParent {
+            cell,
+            lease,
+            journal,
+            identity: self.declared.identity,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+type ParentTransport = Box<dyn FnMut(&[u8]) -> anyhow::Result<Vec<u8>>>;
+#[cfg(target_os = "linux")]
+type WorkerTransport = Box<
+    dyn FnMut(
+        &warden::parent_lease::ReservedTurn,
+    ) -> anyhow::Result<pilot::parent_session::DestroyedChild>,
+>;
+#[cfg(target_os = "linux")]
+type DeclaredParentSession = pilot::parent_session::ParentSession<ParentTransport, WorkerTransport>;
+
+#[cfg(target_os = "linux")]
+type ParentClaim = (
+    warden::parent_lease::ParentLease,
+    warden::parent_journal::ParentJournal,
+);
+
+#[cfg(target_os = "linux")]
+#[path = "dispatch_parent_create.rs"]
+pub(crate) mod parent_create;
+
 pub(crate) fn launch_declared(
     request: &ExecutionRequest,
     mote_root: &Path,
     tool_root: &Path,
     state_root: &Path,
 ) -> Result<(LaunchOutcome, ResolvedBundle), String> {
+    let prepared = prepare_declared(request, mote_root, tool_root, state_root)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = prepared;
+        Err("sealing cells needs Linux with /dev/kvm".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // A retained substrate is not a grant. Recheck live policy after warm
+        // preparation and before every execution, even on a cache hit.
+        if request.configuration_binding(celln_spec::ConfigurationRole::OneShot)?
+            != prepared.request_binding
+        {
+            return Err("prepared execution configuration mismatch".into());
+        }
+        authorize(request, state_root)?;
+        let closure = super::closure::resolve(request, &prepared.resolved, state_root)?;
+        let harness = super::harness::resolve(request, closure.as_ref(), state_root)?;
+        let mut cell = prepared.mote.fork()?;
+        cell.set_invocation(&prepared.invocation)
+            .map_err(|e| e.to_string())?;
+        if let Some(h) = harness {
+            super::harness::claim(request, state_root)?;
+            cell.enable_http_fetch(h.policy);
+        }
+        let invocation = request.invocation.as_ref().ok_or("invocation required")?;
+        let mut outcome = super::run_cell(request, &invocation.alias, cell, state_root)?;
+        outcome.substrate = Some(prepared.identity);
+        super::validate_executed_tool(&mut outcome, &prepared.resolved.program_hash);
+        Ok((outcome, prepared.resolved))
+    }
+}
+
+/// Preparation may boot only an authority-free template. The returned pinned
+/// handle performs fork-only execution and contains no model credential.
+/// It is private until enduring admission binds it to an owner and lease.
+fn prepare_declared(
+    request: &ExecutionRequest,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+) -> Result<PreparedDeclared, String> {
     super::check_supported_authority(request)?;
     authorize(request, state_root)?;
     let inputs = super::inputs::resolve(request, state_root)?;
@@ -160,7 +500,7 @@ pub(crate) fn launch_declared(
             toolfs: resolved.toolfs_hash.clone(),
             invocation: celln_manifest::Hash::of(&run).0,
         };
-        let mut cell = super::warm::fork(key, vec![resolved.program_hash.clone()], || {
+        let mote = super::warm::pin(key, vec![resolved.program_hash.clone()], || {
             // The shared template contains no request args, credentials or
             // egress grant. Only enable the post-fork invocation channel.
             std::fs::write(&kernel, &resolved.kernel_bytes).map_err(|e| e.to_string())?;
@@ -171,16 +511,14 @@ pub(crate) fn launch_declared(
             cfg.mem_size = request.capabilities.memory_bytes as usize;
             Ok((cfg, resolved.toolfs_bytes.clone()))
         })?;
-        cell.set_invocation(&run).map_err(|e| e.to_string())?;
-        // Re-read the operator grant after potentially slow warm preparation.
-        if let Some(h) = super::harness::resolve(request, closure.as_ref(), state_root)? {
-            super::harness::claim(request, state_root)?;
-            cell.enable_http_fetch(h.policy);
-        }
-        let mut outcome = super::run_cell(request, &invocation.alias, cell, state_root)?;
-        outcome.substrate = Some(identity);
-        super::validate_executed_tool(&mut outcome, &resolved.program_hash);
-        Ok((outcome, resolved))
+        Ok(PreparedDeclared {
+            request_binding: request
+                .configuration_binding(celln_spec::ConfigurationRole::OneShot)?,
+            mote,
+            invocation: run,
+            identity,
+            resolved,
+        })
     }
 }
 

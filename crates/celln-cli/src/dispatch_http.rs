@@ -13,6 +13,10 @@ mod audit;
 mod harness_tests;
 #[path = "dispatch_journal.rs"]
 mod journal;
+#[path = "dispatch_parents.rs"]
+mod parents;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use parents::prove_parent_http;
 #[path = "dispatch_prewarm.rs"]
 mod prewarm;
 use anyhow::{bail, Context, Result};
@@ -71,10 +75,11 @@ pub(crate) fn read_bounded_line(reader: &mut impl BufRead, cap: usize) -> Result
 /// Read and discard headers, enforcing a cap on both line length and count.
 /// Returns the parsed `Content-Length`, and the raw `Authorization` header
 /// value if the caller wants it.
-fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>)> {
+fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>, bool)> {
     let mut length = 0usize;
     let mut authorization = None;
     let mut count = 0usize;
+    let mut respond_async = false;
     loop {
         let header = read_bounded_line(reader, MAX_HEADER_LINE)?;
         let header = header.trim_end();
@@ -82,6 +87,11 @@ fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>)> {
             break;
         }
         count += 1;
+        if let Some((name, value)) = header.split_once(':') {
+            if name.eq_ignore_ascii_case("Prefer") && value.trim() == "respond-async" {
+                respond_async = true;
+            }
+        }
         if count > MAX_HEADER_COUNT {
             bail!("too many headers (max {MAX_HEADER_COUNT})");
         }
@@ -92,7 +102,7 @@ fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>)> {
             length = value.parse().context("invalid Content-Length")?;
         }
     }
-    Ok((length, authorization))
+    Ok((length, authorization, respond_async))
 }
 
 /// A registry entry with terminal cache age. Admission sweeps expired terminal
@@ -213,10 +223,33 @@ fn current_node(
         node.live_cells = node.live_cells.saturating_add(1);
         node.memory_bytes = node.memory_bytes.saturating_sub(reservation.memory_bytes);
     }
+    match state.parents.reserved_capacity() {
+        Ok(reserved) => {
+            // Reserve the parent plus its single possible active child, even
+            // between turns. Bytes include retained motes as declared at owner
+            // admission, not merely the currently executing guest's memory.
+            node.live_cells = node
+                .live_cells
+                .saturating_add(reserved.owners.saturating_mul(2));
+            node.memory_bytes = node.memory_bytes.saturating_sub(reserved.memory_bytes);
+            if reserved.owners != 0 {
+                // Parent registry does not yet carry exact broker-slot charges.
+                // Do not advertise spare egress until creation admission binds
+                // those charges and shares this node's admission lock.
+                node.egress_slots = 0;
+            }
+        }
+        Err(_) => {
+            node.live_cells = node.max_cells;
+            node.memory_bytes = 0;
+            node.egress_slots = 0;
+        }
+    }
     node
 }
 
 struct State {
+    parents: warden::parent_registry::ParentRegistry,
     token_file: PathBuf,
     #[cfg(test)]
     token: String,
@@ -342,6 +375,8 @@ pub fn serve(
     let listener = TcpListener::bind(listen_address)
         .with_context(|| format!("binding dispatcher {listen_address}"))?;
     let state = Arc::new(State {
+        parents: warden::parent_registry::ParentRegistry::new(1024, probe.memory_bytes.max(1))
+            .map_err(anyhow::Error::msg)?,
         token_file: token_file.to_owned(),
         #[cfg(test)]
         token: String::new(),
@@ -351,6 +386,21 @@ pub fn serve(
         executions: Arc::new(Mutex::new(HashMap::new())),
         prewarm: Mutex::new(None),
     });
+    // Expired/failed owners must release capacity even without another HTTP
+    // request. Weak ownership lets this maintenance thread exit with the server.
+    let maintenance = Arc::downgrade(&state);
+    thread::Builder::new()
+        .name("celln-parent-reaper".into())
+        .spawn(move || loop {
+            thread::sleep(Duration::from_millis(100));
+            let Some(state) = maintenance.upgrade() else {
+                break;
+            };
+            if let Err(error) = state.parents.reap_finished() {
+                eprintln!("parent owner reconciliation failed: {error}");
+            }
+        })
+        .context("starting parent owner reconciliation")?;
     if non_loopback {
         eprintln!(
             "WARNING: dispatcher is exposed on a non-loopback address and provides no TLS; a TLS-terminating reverse proxy is required"
@@ -412,7 +462,21 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         .unwrap_or_default()
         .to_owned();
     let method = method.to_owned();
-    let (length, authorization) = read_headers(&mut reader)?;
+    let (length, authorization, respond_async) = read_headers(&mut reader)?;
+    if path == "/v1/parents" || path.starts_with("/v1/parents/") {
+        return parents::handle(
+            state,
+            &mut stream,
+            &mut reader,
+            &method,
+            &path,
+            parents::RequestMetadata {
+                length,
+                bearer: authorization.as_deref(),
+                respond_async,
+            },
+        );
+    }
     let is_public_health_check = method == "GET" && path == "/v1/health";
     if !is_public_health_check {
         let token = match state.credential() {
@@ -1002,8 +1066,9 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    fn lifecycle_state(root: &Path) -> State {
+    pub(super) fn lifecycle_state(root: &Path) -> State {
         State {
+            parents: warden::parent_registry::ParentRegistry::new(1024, 268435456).unwrap(),
             token_file: PathBuf::new(),
             token: "test-token-at-least-24-bytes".into(),
             egress_policy: EgressPolicy::new(&[]).unwrap(),
@@ -1019,6 +1084,54 @@ mod tests {
             executions: Arc::new(Mutex::new(HashMap::new())),
             prewarm: Mutex::new(None),
         }
+    }
+
+    #[test]
+    fn parent_capacity_is_visible_to_existing_node_admission_until_join() {
+        let root = tempfile::tempdir().unwrap();
+        let mut state = lifecycle_state(root.path());
+        state.probe.max_cells = 4;
+        state.probe.egress_slots = 2;
+        let id = celln_manifest::Hash::of(b"capacity-parent");
+        let (entered, ready) = std::sync::mpsc::sync_channel(1);
+        let (release, wait) = std::sync::mpsc::sync_channel(1);
+        state
+            .parents
+            .spawn_admitted(
+                "tenant",
+                &id,
+                Duration::from_secs(10),
+                128 << 20,
+                move || {
+                    Ok(move |_: &[u8]| {
+                        entered.send(()).unwrap();
+                        wait.recv().unwrap();
+                        Ok(vec![1])
+                    })
+                },
+            )
+            .unwrap();
+        let registry = HashMap::new();
+        let node = current_node(&state, &registry);
+        assert_eq!(node.live_cells, 2);
+        assert_eq!(node.memory_bytes, 128 << 20);
+        assert_eq!(node.egress_slots, 0);
+        let response = state.parents.submit("tenant", &id, b"work").unwrap();
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        state.parents.cancel("tenant", &id).unwrap();
+        assert_eq!(current_node(&state, &registry).memory_bytes, 128 << 20);
+        release.send(()).unwrap();
+        assert!(response
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .is_err());
+        // Even a finished owner remains charged until its resources are joined.
+        assert_eq!(current_node(&state, &registry).live_cells, 2);
+        state.parents.stop("tenant", &id).unwrap();
+        let node = current_node(&state, &registry);
+        assert_eq!(node.live_cells, 0);
+        assert_eq!(node.memory_bytes, 256 << 20);
+        assert_eq!(node.egress_slots, 2);
     }
 
     #[test]
@@ -1516,6 +1629,7 @@ mod tests {
         let work = tempfile::tempdir().unwrap();
         let root = work.path().join("unused");
         let state = State {
+            parents: warden::parent_registry::ParentRegistry::new(1024, 268435456).unwrap(),
             token_file: PathBuf::new(),
             token: "test-token-at-least-24-bytes".into(),
             egress_policy: EgressPolicy::new(&[]).unwrap(),
@@ -1683,7 +1797,9 @@ mod tests {
         let mut cursor = Cursor::new(
             b"Content-Length: 42\r\nAuthorization: Bearer secret-token\r\n\r\n".to_vec(),
         );
-        let (length, authorization) = read_headers(&mut cursor).expect("parses headers");
+        let (length, authorization, respond_async) =
+            read_headers(&mut cursor).expect("parses headers");
+        assert!(!respond_async);
         assert_eq!(length, 42);
         assert_eq!(authorization.as_deref(), Some("secret-token"));
     }

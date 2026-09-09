@@ -142,6 +142,42 @@ mod tests {
             "harness":{"contractVersion":"celln.reference-functions/v1","modelGrant":{"hash":hash},"model":"deepseek-chat","task":"use both tools","borrowedTools":[{"name":"add","path":"/add","hash":hash,"description":"add"},{"name":"multiply","path":"/multiply","hash":hash,"description":"multiply"}]}})
     }
     #[test]
+    fn configuration_binds_model_grant_closure_and_borrowed_tools() {
+        let original = wire();
+        let binding = |value| {
+            serde_json::from_value::<ExecutionRequest>(value)
+                .unwrap()
+                .configuration_binding(crate::ConfigurationRole::Worker)
+                .unwrap()
+        };
+        let expected = binding(original.clone());
+        for (pointer, replacement) in [
+            (
+                "/harness/modelGrant/hash",
+                json!(celln_manifest::Hash::of(b"other").0),
+            ),
+            (
+                "/tools/0/closure/hash",
+                json!(celln_manifest::Hash::of(b"other").0),
+            ),
+            (
+                "/harness/borrowedTools/0/hash",
+                json!(celln_manifest::Hash::of(b"other").0),
+            ),
+            (
+                "/harness/borrowedTools/0/description",
+                json!("changed description"),
+            ),
+            ("/harness/task", json!("another task")),
+            ("/harness/model", json!("another-model")),
+            ("/capabilities/egress/0", json!("https://api.example.com")),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = replacement;
+            assert_ne!(expected, binding(changed), "{pointer}");
+        }
+    }
+    #[test]
     fn versioned_binding_is_strict_and_bounded() {
         let value = wire();
         assert!(serde_json::from_value::<ExecutionRequest>(value.clone())

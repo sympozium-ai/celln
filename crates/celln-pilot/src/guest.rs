@@ -619,6 +619,10 @@ struct RunRequest {
     /// host-authored; guest arguments cannot cause pilot to retain raw-I/O.
     #[serde(default)]
     allow_fetch: bool,
+    /// Host-delivered parent-only transport. Pilot pre-grants exactly three
+    /// ports before dropping all capabilities; no raw-I/O capability is kept.
+    #[serde(default)]
+    allow_parent_mailbox: bool,
     /// Opt-in framed dispatcher output; absent keeps the legacy console ABI.
     #[serde(default)]
     report_output_limit: Option<usize>,
@@ -657,6 +661,8 @@ struct RunFile {
     #[serde(default)]
     allow_fetch: bool,
     #[serde(default)]
+    allow_parent_mailbox: bool,
+    #[serde(default)]
     report_output_limit: Option<usize>,
     #[serde(default)]
     force_agent_lane: bool,
@@ -691,6 +697,7 @@ impl RunFile {
                 agent_authored_input: self.agent_authored_input,
                 root: self.root,
                 allow_fetch: self.allow_fetch,
+                allow_parent_mailbox: self.allow_parent_mailbox,
                 report_output_limit: self.report_output_limit,
                 force_agent_lane: self.force_agent_lane,
                 expected_hash: self.expected_hash,
@@ -774,16 +781,30 @@ fn child_error(error_fd: i32, error: io::Error) -> ! {
     }
 }
 
+/// This is configuration validation, not manifest/closure admission.
+fn validate_parent_mailbox_request(req: &RunRequest) -> io::Result<()> {
+    if req.allow_parent_mailbox
+        && (req.allow_fetch
+            || !req.force_agent_lane
+            || req.workspace_access != Some(WorkspaceAccess::None)
+            || req.expected_hash.is_none()
+            || req.closure_members.is_none())
+    {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    Ok(())
+}
+
 /// Execute the already-opened, already-hashed file without another pathname
-/// lookup. `execveat(AT_EMPTY_PATH)` binds the exec to this exact file
-/// description even if its old name is replaced between verification and
-/// execution.
+/// lookup. `execveat(AT_EMPTY_PATH)` binds exec to this file description even
+/// if its old name is replaced between verification and execution.
 fn exec_open_file(
     file: &File,
     req: &RunRequest,
     confine: bool,
     grant: Option<pilot::dispatch_report::ExecutionGrant>,
 ) -> io::Result<ExitStatus> {
+    validate_parent_mailbox_request(req)?;
     let capture = if req.report_output_limit.is_some() {
         let mut fds = [-1; 2];
         if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
@@ -876,6 +897,15 @@ fn exec_open_file(
         if let Some(root) = &req.root {
             if let Err(error) = enter_root(root) {
                 child_error(error_pipe[1], error);
+            }
+        }
+        if req.allow_parent_mailbox {
+            // I/O bitmap bits survive exec, unlike the privilege used to set
+            // them. Grant only the mailbox, then enter_agent_lane drops every
+            // capability (fetch is forbidden for this parent configuration).
+            // The existing seccomp filter also denies acquiring any new range.
+            if unsafe { libc::ioperm(0x520, 3, 1) } != 0 {
+                child_error(error_pipe[1], io::Error::last_os_error());
             }
         }
         if confine || req.workspace_access.is_some() {
@@ -1421,6 +1451,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parent_mailbox_is_explicit_confined_and_separate_from_fetch() {
+        let base = serde_json::json!({"path":"/parent", "alias":"/parent",
+            "allow_parent_mailbox":true, "force_agent_lane":true,
+            "workspace_access":"none", "expected_hash":"test-hash",
+            "closure_members":{}});
+        let file: RunFile = serde_json::from_value(base.clone()).unwrap();
+        let requests = file.invocations();
+        assert!(requests[0].allow_parent_mailbox);
+        validate_parent_mailbox_request(&requests[0]).unwrap();
+        for (field, value) in [
+            ("allow_fetch", serde_json::json!(true)),
+            ("force_agent_lane", serde_json::json!(false)),
+            ("workspace_access", serde_json::json!("read-write")),
+            ("workspace_access", serde_json::Value::Null),
+            ("expected_hash", serde_json::Value::Null),
+            ("closure_members", serde_json::Value::Null),
+        ] {
+            let mut invalid = base.clone();
+            invalid[field] = value;
+            let request: RunRequest = serde_json::from_value(invalid).unwrap();
+            assert!(
+                validate_parent_mailbox_request(&request).is_err(),
+                "{field}"
+            );
+        }
+        let legacy: RunRequest = serde_json::from_value(serde_json::json!({
+            "path":"/tool", "alias":"/tool", "allow_fetch":true}))
+        .unwrap();
+        assert!(!legacy.allow_parent_mailbox);
+        validate_parent_mailbox_request(&legacy).unwrap();
+    }
+
+    #[test]
     fn member_check_envelope_has_no_legacy_execution_fallback() {
         let bytes = br#"{"verify_closure":{"version":"celln.dev/sealed-members-v1","challenge":"test","members":{}}}"#;
         // RunFile intentionally retains the pre-extension execution parser.
@@ -1462,6 +1525,7 @@ mod tests {
             agent_authored_input: false,
             root: None,
             allow_fetch: false,
+            allow_parent_mailbox: false,
             report_output_limit: None,
             force_agent_lane: false,
             expected_hash: None,

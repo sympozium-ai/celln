@@ -1,6 +1,70 @@
 use super::*;
 use std::cell::Cell;
 
+#[test]
+fn parent_history_maps_to_roles_without_replacing_host_persona() {
+    let cfg = config(&[]);
+    let history = [Exchange {
+        user: "my value is violet".into(),
+        assistant: "recorded".into(),
+    }];
+    run_with_history(
+        &cfg,
+        &history,
+        |wire| {
+            let wire: Value = serde_json::from_slice(wire)?;
+            assert_eq!(
+                wire["body"]["messages"],
+                json!([
+                    {"role":"system", "content":cfg.system},
+                    {"role":"user", "content":"my value is violet"},
+                    {"role":"assistant", "content":"recorded"},
+                    {"role":"user", "content":cfg.task}
+                ])
+            );
+            Ok(answer())
+        },
+        |_, _| panic!("no tools requested"),
+        |_| {},
+    )
+    .unwrap();
+}
+
+#[test]
+fn invalid_or_oversized_context_never_reaches_model() {
+    let cfg = config(&[]);
+    for history in [
+        vec![Exchange {
+            user: "x".repeat(4096),
+            assistant: "y".into(),
+        }],
+        vec![Exchange {
+            user: "x\0".into(),
+            assistant: "y".into(),
+        }],
+        vec![
+            Exchange {
+                user: "x".into(),
+                assistant: "y".into()
+            };
+            17
+        ],
+    ] {
+        assert!(run_with_history(
+            &cfg,
+            &history,
+            |_| panic!("must refuse before model"),
+            |_, _| panic!("must refuse before tool"),
+            |_| {}
+        )
+        .is_err());
+    }
+    assert!(serde_json::from_value::<Exchange>(
+        json!({"user":"x", "assistant":"y", "system":"override"})
+    )
+    .is_err());
+}
+
 fn schema(bytes: &str) -> Schema {
     Schema {
         bytes: bytes.into(),
@@ -17,6 +81,7 @@ fn config(names: &[&str]) -> Config {
         model: "deepseek-chat".into(),
         max_turns: 6,
         max_calls: 6,
+        require_tool_call: false,
         tools: names
             .iter()
             .map(|name| Tool {
@@ -44,6 +109,99 @@ fn response(calls: Vec<Value>) -> Vec<u8> {
 }
 fn answer() -> Vec<u8> {
     serde_json::to_vec(&json!({"choices":[{"message":{"role":"assistant","content":"completed structured task"}}]})).unwrap()
+}
+
+#[test]
+fn required_tool_call_is_requested_and_locally_enforced_without_retry() {
+    let mut cfg = config(&["echo"]);
+    cfg.require_tool_call = true;
+    let mut events = Vec::new();
+    let mut requests = 0;
+    assert!(run(
+        &cfg,
+        |wire| {
+            requests += 1;
+            let wire: Value = serde_json::from_slice(wire).unwrap();
+            assert_eq!(wire["body"]["tool_choice"], "required");
+            Ok(answer())
+        },
+        |_, _| panic!("invented execution"),
+        |e| events.push(e)
+    )
+    .is_err());
+    assert_eq!(requests, 1);
+    assert!(!events.iter().any(|e| e["type"] == "completed"));
+    requests = 0;
+    let result = run(
+        &cfg,
+        |wire| {
+            requests += 1;
+            let wire: Value = serde_json::from_slice(wire).unwrap();
+            if requests == 1 {
+                assert_eq!(wire["body"]["tool_choice"], "required");
+                Ok(response(vec![call("one", "echo", r#"{"text":"hello"}"#)]))
+            } else {
+                assert_eq!(wire["body"]["tool_choice"], "auto");
+                Ok(answer())
+            }
+        },
+        |_, input| Ok(input.to_vec()),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(result, "completed structured task");
+    assert_eq!(requests, 2);
+}
+
+#[test]
+fn required_tool_call_refuses_impossible_budgets_and_preserves_old_templates() {
+    let original = config(&["echo"]);
+    let raw = serde_json::to_value(&original).unwrap();
+    assert!(raw.get("require_tool_call").is_none());
+    let restored: Config = serde_json::from_value(raw.clone()).unwrap();
+    assert!(!restored.require_tool_call);
+    assert_eq!(serde_json::to_value(restored).unwrap(), raw);
+    let mut optional = original.clone();
+    optional.task.clear();
+    let mut required = optional.clone();
+    required.require_tool_call = true;
+    assert_ne!(
+        crate::turn_worker::Template::new(optional)
+            .unwrap()
+            .binding(),
+        crate::turn_worker::Template::new(required)
+            .unwrap()
+            .binding()
+    );
+    let mut required = original.clone();
+    required.require_tool_call = true;
+    assert!(run(
+        &required,
+        |_| Ok(response(vec![call(
+            "one",
+            "not-lent",
+            r#"{"text":"hello"}"#
+        )])),
+        |_, _| panic!("required policy expanded tool authority"),
+        |_| {}
+    )
+    .is_err());
+    for mode in 0..3 {
+        let mut cfg = original.clone();
+        cfg.require_tool_call = true;
+        match mode {
+            0 => cfg.tools.clear(),
+            1 => cfg.max_calls = 0,
+            _ => cfg.max_turns = 1,
+        }
+        assert!(run(
+            &cfg,
+            |_| panic!("invalid policy reached broker"),
+            |_, _| panic!("invalid policy executed"),
+            |_| {}
+        )
+        .is_err());
+    }
 }
 
 #[test]
