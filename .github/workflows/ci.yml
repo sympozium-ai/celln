@@ -21,6 +21,12 @@ jobs:
           components: rustfmt, clippy
           targets: x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
+      # release-please bumps Cargo.toml and Cargo.lock together; a lock left
+      # behind only surfaces when the tag build runs `--locked`, after the
+      # release is already public. Catch it here, before another cargo command
+      # can silently refresh the lock.
+      - name: lockfile matches the workspace manifests
+        run: cargo metadata --format-version 1 --locked > /dev/null
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
