@@ -8,8 +8,102 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelProtocol {
+    #[default]
+    OpenaiChat,
+    AnthropicMessages,
+}
+
+/// A validated model endpoint. The default contract is a public HTTPS host on
+/// port 443; the operator opt-in also permits HTTP and an explicit port so a
+/// private or self-signed model can be reached.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelEndpoint {
+    pub scheme: String,
+    pub host: String,
+    pub port: u16,
+    pub origin: String,
+}
+
+/// Validate the endpoint before reading any credentials. Transport additionally
+/// checks DNS/IP policy and refuses redirects and non-public addresses.
+pub fn model_endpoint_target(url: &str, allow_insecure: bool) -> Result<ModelEndpoint, String> {
+    let (scheme, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        ("https", rest)
+    } else if allow_insecure {
+        (
+            "http",
+            url.strip_prefix("http://")
+                .ok_or("model endpoint requires HTTP or HTTPS")?,
+        )
+    } else {
+        return Err("model endpoint requires HTTPS".into());
+    };
+    if url.len() > 2048 || url.contains(['?', '#', '\r', '\n', '\0']) {
+        return Err("invalid model endpoint".into());
+    }
+    let (authority, path) = rest
+        .split_once('/')
+        .ok_or("complete model endpoint required")?;
+    if path.is_empty() || authority.is_empty() || authority.contains('@') {
+        return Err("invalid model endpoint".into());
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            let port: u16 = port.parse().map_err(|_| "invalid model endpoint port")?;
+            if port == 0 {
+                return Err("invalid model endpoint port".into());
+            }
+            (host, port)
+        }
+        None => (authority, if scheme == "https" { 443 } else { 80 }),
+    };
+    if !allow_insecure && port != 443 {
+        return Err("model endpoint requires port 443".into());
+    }
+    if host.is_empty() || host.len() > 253 {
+        return Err("invalid model endpoint".into());
+    }
+    let host_valid = if allow_insecure {
+        host.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'[' | b']'))
+    } else {
+        host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
+    };
+    if !host_valid {
+        return Err("invalid model endpoint".into());
+    }
+    let default_port = (scheme == "https" && port == 443) || (scheme == "http" && port == 80);
+    let origin = if default_port {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    };
+    Ok(ModelEndpoint {
+        scheme: scheme.into(),
+        host: host.into(),
+        port,
+        origin,
+    })
+}
+
+pub fn model_endpoint_host(url: &str) -> Result<String, String> {
+    model_endpoint_target(url, false).map(|target| target.host)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsonPostGrant {
+    pub protocol: ModelProtocol,
     pub url: String,
     /// Operator-controlled file, read per request. Never delivered to guest.
     pub bearer_token_file: PathBuf,
@@ -157,7 +251,10 @@ fn parse(raw: &str) -> Result<Request, FetchDenied> {
     Ok(request)
 }
 
-fn credential_header(path: &std::path::Path) -> Result<tempfile::NamedTempFile, FetchDenied> {
+fn credential_header(
+    path: &std::path::Path,
+    protocol: ModelProtocol,
+) -> Result<tempfile::NamedTempFile, FetchDenied> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .and_then(|file| file.take(4097).read_to_end(&mut bytes))
@@ -171,9 +268,126 @@ fn credential_header(path: &std::path::Path) -> Result<tempfile::NamedTempFile, 
     // tempfile creates mode 0600. curl reads this file, never a token in argv.
     let mut header =
         tempfile::NamedTempFile::new().map_err(|_| refused("credential staging failed"))?;
-    writeln!(header, "Authorization: Bearer {token}")
-        .map_err(|_| refused("credential staging failed"))?;
+    let value = match protocol {
+        ModelProtocol::OpenaiChat => format!("Authorization: Bearer {token}"),
+        ModelProtocol::AnthropicMessages => {
+            format!("x-api-key: {token}\nanthropic-version: 2023-06-01")
+        }
+    };
+    writeln!(header, "{value}").map_err(|_| refused("credential staging failed"))?;
     Ok(header)
+}
+
+// The guest contract remains bounded Chat Completions. Protocol translation is
+// host-owned and runs only after that request has passed grant validation.
+fn provider_request(
+    body: &serde_json::Value,
+    protocol: ModelProtocol,
+) -> Result<serde_json::Value, FetchDenied> {
+    use serde_json::{json, Value};
+    if protocol == ModelProtocol::OpenaiChat {
+        return Ok(body.clone());
+    }
+    let chat: ChatRequest =
+        serde_json::from_value(body.clone()).map_err(|_| refused("invalid chat request"))?;
+    let mut system = Vec::new();
+    let mut messages: Vec<Value> = Vec::new();
+    for message in chat.messages {
+        if message.role == "system" {
+            system.push(message.content.unwrap_or_default());
+            continue;
+        }
+        let role = if message.role == "tool" {
+            "user"
+        } else {
+            &message.role
+        };
+        let mut content = Vec::new();
+        if message.role == "tool" {
+            content.push(json!({"type":"tool_result", "tool_use_id":message.tool_call_id, "content":message.content.unwrap_or_default()}));
+        } else {
+            if let Some(text) = message.content.filter(|text| !text.is_empty()) {
+                content.push(json!({"type":"text", "text":text}));
+            }
+            for call in message.tool_calls.unwrap_or_default() {
+                let input: Value = serde_json::from_str(&call.function.arguments)
+                    .map_err(|_| refused("invalid tool arguments"))?;
+                if !input.is_object() {
+                    return Err(refused("tool arguments must be an object"));
+                }
+                content.push(json!({"type":"tool_use", "id":call.id, "name":call.function.name, "input":input}));
+            }
+        }
+        if messages.last().is_some_and(|last| last["role"] == role) {
+            messages.last_mut().unwrap()["content"]
+                .as_array_mut()
+                .unwrap()
+                .extend(content);
+        } else {
+            messages.push(json!({"role":role,"content":content}));
+        }
+    }
+    let mut out =
+        json!({"model":chat.model,"max_tokens":chat.max_tokens,"stream":false,"messages":messages});
+    if !system.is_empty() {
+        out["system"] = json!(system.join("\n\n"));
+    }
+    if let Some(tools) = chat.tools {
+        if chat.tool_choice.as_deref() != Some("none") {
+            out["tools"] = json!(tools.into_iter().map(|tool| json!({"name":tool.function.name,"description":tool.function.description,"input_schema":tool.function.parameters})).collect::<Vec<_>>());
+            out["tool_choice"] = json!({"type": if chat.tool_choice.as_deref() == Some("required") { "any" } else { "auto" }});
+        }
+    }
+    Ok(out)
+}
+
+fn provider_response(raw: Vec<u8>, protocol: ModelProtocol) -> Result<Vec<u8>, FetchDenied> {
+    use serde_json::{json, Value};
+    if protocol == ModelProtocol::OpenaiChat {
+        return Ok(raw);
+    }
+    let response: Value =
+        serde_json::from_slice(&raw).map_err(|_| refused("invalid provider response"))?;
+    let blocks = response["content"]
+        .as_array()
+        .ok_or_else(|| refused("provider response has no content"))?;
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    for block in blocks {
+        match block["type"].as_str() {
+            Some("text") => text.push_str(
+                block["text"]
+                    .as_str()
+                    .ok_or_else(|| refused("invalid provider text"))?,
+            ),
+            Some("tool_use") => {
+                let id = block["id"]
+                    .as_str()
+                    .ok_or_else(|| refused("missing tool id"))?;
+                let name = block["name"]
+                    .as_str()
+                    .ok_or_else(|| refused("missing tool name"))?;
+                if !block["input"].is_object() {
+                    return Err(refused("invalid tool input"));
+                }
+                calls.push(json!({"id":id,"type":"function","function":{"name":name,"arguments":block["input"].to_string()}}));
+            }
+            _ => return Err(refused("unsupported provider content block")),
+        }
+    }
+    let mut message = json!({"role":"assistant","content":text});
+    if !calls.is_empty() {
+        message["tool_calls"] = json!(calls);
+    }
+    let finish = match response["stop_reason"].as_str() {
+        Some("tool_use") => "tool_calls",
+        Some("max_tokens") => "length",
+        Some("end_turn" | "stop_sequence") => "stop",
+        _ => return Err(refused("unsupported provider stop reason")),
+    };
+    let input = response["usage"]["input_tokens"].as_u64().unwrap_or(0);
+    let output = response["usage"]["output_tokens"].as_u64().unwrap_or(0);
+    serde_json::to_vec(&json!({"choices":[{"index":0,"message":message,"finish_reason":finish}],"usage":{"prompt_tokens":input,"completion_tokens":output,"total_tokens":input.saturating_add(output)}})).map_err(|_| refused("invalid normalized response"))
 }
 
 impl HttpBroker {
@@ -206,13 +420,14 @@ impl HttpBroker {
             .checked_add(output_tokens)
             .filter(|total| *total <= grant.max_total_output_tokens)
             .ok_or_else(|| refused("model cumulative output budget exhausted"))?;
-        let (host, ip) = self.authorize(&request.url)?;
+        let authorized = self.authorize(&request.url)?;
         self.used += 1;
         self.post_output_reserved.insert(request.url.clone(), next);
-        let credential = credential_header(&grant.bearer_token_file)?;
+        let credential = credential_header(&grant.bearer_token_file, grant.protocol)?;
         let mut body =
             tempfile::NamedTempFile::new().map_err(|_| refused("request staging failed"))?;
-        serde_json::to_writer(&mut body, &request.body)
+        let provider_body = provider_request(&request.body, grant.protocol)?;
+        serde_json::to_writer(&mut body, &provider_body)
             .map_err(|_| refused("request staging failed"))?;
         let response_headers =
             tempfile::NamedTempFile::new().map_err(|_| refused("response staging failed"))?;
@@ -226,7 +441,11 @@ impl HttpBroker {
                 "--noproxy",
                 "*",
                 "--proto",
-                "=https",
+                if self.policy.allow_insecure {
+                    "=http,https"
+                } else {
+                    "=https"
+                },
                 "--max-redirs",
                 "0",
                 "--request",
@@ -241,9 +460,17 @@ impl HttpBroker {
             .arg("--max-time")
             .arg(self.policy.timeout.as_secs().max(1).to_string())
             .arg("--max-filesize")
-            .arg(self.policy.max_response_bytes.to_string())
+            .arg(self.policy.max_response_bytes.to_string());
+        if self.policy.allow_insecure && authorized.scheme == "https" {
+            // Opt-in only: accept a self-signed certificate for a private host.
+            command.arg("--insecure");
+        }
+        command
             .arg("--resolve")
-            .arg(format!("{host}:443:{ip}"))
+            .arg(format!(
+                "{}:{}:{}",
+                authorized.host, authorized.port, authorized.ip
+            ))
             .arg("--dump-header")
             .arg(response_headers.path())
             .arg("--url")
@@ -265,7 +492,11 @@ impl HttpBroker {
         if !(200..300).contains(&status) {
             return Err(refused(&format!("HTTP {status}; POST not replayed")));
         }
-        Ok(out.stdout)
+        let normalized = provider_response(out.stdout, grant.protocol)?;
+        if normalized.len() > self.policy.max_response_bytes {
+            return Err(refused("normalized response exceeded byte budget"));
+        }
+        Ok(normalized)
     }
 }
 
@@ -273,6 +504,131 @@ impl HttpBroker {
 mod tests {
     use super::*;
     use crate::egress::HttpPolicy;
+
+    #[test]
+    fn anthropic_round_trip_preserves_tool_ids_results_and_usage() {
+        use serde_json::json;
+        let body = json!({"model":"chosen","max_tokens":512,"stream":false,"messages":[
+            {"role":"system","content":"Use approved tools."},
+            {"role":"user","content":"Read the file"},
+            {"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"read","arguments":"{\"name\":\"notes\"}"}}]},
+            {"role":"tool","tool_call_id":"call-1","content":"violet"},
+            {"role":"user","content":"What did it say?"}
+        ],"tools":[{"type":"function","function":{"name":"read","description":"Read file","parameters":{"type":"object"}}}],"tool_choice":"required"});
+        let request = provider_request(&body, ModelProtocol::AnthropicMessages).unwrap();
+        assert_eq!(request["system"], "Use approved tools.");
+        assert_eq!(request["messages"][1]["content"][0]["id"], "call-1");
+        assert_eq!(
+            request["messages"][2]["content"][0]["tool_use_id"],
+            "call-1"
+        );
+        assert_eq!(request["messages"][2]["content"][0]["content"], "violet");
+        assert_eq!(
+            request["messages"][2]["content"].as_array().unwrap().len(),
+            2
+        );
+        assert_eq!(request["tool_choice"]["type"], "any");
+        assert_eq!(request["tools"][0]["input_schema"]["type"], "object");
+        let reply = json!({"content":[{"type":"text","text":"Checking"},{"type":"tool_use","id":"next","name":"read","input":{"name":"other"}}],"stop_reason":"tool_use","usage":{"input_tokens":12,"output_tokens":7}});
+        let normalized: serde_json::Value = serde_json::from_slice(
+            &provider_response(
+                serde_json::to_vec(&reply).unwrap(),
+                ModelProtocol::AnthropicMessages,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            normalized["choices"][0]["message"]["tool_calls"][0]["id"],
+            "next"
+        );
+        assert_eq!(normalized["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(normalized["usage"]["total_tokens"], 19);
+        assert_eq!(
+            provider_request(&body, ModelProtocol::OpenaiChat).unwrap(),
+            body
+        );
+    }
+
+    #[test]
+    fn model_endpoints_reject_credential_and_transport_overrides() {
+        for url in [
+            "http://example.com/v1",
+            "https://key@example.com/v1",
+            "https://example.com:8080/v1",
+            "https://example.com/v1?key=secret",
+            "https://example.com/v1#fragment",
+        ] {
+            assert!(model_endpoint_host(url).is_err(), "accepted {url}");
+        }
+        assert_eq!(
+            model_endpoint_host("https://api.anthropic.com/v1/messages").unwrap(),
+            "api.anthropic.com"
+        );
+        assert_eq!(
+            model_endpoint_host("https://custom.example/v1/chat/completions").unwrap(),
+            "custom.example"
+        );
+    }
+
+    #[test]
+    fn insecure_endpoint_target_allows_http_private_and_ports() {
+        let target =
+            model_endpoint_target("http://192.168.1.237:8080/v1/chat/completions", true).unwrap();
+        assert_eq!(target.origin, "http://192.168.1.237:8080");
+        assert_eq!(target.port, 8080);
+        assert_eq!(target.host, "192.168.1.237");
+        assert!(model_endpoint_target("http://192.168.1.237:8080/v1", false).is_err());
+        assert_eq!(
+            model_endpoint_target("https://api.deepseek.com/chat/completions", true)
+                .unwrap()
+                .origin,
+            "https://api.deepseek.com"
+        );
+    }
+
+    #[test]
+    fn insecure_broker_posts_to_private_http_endpoint() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"LOCAL-OK"},"finish_reason":"stop"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+        });
+        let mut token = tempfile::NamedTempFile::new().unwrap();
+        writeln!(token, "{}", "a".repeat(32)).unwrap();
+        let mut policy = HttpPolicy::new(vec!["127.0.0.1".into()]);
+        policy.allow_insecure = true;
+        policy.json_posts.push(JsonPostGrant {
+            protocol: ModelProtocol::OpenaiChat,
+            url: format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            bearer_token_file: token.path().to_path_buf(),
+            model: "local".into(),
+            max_output_tokens: 512,
+            max_total_output_tokens: 1024,
+        });
+        let mut broker = HttpBroker::new(policy);
+        let request = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
+            "url":format!("http://127.0.0.1:{port}/v1/chat/completions"),
+            "body":{"model":"local","stream":false,"max_tokens":64,
+                "messages":[{"role":"user","content":"hi"}]}})
+        .to_string();
+        let out = broker.post_json(&request).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(value["choices"][0]["message"]["content"], "LOCAL-OK");
+        server.join().unwrap();
+    }
 
     fn wire() -> String {
         serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST","url":"https://example.com/model","body":{"messages":[]}}).to_string()
@@ -283,6 +639,7 @@ mod tests {
         // every refusal below must occur before DNS or credential access.
         let mut policy = HttpPolicy::new(vec!["provider.invalid".into()]);
         policy.json_posts.push(JsonPostGrant {
+            protocol: Default::default(),
             url: "https://provider.invalid/chat".into(),
             bearer_token_file: "/must-not-be-read".into(),
             model: "approved".into(),
@@ -467,6 +824,7 @@ mod tests {
     fn endpoints_are_exact_and_untrusted_headers_are_rejected() {
         let mut policy = HttpPolicy::new(vec!["example.com".into()]);
         policy.json_posts.push(JsonPostGrant {
+            protocol: Default::default(),
             url: "https://example.com/model".into(),
             bearer_token_file: "/not-read".into(),
             model: "approved-model".into(),
@@ -514,7 +872,7 @@ mod tests {
             "rotated-test-token-at-least-24",
         ] {
             std::fs::write(&file, token).unwrap();
-            let header = credential_header(&file).unwrap();
+            let header = credential_header(&file, ModelProtocol::OpenaiChat).unwrap();
             assert_eq!(
                 std::fs::read_to_string(header.path()).unwrap(),
                 format!("Authorization: Bearer {token}\n")
@@ -523,7 +881,7 @@ mod tests {
         for token in ["short", "secret-with-injected\r\nX-Header: bad"] {
             std::fs::write(&file, token).unwrap();
             assert_eq!(
-                credential_header(&file).unwrap_err(),
+                credential_header(&file, ModelProtocol::OpenaiChat).unwrap_err(),
                 refused("invalid provider credential")
             );
         }

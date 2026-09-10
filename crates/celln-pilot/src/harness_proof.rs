@@ -163,6 +163,7 @@ fn main() -> Result<()> {
     policy.timeout = Duration::from_secs(45);
     policy.max_requests = 6;
     policy.json_posts.push(JsonPostGrant {
+        protocol: Default::default(),
         url: url.into(),
         bearer_token_file: token,
         model: "deepseek-chat".into(),

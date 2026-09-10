@@ -37,6 +37,8 @@ pub(super) struct Binding {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Profile {
+    #[serde(default)]
+    protocol: warden::egress::ModelProtocol,
     api_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     expiry: Option<expiry::Expiry>,
@@ -47,6 +49,9 @@ struct Profile {
     max_requests: usize,
     max_output_tokens: u64,
     max_total_output_tokens: u64,
+    /// Operator opt-in for an HTTP or self-signed private model endpoint.
+    #[serde(default)]
+    allow_insecure: bool,
 }
 
 // Normalize only the self-referential grant hash. Task, caller, execution ID,
@@ -85,7 +90,7 @@ fn profile(root: &Path, name: &str) -> Result<(Profile, String), String> {
         _ => return Err("unsupported operator model profile expiry contract".into()),
     }
     if !p.credential_file.is_absolute()
-        || p.url != "https://api.deepseek.com/chat/completions"
+        || warden::egress::model_endpoint_target(&p.url, p.allow_insecure).is_err()
         || p.model.is_empty()
         || p.model.len() > 128
         || p.max_requests == 0
@@ -122,9 +127,11 @@ pub(super) fn validate(
         || p.credential_file != grant.credential_file
         || p.model != grant.model
         || p.url != grant.url
+        || p.protocol != grant.protocol
         || p.max_requests != grant.max_requests
         || p.max_output_tokens != grant.max_output_tokens
         || p.max_total_output_tokens != grant.max_total_output_tokens
+        || p.allow_insecure != grant.allow_insecure
     {
         return Err("issued grant policy withdrawn, changed or request mismatched".into());
     }
@@ -151,8 +158,9 @@ fn candidate(request: &ExecutionRequest, name: &str, root: &Path) -> Result<Vec<
         "apiVersion":"celln.dev/harness-grant-v3", "contractVersion":h.contract_version,
         "json":h.json,"caller":request.workload.caller,"mote":request.mote.as_ref().ok_or("missing mote")?.hash,
         "runtime":request.tools[0].hash,"closure":request.tools[0].closure.as_ref().ok_or("missing closure")?.hash,
-        "borrowedTools":h.borrowed_tools,"url":p.url,"model":p.model,"credentialFile":p.credential_file,
-        "maxRequests":p.max_requests,"maxOutputTokens":p.max_output_tokens,"maxTotalOutputTokens":p.max_total_output_tokens
+        "protocol":p.protocol,"borrowedTools":h.borrowed_tools,"url":p.url,"model":p.model,"credentialFile":p.credential_file,
+        "maxRequests":p.max_requests,"maxOutputTokens":p.max_output_tokens,"maxTotalOutputTokens":p.max_total_output_tokens,
+        "allowInsecure":p.allow_insecure
     });
     grant["issuer"] = serde_json::to_value(Binding {
         profile: name.into(),

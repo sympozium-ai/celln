@@ -18,6 +18,8 @@ pub(crate) use issuer::prove_issuance;
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Grant {
+    #[serde(default)]
+    protocol: warden::egress::ModelProtocol,
     api_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     issuer: Option<issuer::Binding>,
@@ -36,6 +38,9 @@ struct Grant {
     max_requests: usize,
     max_output_tokens: u64,
     max_total_output_tokens: u64,
+    /// Operator opt-in for an HTTP or self-signed private model endpoint.
+    #[serde(default)]
+    allow_insecure: bool,
 }
 pub struct Resolved {
     pub policy: warden::egress::HttpPolicy,
@@ -107,7 +112,10 @@ fn resolve_bytes(
         return Err("Harness identity is not authorized by operator grant".into());
     }
     let origin = &request.capabilities.egress[0];
-    if grant.url != format!("{origin}/chat/completions")
+    let target = warden::egress::model_endpoint_target(&grant.url, grant.allow_insecure)
+        .map_err(|_| "invalid Harness model endpoint")?;
+    if target.origin != *origin
+        || request.capabilities.allow_insecure != grant.allow_insecure
         || grant.model.is_empty()
         || grant.model.len() > 128
         || !grant.credential_file.is_absolute()
@@ -174,13 +182,14 @@ fn resolve_bytes(
     } else {
         serde_json::json!({"task":binding.task,"url":grant.url,"model":grant.model,"tools":binding.borrowed_tools}).to_string()
     };
-    let mut policy =
-        warden::egress::HttpPolicy::new(vec![origin.trim_start_matches("https://").into()]);
+    let mut policy = warden::egress::HttpPolicy::new(vec![target.host.clone()]);
     policy.max_requests = grant.max_requests;
+    policy.allow_insecure = grant.allow_insecure;
     policy.timeout = std::time::Duration::from_secs(45).min(std::time::Duration::from_millis(
         request.capabilities.timeout_ms,
     ));
     policy.json_posts.push(warden::egress::JsonPostGrant {
+        protocol: grant.protocol,
         url: grant.url.clone(),
         bearer_token_file: grant.credential_file,
         model: grant.model.clone(),
@@ -228,11 +237,14 @@ fn json_config(request: &ExecutionRequest, grant: &Grant, root: &Path) -> Result
             "input_bytes":io.input_bytes,"output_bytes":io.output_bytes,"timeout_ms":io.timeout_ms
         }));
     }
-    let config = serde_json::json!({
+    let mut config = serde_json::json!({
         "contract":binding.contract_version,"task":binding.task,"system":options.system,
         "url":grant.url,"model":grant.model,"max_turns":options.max_turns,
         "max_calls":options.max_calls,"tools":tools
     });
+    if grant.allow_insecure {
+        config["allow_insecure"] = serde_json::json!(true);
+    }
     let encoded = config.to_string();
     if encoded.len() > 65536 {
         return Err("JSON Harness configuration exceeds delivery limit".into());

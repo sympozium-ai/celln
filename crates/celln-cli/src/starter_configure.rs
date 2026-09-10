@@ -21,6 +21,20 @@ struct Plan {
     principal: String,
     credential_file: PathBuf,
     output: PathBuf,
+    #[serde(default)]
+    model_connection: Option<ModelConnection>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ModelConnection {
+    provider: String,
+    protocol: warden::egress::ModelProtocol,
+    endpoint: String,
+    model: String,
+    credential_profile: String,
+    #[serde(default)]
+    allow_insecure: bool,
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -36,6 +50,33 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 
 pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     let plan: Plan = serde_json::from_slice(&crate::starter_package::regular(plan, 16384)?)?;
+    let connection = plan.model_connection.as_ref();
+    let endpoint = connection.map_or("https://api.deepseek.com/chat/completions", |c| {
+        c.endpoint.as_str()
+    });
+    let model = connection.map_or("deepseek-chat", |c| c.model.as_str());
+    warden::egress::model_endpoint_target(
+        endpoint,
+        connection.is_some_and(|c| c.allow_insecure),
+    )
+    .map_err(anyhow::Error::msg)?;
+    if let Some(c) = connection {
+        let identifier = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        };
+        ensure!(
+            identifier(&c.provider)
+                && identifier(&c.credential_profile)
+                && !model.is_empty()
+                && model.len() <= 128
+                && model.trim() == model
+                && !model.chars().any(char::is_control),
+            "invalid model connection"
+        );
+    }
     ensure!(
         plan.api_version == "celln.native-starter-config/v1",
         "unsupported starter configuration"
@@ -108,11 +149,13 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     ];
     let schema = |bytes: String| json!({"hash":Hash::of(bytes.as_bytes()),"bytes":bytes});
     let tools: Vec<_> = specifications.iter().map(|(name,input)| json!({"name":name,"path":format!("/{name}"),"hash":entry(name)["executable"],"description":name,"input_schema":schema(input.to_string()),"output_schema":schema(output_schema.clone()),"input_bytes":8192,"output_bytes":32768,"timeout_ms":30000})).collect();
-    let template = pilot::turn_worker::Template::new(serde_json::from_value(
-        json!({"contract":"celln.json-tools/v1","task":"","system":"Use the borrowed tools when requested. Read files with workspace-read rather than relying on remembered content. Keep replies brief.","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","tools":tools,"max_turns":3,"max_calls":1,"require_tool_call":false}),
-    )?)?;
+    let mut template_json = json!({"contract":"celln.json-tools/v1","task":"","system":"Use the borrowed tools when requested. Read files with workspace-read rather than relying on remembered content. Keep replies brief.","url":endpoint,"model":model,"tools":tools,"max_turns":3,"max_calls":1,"require_tool_call":false});
+    if connection.is_some_and(|c| c.allow_insecure) {
+        template_json["allow_insecure"] = json!(true);
+    }
+    let template = pilot::turn_worker::Template::new(serde_json::from_value(template_json)?)?;
     let profile = serde_json::to_vec(
-        &json!({"apiVersion":"celln.parent-model-profile/v1","principal":plan.principal,"requestBinding":worker.configuration_binding(ConfigurationRole::Worker).map_err(anyhow::Error::msg)?,"templateBinding":template.binding(),"credentialFile":plan.credential_file,"url":template.policy().url,"model":template.policy().model,"maxRequests":3,"maxOutputTokens":512,"maxTotalOutputTokens":1536,"workspace":{"read":true,"write":true,"maxOperations":4,"maxFiles":8,"maxFileBytes":4096,"maxTotalBytes":16384},"fetch":{"allowHosts":["example.com"],"maxRequests":4,"maxResponseBytes":4096,"timeoutMs":10000}}),
+        &json!({"apiVersion":"celln.parent-model-profile/v1","protocol":connection.map(|c| c.protocol).unwrap_or_default(),"allowInsecure":connection.is_some_and(|c| c.allow_insecure),"principal":plan.principal,"requestBinding":worker.configuration_binding(ConfigurationRole::Worker).map_err(anyhow::Error::msg)?,"templateBinding":template.binding(),"credentialFile":plan.credential_file,"url":template.policy().url,"model":template.policy().model,"maxRequests":3,"maxOutputTokens":512,"maxTotalOutputTokens":1536,"workspace":{"read":true,"write":true,"maxOperations":4,"maxFiles":8,"maxFileBytes":4096,"maxTotalBytes":16384},"fetch":{"allowHosts":["example.com"],"maxRequests":4,"maxResponseBytes":4096,"timeoutMs":10000}}),
     )?;
     let profile_hash = Hash::of(&profile);
     let mut catalogue_tools = Vec::new();
@@ -151,7 +194,10 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         write_new(&path, &profile)?;
     }
     fs::File::open(profiles)?.sync_all()?;
-    let complete = json!({"apiVersion":"celln.native-starter-configured/v1","packageHash":plan.package_hash,"catalogueHash":Hash::of(&catalogue_bytes),"nativeTemplateHash":Hash::of(&native_bytes),"principal":plan.principal,"modelProfile":profile_hash,"model":{"provider":"deepseek","model":"deepseek-chat"},"hostLimits":{"leaseSeconds":3600,"maxTurns":12,"maxModelRequests":36,"maxOutputTokens":18432},"executionAuthorized":false,"readiness":"not_established"});
+    let mut complete = json!({"apiVersion":"celln.native-starter-configured/v1","packageHash":plan.package_hash,"catalogueHash":Hash::of(&catalogue_bytes),"nativeTemplateHash":Hash::of(&native_bytes),"principal":plan.principal,"modelProfile":profile_hash,"model":{"provider":"deepseek","model":"deepseek-chat"},"hostLimits":{"leaseSeconds":3600,"maxTurns":12,"maxModelRequests":36,"maxOutputTokens":18432},"executionAuthorized":false,"readiness":"not_established"});
+    if let Some(c) = connection {
+        complete["model"] = json!({"provider":c.provider,"protocol":c.protocol,"model":c.model,"baseURL":c.endpoint,"credentialProfile":c.credential_profile,"allowInsecure":c.allow_insecure});
+    }
     write_new(
         &plan.output.join("configured.json"),
         &serde_json::to_vec_pretty(&complete)?,

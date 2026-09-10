@@ -9,7 +9,9 @@ use std::time::Duration;
 
 #[path = "egress_post.rs"]
 mod post;
-pub use post::JsonPostGrant;
+pub use post::{
+    model_endpoint_host, model_endpoint_target, JsonPostGrant, ModelEndpoint, ModelProtocol,
+};
 
 /// Independent credential-free GET authority for native starter tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,6 +37,10 @@ pub struct HttpPolicy {
     /// None preserves the legacy shared GET/model budget. Some uses an
     /// independent GET budget; an empty allowlist explicitly denies all GETs.
     pub get: Option<GetGrant>,
+    /// Operator opt-in that also permits HTTP and self-signed HTTPS model
+    /// endpoints on private addresses. Default false keeps the HTTPS-only,
+    /// public-address contract.
+    pub allow_insecure: bool,
 }
 
 impl HttpPolicy {
@@ -47,8 +53,18 @@ impl HttpPolicy {
             json_posts: Vec::new(),
             workspace: None,
             get: None,
+            allow_insecure: false,
         }
     }
+}
+
+/// A validated egress destination with its resolved address.
+#[derive(Debug, PartialEq, Eq)]
+struct Authorized {
+    scheme: String,
+    host: String,
+    port: u16,
+    ip: IpAddr,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -92,18 +108,35 @@ impl HttpBroker {
 
     /// Validate a request and pin its DNS result before curl is allowed to
     /// connect. Pinning closes a DNS-rebinding SSRF hole.
-    fn authorize(&self, raw: &str) -> Result<(String, IpAddr), FetchDenied> {
-        let rest = raw.strip_prefix("https://").ok_or(FetchDenied::Scheme)?;
+    fn authorize(&self, raw: &str) -> Result<Authorized, FetchDenied> {
+        let (scheme, rest) = if let Some(rest) = raw.strip_prefix("https://") {
+            ("https", rest)
+        } else if self.policy.allow_insecure {
+            (
+                "http",
+                raw.strip_prefix("http://").ok_or(FetchDenied::Scheme)?,
+            )
+        } else {
+            return Err(FetchDenied::Scheme);
+        };
         let authority = rest.split('/').next().unwrap_or_default();
         if authority.is_empty() || authority.contains('@') {
             return Err(FetchDenied::Authority);
         }
-        let host = authority
-            .split(':')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if host.is_empty() || (authority.contains(':') && !authority.ends_with(":443")) {
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => {
+                let port: u16 = port.parse().map_err(|_| FetchDenied::Authority)?;
+                if port == 0 {
+                    return Err(FetchDenied::Authority);
+                }
+                (host.to_ascii_lowercase(), port)
+            }
+            None => (
+                authority.to_ascii_lowercase(),
+                if scheme == "https" { 443 } else { 80 },
+            ),
+        };
+        if host.is_empty() || (!self.policy.allow_insecure && port != 443) {
             return Err(FetchDenied::Authority);
         }
         if !self
@@ -130,20 +163,32 @@ impl HttpBroker {
                 .filter_map(|line| line.split_whitespace().next()?.parse().ok())
                 .collect()
         } else {
-            (host.as_str(), 443)
+            (host.as_str(), port)
                 .to_socket_addrs()
                 .map_err(|_| FetchDenied::Address)?
                 .map(|a| a.ip())
                 .collect()
         };
-        let ip = addresses
-            .into_iter()
-            .find_map(|a| match a {
-                IpAddr::V4(v) if is_public_v4(v.octets()) => Some(IpAddr::V4(v)),
-                _ => None,
-            })
-            .ok_or(FetchDenied::Address)?;
-        Ok((host, ip))
+        let ip = if self.policy.allow_insecure {
+            addresses
+                .into_iter()
+                .find(|a| matches!(a, IpAddr::V4(_)))
+                .ok_or(FetchDenied::Address)?
+        } else {
+            addresses
+                .into_iter()
+                .find_map(|a| match a {
+                    IpAddr::V4(v) if is_public_v4(v.octets()) => Some(IpAddr::V4(v)),
+                    _ => None,
+                })
+                .ok_or(FetchDenied::Address)?
+        };
+        Ok(Authorized {
+            scheme: scheme.into(),
+            host,
+            port,
+            ip,
+        })
     }
 
     /// HTTPS GET only, bounded body and time, DNS result pinned. Redirects are
@@ -205,7 +250,7 @@ impl HttpBroker {
                     return Err(FetchDenied::Host(host.into()));
                 }
             }
-            let (host, ip) = self.authorize(&url)?;
+            let authorized = self.authorize(&url)?;
             self.used += 1;
             self.get_used += 1;
             let header =
@@ -229,7 +274,10 @@ impl HttpBroker {
                     .arg("--max-filesize")
                     .arg(max_response_bytes.to_string())
                     .arg("--resolve")
-                    .arg(format!("{host}:443:{ip}"))
+                    .arg(format!(
+                        "{}:{}:{}",
+                        authorized.host, authorized.port, authorized.ip
+                    ))
                     .arg("--dump-header")
                     .arg(header.path())
                     .arg(&url),
@@ -321,6 +369,28 @@ mod tests {
         assert_eq!(
             b.authorize("https://example.com:444/"),
             Err(FetchDenied::Authority)
+        );
+    }
+
+    #[test]
+    fn insecure_opt_in_allows_private_http_and_ports() {
+        let mut policy = HttpPolicy::new(vec!["192.168.1.237".into()]);
+        policy.allow_insecure = true;
+        let broker = HttpBroker::new(policy);
+        let authorized = broker
+            .authorize("http://192.168.1.237:8080/v1/chat/completions")
+            .unwrap();
+        assert_eq!(authorized.scheme, "http");
+        assert_eq!(authorized.host, "192.168.1.237");
+        assert_eq!(authorized.port, 8080);
+        assert_eq!(authorized.ip.to_string(), "192.168.1.237");
+        // Without the opt-in the same request stays refused.
+        let strict = HttpBroker::new(HttpPolicy::new(vec!["192.168.1.237".into()]));
+        assert_eq!(
+            strict
+                .authorize("http://192.168.1.237:8080/v1")
+                .unwrap_err(),
+            FetchDenied::Scheme
         );
     }
 
