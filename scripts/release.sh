@@ -72,10 +72,26 @@ check() {
         echo "  note v${v} is already tagged at a different commit"
     fi
 
-    grep -q "^## ${v}\$" CHANGELOG.md || {
+    # release-please writes a linked header (`## [x.y.z](compare-url) (date)`);
+    # entries written by `--bump` are bare (`## x.y.z`). Accept both.
+    grep -qE "^## \[?${v//./\\.}\]?(\$|[[:space:](])" CHANGELOG.md || {
         echo "  FAIL CHANGELOG.md has no '## ${v}' entry"
         rc=1
     }
+
+    # release-please tracks the version in its own manifest and in version.txt.
+    # If either drifts from Cargo.toml, release-please would propose or tag a
+    # version that disagrees with what is published, so require all three to
+    # agree.
+    local rp_manifest rp_version
+    rp_manifest=$(python3 -c 'import json; print(json.load(open(".release-please-manifest.json"))["."])' 2>/dev/null || echo "")
+    rp_version=$(tr -d '[:space:]' < version.txt 2>/dev/null || echo "")
+    if [ "$rp_manifest" = "$v" ] && [ "$rp_version" = "$v" ]; then
+        echo "  ok   release-please manifest and version.txt = \"$v\""
+    else
+        echo "  FAIL release-please manifest=\"${rp_manifest}\" version.txt=\"${rp_version}\", expected \"${v}\""
+        rc=1
+    fi
     return "$rc"
 }
 
@@ -91,6 +107,19 @@ bump() {
     }
     sed -i "0,/^version = \"${from}\"/s//version = \"${to}\"/" Cargo.toml
     sed -i "s/^\(celln-[a-z]* = { version = \)\"${from}\"/\1\"${to}\"/" Cargo.toml
+    # Keep release-please's own state in step, so a later release-please run
+    # does not propose a tag that already exists.
+    printf '%s\n' "$to" > version.txt
+    python3 - "$to" <<'PY'
+import json, sys
+path = ".release-please-manifest.json"
+with open(path) as f:
+    manifest = json.load(f)
+manifest["."] = sys.argv[1]
+with open(path, "w") as f:
+    json.dump(manifest, f, indent=2)
+    f.write("\n")
+PY
     echo "${from} -> ${to}"
     grep -E '^(version|celln-[a-z]+) = ' Cargo.toml | sed 's/^/  /'
 }
