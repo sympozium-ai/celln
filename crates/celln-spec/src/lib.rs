@@ -779,7 +779,9 @@ fn is_allowed_destination(value: &str, allow_insecure: bool) -> bool {
     {
         return false;
     }
-    port.is_none_or(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+    port.map_or(true, |port| {
+        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// A spec problem worth stopping for.
