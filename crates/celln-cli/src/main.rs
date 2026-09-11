@@ -186,6 +186,9 @@ enum Cmd {
         /// Optional read-only bearer credential for GET /v1/capabilities only.
         #[arg(long)]
         capability_token_file: Option<PathBuf>,
+        /// Optional operator parent principal credential for enduring routes.
+        #[arg(long)]
+        parent_token_file: Option<PathBuf>,
         /// Durable owner ledger shared by all router replicas (coherent POSIX locks required).
         #[arg(long)]
         ownership_dir: PathBuf,
@@ -738,6 +741,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             token_file,
             client_token_file,
             capability_token_file,
+            parent_token_file,
             ownership_dir,
         } => router::serve(
             listen,
@@ -747,6 +751,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             token_file,
             client_token_file,
             capability_token_file.as_deref(),
+            parent_token_file.as_deref(),
             ownership_dir,
         ),
         Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe, &root),
