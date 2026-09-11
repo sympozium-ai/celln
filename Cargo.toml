@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.8"
+version = "0.5.9"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -21,7 +21,7 @@ repository = "https://github.com/sympozium-ai/celln"
 
 # Pinned to versions that build on Rust 1.75 (edition 2021).
 [workspace.dependencies]
-celln-control = { version = "0.5.8", path = "crates/celln-control" }
+celln-control = { version = "0.5.9", path = "crates/celln-control" }
 # Inter-crate versions track `workspace.package.version` exactly, and
 # `scripts/release.sh --bump` moves them together. A pin left behind at an
 # older version is not a stale nicety: publishing a crate whose sibling has not
@@ -29,13 +29,13 @@ celln-control = { version = "0.5.8", path = "crates/celln-control" }
 # because cargo resolves a requirement to the newest version satisfying it.
 # Requiring the current version turns that into a publish-time refusal.
 # `scripts/release.sh --check` fails if one of these drifts, and ci runs it.
-celln-manifest = { version = "0.5.8", path = "crates/celln-manifest" }
-celln-spec = { version = "0.5.8", path = "crates/celln-spec" }
-celln-store = { version = "0.5.8", path = "crates/celln-store" }
-celln-assay = { version = "0.5.8", path = "crates/celln-assay" }
-celln-forge = { version = "0.5.8", path = "crates/celln-forge" }
-celln-pilot = { version = "0.5.8", path = "crates/celln-pilot" }
-celln-warden = { version = "0.5.8", path = "crates/celln-warden" }
+celln-manifest = { version = "0.5.9", path = "crates/celln-manifest" }
+celln-spec = { version = "0.5.9", path = "crates/celln-spec" }
+celln-store = { version = "0.5.9", path = "crates/celln-store" }
+celln-assay = { version = "0.5.9", path = "crates/celln-assay" }
+celln-forge = { version = "0.5.9", path = "crates/celln-forge" }
+celln-pilot = { version = "0.5.9", path = "crates/celln-pilot" }
+celln-warden = { version = "0.5.9", path = "crates/celln-warden" }
 blake3 = "=1.5.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
