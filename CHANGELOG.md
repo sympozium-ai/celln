@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.10](https://github.com/sympozium-ai/celln/compare/v0.5.9...v0.5.10) (2026-09-11)
+
+
+### Features
+
+* **router:** route /v1/parents with durable parent affinity; dispatcher drain ([#103](https://github.com/sympozium-ai/celln/issues/103)) ([f5403e5](https://github.com/sympozium-ai/celln/commit/f5403e507748985de740febd2e1b98c65461ae97))
+
 ## [0.5.9](https://github.com/sympozium-ai/celln/compare/v0.5.8...v0.5.9) (2026-09-11)
 
 
