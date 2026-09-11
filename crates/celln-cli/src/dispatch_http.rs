@@ -503,6 +503,27 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         }
     }
     match (method.as_str(), path.as_str()) {
+        ("POST", "/v1/drain") => {
+            if length != 0 {
+                return reply(
+                    &mut stream,
+                    400,
+                    &serde_json::json!({"error":"drain body must be empty"}),
+                );
+            }
+            match state.parents.drain() {
+                Ok(()) => reply(
+                    &mut stream,
+                    200,
+                    &serde_json::json!({"teardownConfirmed":true}),
+                ),
+                Err(_) => reply(
+                    &mut stream,
+                    503,
+                    &serde_json::json!({"teardownConfirmed":false}),
+                ),
+            }
+        }
         ("POST", "/v1/artifacts/prewarm") => {
             prewarm::handle(state, &mut stream, &mut reader, length)
         }
@@ -546,7 +567,7 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 &mut stream,
                 200,
                 &serde_json::json!({
-                    "ok": node.eligible(),
+                    "ok": node.eligible() && !state.parents.is_draining(),
                     "kvm": node.kvm,
                     "mote_store": node.mote_store,
                     "tool_store": node.tool_store,

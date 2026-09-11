@@ -22,6 +22,8 @@ use std::time::Duration;
 
 #[path = "router_ownership.rs"]
 mod ownership;
+#[path = "router_parents.rs"]
+mod parents;
 
 // Credentials are bounded and never echoed in errors. Reload on each request
 // to support atomic file/Secret rotation; an unreadable file fails closed.
@@ -96,6 +98,7 @@ pub fn serve(
     token_file: &Path,
     client_token_file: &Path,
     capability_token_file: Option<&Path>,
+    parent_token_file: Option<&Path>,
     ownership_dir: &Path,
 ) -> Result<u8> {
     let mut urls: Vec<String> = backends
@@ -135,6 +138,8 @@ pub fn serve(
         mode,
         cursor: AtomicUsize::new(0),
         executions: ownership::Ledger::open(ownership_dir, 100_000)?,
+        parents: ownership::Ledger::open(&ownership_dir.join("parents"), 100_000)?,
+        parent_token_file: parent_token_file.map(Path::to_owned),
         token_file: token_file.to_owned(),
         client_token_file: client_token_file.to_owned(),
         capability_token_file: capability_token_file.map(Path::to_owned),
@@ -168,6 +173,8 @@ struct RouterState {
     cursor: AtomicUsize,
     /// Shared durable ownership and anti-replay tombstones.
     executions: ownership::Ledger,
+    parents: ownership::Ledger,
+    parent_token_file: Option<PathBuf>,
     token_file: PathBuf,
     client_token_file: PathBuf,
     capability_token_file: Option<PathBuf>,
@@ -232,6 +239,8 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
     let mut seen_length = false;
     let mut authorization = None;
     let mut pinned_backend = None;
+    let mut parent_incarnation = None;
+    let mut respond_async = false;
     let mut header_count = 0usize;
     loop {
         let header = read_bounded_line(&mut reader, MAX_HEADER_LINE)?;
@@ -267,6 +276,26 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
                 );
             }
             pinned_backend = Some(value.trim().to_owned());
+        } else if name.eq_ignore_ascii_case("x-celln-parent-incarnation") {
+            if parent_incarnation
+                .replace(value.trim().to_owned())
+                .is_some()
+            {
+                return reply(
+                    stream,
+                    400,
+                    &serde_json::json!({"error":"duplicate parent identity"}),
+                );
+            }
+        } else if name.eq_ignore_ascii_case("prefer") {
+            if value.trim() != "respond-async" || respond_async {
+                return reply(
+                    stream,
+                    400,
+                    &serde_json::json!({"error":"unsupported or duplicate preference"}),
+                );
+            }
+            respond_async = true;
         } else if name.eq_ignore_ascii_case("content-length") {
             if seen_length || !value.trim().bytes().all(|b| b.is_ascii_digit()) {
                 return reply(
@@ -335,6 +364,19 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
         }
     }
     match (method.as_str(), path.as_str()) {
+        (_, path) if path == "/v1/parents" || path.starts_with("/v1/parents/") => {
+            parents::forward(
+                state,
+                stream,
+                &mut reader,
+                &method,
+                path,
+                length,
+                parent_incarnation.as_deref(),
+                respond_async,
+                &backend_token,
+            )?;
+        }
         ("GET", "/v1/capabilities") => capability_report(state, stream, &backend_token)?,
         ("POST", "/v1/artifacts/prewarm") => forward_prewarm(
             stream,
@@ -434,6 +476,7 @@ fn capability_report(
             "preflightOnly":true,
             "eligibleNodes":eligible,
             "artifactReadiness":"not_checked",
+            "parentRouting":state.parent_token_file.is_some(),
             "nodes":nodes,
         }),
     )
@@ -1166,6 +1209,189 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parent_affinity_survives_lost_create_and_gateway_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = state(dir.path());
+        let parent_file = dir.path().join("parent-token");
+        const PARENT: &str = "parent-principal-credential-at-least-24";
+        std::fs::write(&parent_file, PARENT).unwrap();
+        first.parent_token_file = Some(parent_file.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        first.backends = vec![backend.clone()];
+        let id = format!("blake3:{}", "a".repeat(64));
+        let body = format!(
+            r#"{{"apiVersion":"celln.parent-create/v1","launchProfile":"blake3:{}"}}"#,
+            "b".repeat(64)
+        );
+        let headers = format!("Authorization: Bearer {CLIENT_TOKEN}\r\nX-Celln-Parent-Incarnation: {id}\r\nContent-Length: {}\r\n", body.len());
+        let owner_id = id.clone();
+        let server = std::thread::spawn(move || {
+            for expected in [
+                "GET /v1/health".to_string(),
+                "POST /v1/parents".to_string(),
+                format!("GET /v1/parents/{owner_id}"),
+                format!("POST /v1/parents/{owner_id}/turns"),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                assert!(line.starts_with(&format!("{expected} HTTP/1.1")), "{line}");
+                let mut credential = String::new();
+                let mut length = 0;
+                let mut async_header = false;
+                loop {
+                    let h = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if h.starts_with("Authorization:") {
+                        credential = h.clone();
+                    }
+                    if h.starts_with("Content-Length:") {
+                        length = h
+                            .split_once(':')
+                            .unwrap()
+                            .1
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                    }
+                    if h == "Prefer: respond-async\r\n" {
+                        async_header = true;
+                    }
+                }
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                if expected == "GET /v1/health" {
+                    assert_eq!(
+                        credential,
+                        format!("Authorization: Bearer {BACKEND_TOKEN}\r\n")
+                    );
+                    reply(&mut stream, 200, &serde_json::json!({"ok":true,"kvm":true})).unwrap();
+                } else {
+                    assert_eq!(credential, format!("Authorization: Bearer {PARENT}\r\n"));
+                    if expected == "POST /v1/parents" {
+                        // Owner accepted; its acknowledgement is lost.
+                        continue;
+                    }
+                    if expected.ends_with("/turns") {
+                        assert!(async_header);
+                    }
+                    reply(&mut stream, 200, &serde_json::json!({"incarnation":owner_id,"status":"Ready","retryAuthorized":false})).unwrap();
+                }
+            }
+        });
+        assert_eq!(
+            parse_status(&request(&first, "POST", "/v1/parents", &headers, &body)),
+            502
+        );
+        drop(first);
+        let mut replica = state(dir.path());
+        replica.parent_token_file = Some(parent_file);
+        replica.backends = vec![backend];
+        assert_eq!(
+            parse_status(&request(&replica, "POST", "/v1/parents", &headers, &body)),
+            409
+        );
+        let auth = format!("Authorization: Bearer {CLIENT_TOKEN}\r\n");
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "GET",
+                &format!("/v1/parents/{id}"),
+                &auth,
+                ""
+            )),
+            200
+        );
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                &format!("/v1/parents/{id}/turns"),
+                &format!("{auth}Prefer: respond-async\r\nContent-Length: 2\r\n"),
+                "{}"
+            )),
+            200
+        );
+        server.join().unwrap();
+        replica.backends = vec!["http://127.0.0.1:1".into()];
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "GET",
+                &format!("/v1/parents/{id}"),
+                &auth,
+                ""
+            )),
+            503
+        );
+        assert_eq!(
+            parse_status(&request(&replica, "POST", "/v1/parents", &headers, &body)),
+            409
+        );
+    }
+
+    #[test]
+    fn parent_routes_refuse_discovery_credentials_and_malformed_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut owner = state(dir.path());
+        let parent = dir.path().join("parent");
+        std::fs::write(&parent, "parent-owner-credential-at-least-24").unwrap();
+        owner.parent_token_file = Some(parent.clone());
+        let discovery = dir.path().join("discovery");
+        const DISCOVERY: &str = "discovery-credential-at-least-24";
+        std::fs::write(&discovery, DISCOVERY).unwrap();
+        owner.capability_token_file = Some(discovery);
+        let id = format!("blake3:{}", "a".repeat(64));
+        for path in [
+            "/v1/parents".into(),
+            format!("/v1/parents/{id}"),
+            format!("/v1/parents/{id}/turns"),
+        ] {
+            assert_eq!(
+                parse_status(&request(
+                    &owner,
+                    "POST",
+                    &path,
+                    &format!("Authorization: Bearer {DISCOVERY}\r\n"),
+                    ""
+                )),
+                401
+            );
+        }
+        for headers in [
+            String::new(),
+            "X-Celln-Parent-Incarnation: ../../escape\r\n".into(),
+            format!("X-Celln-Parent-Incarnation: {id}\r\nX-Celln-Parent-Incarnation: {id}\r\n"),
+        ] {
+            assert_eq!(
+                parse_status(&request(
+                    &owner,
+                    "POST",
+                    "/v1/parents",
+                    &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n{headers}"),
+                    ""
+                )),
+                400
+            );
+        }
+        assert!(owner.parents.lookup(&id).unwrap().is_none());
+        std::fs::write(parent, DISCOVERY).unwrap();
+        assert_eq!(
+            parse_status(&request(
+                &owner,
+                "GET",
+                &format!("/v1/parents/{id}"),
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                ""
+            )),
+            503
+        );
+    }
+
     fn state(dir: &Path) -> RouterState {
         let client_token_file = dir.join("client");
         let token_file = dir.join("backend");
@@ -1176,6 +1402,8 @@ mod tests {
             mode: RoutingMode::RoundRobin,
             cursor: AtomicUsize::new(0),
             executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
+            parents: ownership::Ledger::open(&dir.join("ownership/parents"), 100).unwrap(),
+            parent_token_file: None,
             token_file,
             client_token_file,
             capability_token_file: None,

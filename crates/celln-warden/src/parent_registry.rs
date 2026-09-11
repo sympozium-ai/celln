@@ -30,6 +30,7 @@ struct Entry {
 struct State {
     entries: BTreeMap<String, Entry>,
     reserved_bytes: u64,
+    draining: bool,
 }
 pub struct ParentRegistry {
     state: Mutex<State>,
@@ -114,6 +115,7 @@ impl ParentRegistry {
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
                 reserved_bytes: 0,
+                draining: false,
             }),
             max_entries,
             memory_bytes,
@@ -177,6 +179,9 @@ impl ParentRegistry {
             .state
             .lock()
             .map_err(|_| "parent registry unavailable")?;
+        if state.draining {
+            return Err("parent owner is draining".into());
+        }
         if state.entries.contains_key(&incarnation.0) {
             return Err("parent incarnation already claimed; reconcile original owner".into());
         }
@@ -212,6 +217,9 @@ impl ParentRegistry {
             .lock()
             .map_err(|_| "parent registry unavailable")?;
         let entry = scoped(&state, principal, incarnation)?;
+        if state.draining {
+            return Err("parent owner is draining".into());
+        }
         entry
             .owner
             .as_ref()
@@ -270,6 +278,44 @@ impl ParentRegistry {
     /// Cancellation + confirmed join, without holding the registry lock across
     /// guest teardown. Concurrent stop observes Stopping, never false success.
     /// A panicked owner remains conservatively charged as teardown uncertain.
+    /// Atomically close admission, signal all live trees, then join each owner.
+    /// Keep every identity/tombstone and report uncertain teardown as failure.
+    pub fn drain(&self) -> Result<(), String> {
+        let owners = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "parent registry unavailable")?;
+            state.draining = true;
+            state
+                .entries
+                .iter()
+                .map(|(id, entry)| {
+                    if let Some(owner) = &entry.owner {
+                        owner.cancel();
+                    }
+                    (entry.principal.clone(), Hash(id.clone()))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut uncertain = false;
+        for (principal, id) in owners {
+            uncertain |= self.stop(&principal, &id).is_err();
+        }
+        if uncertain {
+            Err("parent drain teardown uncertain".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.draining)
+            .unwrap_or(true)
+    }
+
     pub fn stop(&self, principal: &str, incarnation: &Hash) -> Result<(), String> {
         let owner = {
             let mut state = self
@@ -322,6 +368,30 @@ mod tests {
         registry.spawn_admitted("tenant-one", id, Duration::from_secs(10), 100, || {
             Ok(|bytes: &[u8]| Ok(bytes.to_vec()))
         })
+    }
+    #[test]
+    fn drain_joins_all_owners_and_permanently_closes_admission() {
+        let registry = ParentRegistry::new(4, 400).unwrap();
+        let first = Hash::of(b"drain-one");
+        let second = Hash::of(b"drain-two");
+        spawn(&registry, &first).unwrap();
+        spawn(&registry, &second).unwrap();
+        registry.drain().unwrap();
+        assert!(registry.is_draining());
+        assert_eq!(registry.reserved_capacity().unwrap().owners, 0);
+        assert_eq!(
+            registry.status("tenant-one", &first).unwrap(),
+            Status::Stopped
+        );
+        assert_eq!(
+            registry.status("tenant-one", &second).unwrap(),
+            Status::Stopped
+        );
+        assert!(spawn(&registry, &Hash::of(b"after-drain")).is_err());
+        assert!(registry
+            .submit("tenant-one", &first, b"no more work")
+            .is_err());
+        registry.drain().unwrap();
     }
     #[test]
     fn tenant_scope_applies_to_submit_status_and_stop() {
