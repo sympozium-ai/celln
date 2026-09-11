@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.9](https://github.com/sympozium-ai/celln/compare/v0.5.8...v0.5.9) (2026-09-11)
+
+
+### Features
+
+* **egress:** opt-in HTTP and self-signed model endpoints ([#101](https://github.com/sympozium-ai/celln/issues/101)) ([ccc6367](https://github.com/sympozium-ai/celln/commit/ccc63677643653e0687b139a5c48188df2802c1c))
+
 ## 0.5.8
 
 ### Added
