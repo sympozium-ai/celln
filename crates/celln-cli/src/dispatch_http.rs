@@ -312,14 +312,17 @@ impl EgressPolicy {
 
     fn check(&self, request: &ExecutionRequest) -> Result<()> {
         for destination in &request.capabilities.egress {
-            // ExecutionRequest::problems() validates the HTTPS-only shape
-            // before this host policy runs. Keep this check fail-closed too,
-            // so it remains safe if called independently later.
-            let host = destination
+            // ExecutionRequest::problems() validates the HTTP(S) shape before
+            // this host policy runs. Keep this check fail-closed too, so it
+            // remains safe if called independently later. The scheme and any
+            // port are stripped; only the exact host is compared.
+            let rest = destination
                 .strip_prefix("https://")
-                .filter(|host| !host.is_empty())
-                .context("egress destination is not a named HTTPS host")?;
-            if !self.allow_hosts.contains(&host.to_ascii_lowercase()) {
+                .or_else(|| destination.strip_prefix("http://"))
+                .filter(|rest| !rest.is_empty())
+                .context("egress destination is not a named HTTP(S) host")?;
+            let host = rest.split(['/', ':']).next().unwrap_or_default();
+            if host.is_empty() || !self.allow_hosts.contains(&host.to_ascii_lowercase()) {
                 bail!(
                     "egress destination {destination:?} is outside this dispatcher's host allowlist"
                 );

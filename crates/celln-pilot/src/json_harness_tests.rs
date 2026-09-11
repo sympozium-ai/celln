@@ -82,6 +82,7 @@ fn config(names: &[&str]) -> Config {
         max_turns: 6,
         max_calls: 6,
         require_tool_call: false,
+        allow_insecure: false,
         tools: names
             .iter()
             .map(|name| Tool {

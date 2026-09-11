@@ -105,6 +105,7 @@ mod tests {
             max_turns: 1,
             max_calls: 0,
             require_tool_call: false,
+            allow_insecure: false,
         }
     }
     fn turn(task: &str) -> ReservedTurn {

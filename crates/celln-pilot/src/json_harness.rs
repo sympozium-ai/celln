@@ -66,6 +66,10 @@ pub struct Config {
     /// Omission preserves the original serialized template and optional calls.
     #[serde(default, skip_serializing_if = "is_false")]
     pub require_tool_call: bool,
+    /// Operator opt-in for an HTTP or self-signed private model endpoint.
+    /// Omission preserves the original serialized template hash.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub allow_insecure: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -88,7 +92,8 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
     ensure!(
         !config.model.is_empty()
             && config.model.len() <= 128
-            && config.url.starts_with("https://")
+            && (config.url.starts_with("https://")
+                || (config.allow_insecure && config.url.starts_with("http://")))
             && config.url.len() <= 512,
         "invalid model selection"
     );

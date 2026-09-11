@@ -303,6 +303,10 @@ pub struct CapabilityRequest {
     pub workspace: WorkspaceAccess,
     #[serde(default)]
     pub egress: Vec<String>,
+    /// Explicit operator opt-in for an HTTP or self-signed model endpoint.
+    /// Absent (the default) keeps the HTTPS-only, public-address contract.
+    #[serde(rename = "allowInsecure", default)]
+    pub allow_insecure: bool,
     #[serde(rename = "timeoutMs")]
     pub timeout_ms: u64,
     #[serde(rename = "memoryBytes")]
@@ -609,11 +613,15 @@ impl ExecutionRequest {
         }
 
         for (index, destination) in self.capabilities.egress.iter().enumerate() {
-            if !is_named_https_destination(destination) {
+            if !is_allowed_destination(destination, self.capabilities.allow_insecure) {
                 problems.push(ExecutionProblem {
                     code: ExecutionProblemCode::InvalidEgress,
                     field: format!("capabilities.egress[{index}]"),
-                    message: "must name one HTTPS host without a path, query, or fragment".into(),
+                    message: if self.capabilities.allow_insecure {
+                        "must name one HTTP(S) host without a path, query, or fragment".into()
+                    } else {
+                        "must name one HTTPS host without a path, query, or fragment".into()
+                    },
                 });
             }
         }
@@ -742,6 +750,38 @@ fn is_named_https_destination(value: &str) -> bool {
         && host
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b':'))
+}
+
+/// Destination shape for an execution request. The default keeps the
+/// HTTPS-only contract; the operator opt-in additionally permits HTTP and an
+/// explicit port so a private or self-signed model can be reached.
+fn is_allowed_destination(value: &str, allow_insecure: bool) -> bool {
+    if !allow_insecure {
+        return is_named_https_destination(value);
+    }
+    let Some(authority) = value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if authority.is_empty() || authority.contains(['/', '?', '#']) {
+        return false;
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    if host.is_empty()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'[' | b']'))
+    {
+        return false;
+    }
+    port.map_or(true, |port| {
+        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+    })
 }
 
 /// A spec problem worth stopping for.

@@ -187,6 +187,7 @@ fn main() -> Result<()> {
             policy.timeout = Duration::from_secs(45);
             policy.max_requests = 6;
             policy.json_posts.push(warden::egress::JsonPostGrant {
+                protocol: Default::default(),
                 url: "https://api.deepseek.com/chat/completions".into(),
                 bearer_token_file: token.clone(),
                 model: "deepseek-chat".into(),

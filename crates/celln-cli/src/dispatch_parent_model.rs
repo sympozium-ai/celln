@@ -15,6 +15,8 @@ use warden::{parent_lease::ReservedTurn, parent_permit::Binding};
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Profile {
+    #[serde(default)]
+    protocol: warden::egress::ModelProtocol,
     api_version: String,
     principal: String,
     request_binding: Hash,
@@ -25,6 +27,9 @@ struct Profile {
     max_requests: u64,
     max_output_tokens: u64,
     max_total_output_tokens: u64,
+    /// Operator opt-in for an HTTP or self-signed private model endpoint.
+    #[serde(default)]
+    allow_insecure: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace: Option<WorkspaceProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,7 +176,7 @@ impl ChildBrokers {
             || profile.template_binding != self.template
             || profile.url != self.url
             || profile.model != self.model
-            || profile.url != "https://api.deepseek.com/chat/completions"
+            || warden::egress::model_endpoint_target(&profile.url, profile.allow_insecure).is_err()
             || !profile.credential_file.is_absolute()
             || profile.max_output_tokens != 512
             || profile.max_requests != self.requests
@@ -239,9 +244,11 @@ impl ChildBrokers {
         {
             return Err("model profile exceeds child reservation".into());
         }
-        let mut policy = warden::egress::HttpPolicy::new(vec!["api.deepseek.com".into()]);
+        let target = warden::egress::model_endpoint_target(&profile.url, profile.allow_insecure)?;
+        let mut policy = warden::egress::HttpPolicy::new(vec![target.host.clone()]);
         policy.timeout = turn.limits.timeout.min(std::time::Duration::from_secs(45));
         policy.max_requests = profile.max_requests as usize;
+        policy.allow_insecure = profile.allow_insecure;
         let get = match profile.fetch {
             Some(fetch) => warden::egress::GetGrant {
                 allow_hosts: fetch.allow_hosts,
@@ -260,6 +267,7 @@ impl ChildBrokers {
         policy.allow_hosts.extend(get.allow_hosts.iter().cloned());
         policy.get = Some(get);
         policy.json_posts.push(warden::egress::JsonPostGrant {
+            protocol: profile.protocol,
             url: profile.url,
             model: profile.model,
             bearer_token_file: profile.credential_file,
@@ -323,6 +331,7 @@ mod tests {
         )
         .unwrap();
         let profile = Profile {
+            protocol: Default::default(),
             api_version: "celln.parent-model-profile/v1".into(),
             principal: binding.principal.clone(),
             request_binding: request
@@ -335,6 +344,7 @@ mod tests {
             max_requests: 1,
             max_output_tokens: 512,
             max_total_output_tokens: 512,
+            allow_insecure: false,
             workspace: None,
             fetch: None,
         };

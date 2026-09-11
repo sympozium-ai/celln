@@ -12,7 +12,7 @@ use anyhow::{bail, Context, Result};
 use celln_manifest::{Author, Entry, Hash, Manifest, Tier};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use warden::egress::{HttpPolicy, JsonPostGrant};
+use warden::egress::{HttpPolicy, JsonPostGrant, ModelProtocol};
 use warden::vmm::boot::{BootConfig, LinuxCell};
 
 fn main() -> Result<()> {
@@ -109,6 +109,7 @@ fn main() -> Result<()> {
     let mut policy = HttpPolicy::new(vec![host]);
     if let Some(bearer_token_file) = model_token_file {
         policy.json_posts.push(JsonPostGrant {
+            protocol: ModelProtocol::OpenaiChat,
             url,
             bearer_token_file,
             model: "deepseek-chat".into(),
