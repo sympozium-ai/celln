@@ -55,11 +55,8 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         c.endpoint.as_str()
     });
     let model = connection.map_or("deepseek-chat", |c| c.model.as_str());
-    warden::egress::model_endpoint_target(
-        endpoint,
-        connection.is_some_and(|c| c.allow_insecure),
-    )
-    .map_err(anyhow::Error::msg)?;
+    warden::egress::model_endpoint_target(endpoint, connection.is_some_and(|c| c.allow_insecure))
+        .map_err(anyhow::Error::msg)?;
     if let Some(c) = connection {
         let identifier = |s: &str| {
             !s.is_empty()

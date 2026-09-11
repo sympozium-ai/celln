@@ -773,9 +773,9 @@ fn is_allowed_destination(value: &str, allow_insecure: bool) -> bool {
         None => (authority, None),
     };
     if host.is_empty()
-        || !host.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'[' | b']')
-        })
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'[' | b']'))
     {
         return false;
     }
