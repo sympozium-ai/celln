@@ -1611,10 +1611,26 @@ fn access(
         Some(value) => value,
         None => return reply(stream, 400, &json!({"error":"invalid access decision"})),
     };
-    let admission = match scoped
-        .admission
-        .access(&scoped.verifier, &permit, &decision, &receiver)
+    let enrolled_decision = match serde_json::to_vec(&prepared.decision)
+        .ok()
+        .and_then(|raw| crate::tenancy_contract::canonical(&raw).ok())
     {
+        Some(value) => value,
+        None => return reply(stream, 503, &json!({"error":"invalid durable enrollment"})),
+    };
+    let enrolled_request = match external_request(&prepared.operation, &prepared.decision) {
+        Ok(value) => value,
+        Err(_) => return reply(stream, 503, &json!({"error":"invalid durable enrollment"})),
+    };
+    let admission = match scoped.admission.access(
+        &scoped.verifier,
+        &permit,
+        &decision,
+        &receiver,
+        &enrolled_decision,
+        &enrolled_request,
+        &prepared.owner,
+    ) {
         Ok(v) => v,
         Err(AdmissionError::Credential("AUTH_CONTEXT_LOST")) => {
             if let Ok(Some(status)) = scoped.load_status(&request.id) {
@@ -1622,27 +1638,23 @@ fn access(
                     return reply(stream, 200, &status);
                 }
             }
-            if cleanup && prepared.owner == scoped.admission.owner() {
-                let status = terminal_status(
-                    &request.id,
-                    &prepared.owner,
-                    "Cancelled",
-                    Some("cancelled before native admission".into()),
-                    None,
-                );
-                if persist_status(scoped, &status).is_err() {
-                    return reply(
-                        stream,
-                        503,
-                        &json!({"error":"scoped result journal unavailable"}),
-                    );
-                }
-                return reply(stream, 200, &status);
-            }
             return admission_reply(stream, AdmissionError::Credential("AUTH_CONTEXT_LOST"));
         }
         Err(e) => return admission_reply(stream, e),
     };
+    if cleanup && admission.outcome() == Some(&Outcome::NeverStarted) {
+        let status = never_started_status(&prepared);
+        // This status carries no native receipt or provenance: the durable
+        // admission outcome proves only that no Fresh handle was ever returned.
+        if persist_status(scoped, &status).is_err() {
+            return reply(
+                stream,
+                503,
+                &json!({"error":"scoped result journal unavailable"}),
+            );
+        }
+        return reply(stream, 200, &status);
+    }
     if admission.owner() != scoped.admission.owner() {
         let historical = prepared.decision["lifecycle"] != "one-shot"
             && prepared.decision["parent"]["incarnation"]
@@ -2448,6 +2460,23 @@ fn terminal_status(
     }
 }
 
+fn never_started_status(prepared: &PreparedRecord) -> ScopedStatus {
+    let mut status = terminal_status(
+        &prepared.id,
+        &prepared.owner,
+        "Cancelled",
+        Some("never started; permanently fenced".into()),
+        None,
+    );
+    status.parent_incarnation = prepared.decision["parent"]["incarnation"]
+        .as_str()
+        .map(str::to_owned);
+    status.turn_id = prepared.decision["parent"]["turnId"]
+        .as_str()
+        .map(str::to_owned);
+    status
+}
+
 fn validate_parent_template(template: &ParentTemplate) -> Result<(), String> {
     let request = &template.request;
     if template.api_version != "celln.scoped-parent-template/v1"
@@ -2752,6 +2781,32 @@ mod tests {
         let control = operation_control(&prepared).unwrap();
         assert!(control.remaining() <= Duration::from_secs(2));
         assert!(control.remaining() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn never_started_cleanup_keeps_enrollment_owner_without_native_provenance() {
+        let (operation, decision) = fixture();
+        let prepared = PreparedRecord {
+            version: 1,
+            id: operation_id(&operation, &decision).unwrap(),
+            owner: format!("sha256:{}", "a".repeat(64)),
+            operation,
+            decision,
+        };
+        let status = never_started_status(&prepared);
+        assert_eq!(status.owner, prepared.owner);
+        assert_eq!(status.phase, "Cancelled");
+        assert_eq!(
+            status.reason.as_deref(),
+            Some("never started; permanently fenced")
+        );
+        assert!(status.cleanup_confirmed);
+        assert!(status.receipt_digest.is_none());
+        assert!(status.parent_id.is_none());
+        assert!(status.child_id.is_none());
+        assert!(status.cell_id.is_none());
+        assert!(status.execution.is_none());
+        assert!(status.substrate.is_none());
     }
 
     #[test]
