@@ -27,6 +27,13 @@ mod starter_admit;
 mod starter_configure;
 #[cfg(target_os = "linux")]
 mod starter_package;
+#[cfg(target_os = "linux")]
+mod tenancy_admission;
+mod tenancy_contract;
+mod tenancy_credentials;
+mod tenancy_model_context;
+#[cfg(target_os = "linux")]
+mod tenancy_model_relay;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -147,6 +154,22 @@ enum Cmd {
         /// Repeat for each allowed host; no entries means deny all egress.
         #[arg(long, env = "CELLN_DISPATCHER_EGRESS_HOSTS", value_delimiter = ',')]
         allow_egress_host: Vec<String>,
+        /// Independent operator bearer for /v1/scoped/*.
+        /// Scoped execution remains disabled when this or the JWKS/issuer is absent.
+        #[arg(long)]
+        scoped_operator_token_file: Option<PathBuf>,
+        /// Public Ed25519 JWKS used to verify scoped execution/model permits.
+        #[arg(long)]
+        scoped_jwks_file: Option<PathBuf>,
+        /// Exact issuer expected in scoped permits.
+        #[arg(long)]
+        scoped_issuer: Option<String>,
+        /// Fixed HTTPS origin of the model gateway. Required only for model routes.
+        #[arg(long)]
+        scoped_gateway_origin: Option<String>,
+        /// Optional public CA bundle for the fixed model gateway origin.
+        #[arg(long)]
+        scoped_gateway_ca: Option<PathBuf>,
         /// This node's identity and capacity, used to admit
         /// `celln.dev/v1alpha1` ExecutionRequests posted to `/v1/executions`.
         #[command(flatten)]
@@ -724,12 +747,24 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             unsafe_non_loopback,
             token_file,
             allow_egress_host,
+            scoped_operator_token_file,
+            scoped_jwks_file,
+            scoped_issuer,
+            scoped_gateway_origin,
+            scoped_gateway_ca,
             probe,
         } => dispatch_http::serve(
             listen,
             *unsafe_non_loopback,
             token_file,
             allow_egress_host,
+            dispatch_http::ScopedOptions {
+                operator_token_file: scoped_operator_token_file.as_deref(),
+                jwks_file: scoped_jwks_file.as_deref(),
+                issuer: scoped_issuer.as_deref(),
+                gateway_origin: scoped_gateway_origin.as_deref(),
+                gateway_ca: scoped_gateway_ca.as_deref(),
+            },
             root,
             probe,
         ),
