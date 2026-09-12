@@ -1,7 +1,7 @@
-//! Existing one-shot entry point: no retained context accepted here.
+//! Explicit one-shot model or model-free JSON adapter; no retained context.
 fn main() {
     #[cfg(target_os = "linux")]
-    if let Err(error) = pilot::json_guest::run(&[], None) {
+    if let Err(error) = pilot::json_guest::run_entry() {
         eprintln!("CELLN_HARNESS_ERROR {error:#}");
         std::process::exit(1);
     }

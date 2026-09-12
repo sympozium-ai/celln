@@ -528,7 +528,7 @@ fn run_cell_with_broker(
     alias: &str,
     mut cell: warden::vmm::boot::LinuxCell,
     state_root: &Path,
-    broker: Option<warden::egress::HttpPolicy>,
+    broker: Option<warden::egress::HttpBroker>,
 ) -> Result<LaunchOutcome, String> {
     cell.set_timeout(std::time::Duration::from_millis(
         request.capabilities.timeout_ms.max(1),
@@ -547,8 +547,18 @@ fn run_cell_with_broker(
         .map(|record| record.id.clone())
         .unwrap_or_default();
 
-    if let Some(policy) = broker {
-        cell.enable_http_fetch(policy);
+    if let Some(broker) = broker {
+        if let Err(error) = cell.enable_http_broker(broker) {
+            if let Some(record) = record.as_mut() {
+                crate::cells::finish(
+                    state_root,
+                    record,
+                    "kvm",
+                    Some("HTTP broker attachment refused".into()),
+                );
+            }
+            return Err(error.to_string());
+        }
     } else if request.harness.is_none() && !request.capabilities.egress.is_empty() {
         let hosts: Vec<String> = request
             .capabilities
@@ -591,7 +601,7 @@ fn run_cell_with_broker(
     if let Some(grant) = &outcome.execution {
         let workspace = serde_json::to_value(request.capabilities.workspace).unwrap();
         if grant.workspace.as_deref() != workspace.as_str()
-            || grant.fetch != !request.capabilities.egress.is_empty()
+            || grant.fetch == request.capabilities.egress.is_empty()
             || !matches!(grant.lane.as_str(), "agent" | "tool")
             || (request.execution.lane == RequestedLane::Agent && grant.lane != "agent")
         {
@@ -931,7 +941,10 @@ mod tests {
         )
         .unwrap();
         assert!(!outcome.succeeded());
-        assert_eq!(outcome.denial.as_deref(), Some("pilot exec setup failed"));
+        assert!(outcome
+            .denial
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("pilot exec setup failed (errno ")));
         assert!(outcome.execution.is_none());
         // An agent artifact stays in the agent lane even if a later caller
         // asks for the tool lane. The spoof probe also attempts unshare.

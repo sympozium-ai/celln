@@ -101,14 +101,18 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
         (1..=6).contains(&config.max_turns) && config.max_calls <= 16 && config.tools.len() <= 16,
         "turn/call/tool limit exceeds contract"
     );
-    let mut names = BTreeSet::new();
     ensure!(
         !config.require_tool_call
             || (!config.tools.is_empty() && config.max_calls > 0 && config.max_turns >= 2),
         "required tool call needs a selected tool and call/result budgets"
     );
+    compile_tools(&config.tools)
+}
+
+fn compile_tools(tools: &[Tool]) -> Result<Vec<CheckedTool<'_>>> {
+    let mut names = BTreeSet::new();
     let mut paths = BTreeSet::new();
-    config.tools.iter().map(|tool| {
+    tools.iter().map(|tool| {
         ensure!(!tool.name.is_empty() && tool.name.len() <= 64 && tool.name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
             && names.insert(&tool.name) && paths.insert(&tool.path), "invalid or duplicate tool identity");
         ensure!(celln_manifest::closure::canonical_path(&tool.path) && tool.path.len() <= 256
@@ -124,6 +128,48 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
         let definition = json!({"type":"function","function":{"name":tool.name,"description":tool.description,"parameters":parameters}});
         Ok(CheckedTool { tool, input, output, definition })
     }).collect()
+}
+
+pub const DIRECT_CONTRACT: &str = "celln.json-direct/v1";
+
+/// A separate model-free adapter contract. No URL, model, history, discovery,
+/// credentials or broker callback exist in this shape. Exactly one lent tool is
+/// invoked with schema-checked argument bytes; it is not a model-loop fallback.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectConfig {
+    pub contract: String,
+    pub tool: Tool,
+    pub arguments: String,
+}
+
+fn direct_tool(config: &DirectConfig) -> Result<CheckedTool<'_>> {
+    ensure!(
+        config.contract == DIRECT_CONTRACT,
+        "unsupported direct contract"
+    );
+    let mut tools = compile_tools(std::slice::from_ref(&config.tool))?;
+    let tool = tools.remove(0);
+    tool.input
+        .validate(config.arguments.as_bytes(), tool.tool.input_bytes)
+        .map_err(anyhow::Error::msg)?;
+    Ok(tool)
+}
+
+pub fn validate_direct(config: &DirectConfig) -> Result<()> {
+    direct_tool(config).map(|_| ())
+}
+
+pub fn run_direct(
+    config: &DirectConfig,
+    execute: impl FnOnce(&Tool, &[u8]) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    let tool = direct_tool(config)?;
+    let output = execute(tool.tool, config.arguments.as_bytes())?;
+    tool.output
+        .validate(&output, tool.tool.output_bytes)
+        .map_err(anyhow::Error::msg)?;
+    Ok(output)
 }
 
 /// Executes the bounded model loop through injected broker/tool transports.

@@ -95,6 +95,11 @@ pub enum Outcome {
 pub struct Fresh {
     record: Record,
 }
+impl Fresh {
+    pub fn record(&self) -> &Record {
+        &self.record
+    }
+}
 pub enum Claim {
     Fresh(Fresh),
     Recovery(Record),
@@ -173,6 +178,9 @@ impl Drop for Lock {
 }
 
 impl Journal {
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
     /// Each owner instance gets a fresh, non-restorable identity. Reopening this
     /// directory does not resurrect a former owner's native/model contexts.
     pub fn open(root: &Path, capacity: usize) -> Result<Self, Error> {

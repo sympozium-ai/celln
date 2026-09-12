@@ -128,10 +128,8 @@ impl Node {
             Self::String {
                 min_length,
                 max_length,
-            } => {
-                if min_length > max_length || *max_length > 4096 {
-                    return Err("invalid string bounds".into());
-                }
+            } if min_length > max_length || *max_length > 4096 => {
+                return Err("invalid string bounds".into());
             }
             Self::Integer { minimum, maximum } if minimum > maximum => {
                 return Err("invalid integer bounds".into())

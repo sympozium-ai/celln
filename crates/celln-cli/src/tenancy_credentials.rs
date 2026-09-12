@@ -45,7 +45,7 @@ struct Claims {
     operation: String,
     subject: Subject,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Receiver-owned expected identity. Never populate this solely from the
 /// unverified token/decision submitted by a caller. Replay recovery must be
