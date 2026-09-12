@@ -9,9 +9,10 @@ It does not close either issue or enable mediated admission.
 ## Shared input
 
 The unmodified fixture bundle is vendored from Sympozium's #496/#499 stack at
-Sympozium source commit `46388ed`. External bundle pin:
+Sympozium source commit `8b69b03` (accepted tool-free decisions corrected to
+use the schema-required empty array rather than null). External bundle pin:
 
-`sha256:cd1437aca37e90510f03b273bb00a25756e46d1e33fb58ceb81c4d2bb002d509`
+`sha256:e5a26a8a31d388072067c9d239ff2908fb962effd08b234f152dc5a0ad3dad34`
 
 Tests check the external pin, normative file checksums, eight decision digests,
 exact canonical bytes and their external-request digests. No new protocol or
