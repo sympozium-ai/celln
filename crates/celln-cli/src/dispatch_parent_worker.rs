@@ -17,11 +17,25 @@ pub(super) struct PreparedWorker {
 /// reserved turn. Implementations must consume original per-turn custody and
 /// refuse replay/context loss; a parent grant is not a fresh model allowance.
 pub(super) type ScopedTurnBrokers =
-    Box<dyn FnMut(&ReservedTurn) -> Result<warden::egress::HttpBroker, String> + Send>;
+    Box<dyn FnMut(&ReservedTurn) -> Result<ScopedTurnBroker, String> + Send>;
+
+pub(crate) struct ScopedTurnBroker {
+    pub broker: warden::egress::HttpBroker,
+    /// Independently admitted operation control, already bounded by the
+    /// original absolute turn deadline. It is nested under the live parent's
+    /// exact child control while the VM runs.
+    pub control: celln_control::Control,
+}
+
+pub(super) type ScopedTurnResults =
+    Box<dyn FnMut(&ReservedTurn, &super::LaunchOutcome) -> Result<(), String> + Send>;
 
 enum WorkerBrokers {
     Legacy(super::parent_model::ChildBrokers),
-    Scoped(ScopedTurnBrokers),
+    Scoped {
+        supply: ScopedTurnBrokers,
+        results: ScopedTurnResults,
+    },
 }
 
 fn check_tools(
@@ -142,6 +156,7 @@ pub(super) fn prepare_worker_scoped(
     tool_root: &Path,
     state_root: &Path,
     brokers: ScopedTurnBrokers,
+    results: ScopedTurnResults,
 ) -> Result<PreparedWorker, String> {
     if scoped_worker_binding(request, &template)? != binding.worker_configuration
         || request.workload.caller != binding.principal
@@ -171,7 +186,10 @@ pub(super) fn prepare_worker_scoped(
         mote_root,
         tool_root,
         state_root,
-        WorkerBrokers::Scoped(brokers),
+        WorkerBrokers::Scoped {
+            supply: brokers,
+            results,
+        },
     )
 }
 
@@ -227,7 +245,7 @@ impl PreparedWorker {
         }
         // Keep the legacy workspace lease alive through execution. Scoped
         // workers never consult standing provider/workspace profile files.
-        let (broker, _workspace_lease, egress) = match &mut self.brokers {
+        let (broker, scoped_control, _workspace_lease, egress) = match &mut self.brokers {
             WorkerBrokers::Legacy(brokers) => {
                 let mut policy = brokers.for_turn(turn)?;
                 let lease = brokers.workspace_for_turn(turn, &mut policy)?;
@@ -236,21 +254,20 @@ impl PreparedWorker {
                     .iter()
                     .map(|host| format!("https://{host}"))
                     .collect();
-                (warden::egress::HttpBroker::new(policy), lease, egress)
+                (warden::egress::HttpBroker::new(policy), None, lease, egress)
             }
-            WorkerBrokers::Scoped(supply) => {
-                celln_control::current()
-                    .ok_or("scoped worker requires live child control")?
-                    .check()
-                    .map_err(|e| e.to_string())?;
-                let broker = supply(turn)?;
-                if !broker.fits_mediated_turn(turn.limits.model_requests, turn.limits.output_tokens)
+            WorkerBrokers::Scoped { supply, .. } => {
+                celln_control::current().ok_or("scoped worker requires live child control")?;
+                let supplied = supply(turn)?;
+                if !supplied
+                    .broker
+                    .fits_mediated_turn(turn.limits.model_requests, turn.limits.output_tokens)
                 {
                     return Err(
                         "scoped worker transport exceeds the reserved model-only turn".into(),
                     );
                 }
-                (broker, None, Vec::new())
+                (supplied.broker, Some(supplied.control), None, Vec::new())
             }
         };
         let mut invocation: serde_json::Value =
@@ -273,14 +290,48 @@ impl PreparedWorker {
             return Err("remaining worker timeout is below execution resolution".into());
         }
         request.capabilities.egress = egress;
-        let mut outcome = super::super::run_cell_with_broker(
-            &request,
-            &request.invocation.as_ref().unwrap().alias,
-            cell,
-            &self.root,
-            Some(broker),
-        )?;
+        let launch = || {
+            super::super::run_cell_with_broker(
+                &request,
+                &request.invocation.as_ref().unwrap().alias,
+                cell,
+                &self.root,
+                Some(broker),
+            )
+        };
+        if scoped_control
+            .as_ref()
+            .is_some_and(|control| control.check().is_err())
+        {
+            return Ok(pilot::parent_session::DestroyedChild {
+                child: turn.child.clone(),
+                succeeded: false,
+                answer: "Turn cancelled before child launch.".into(),
+            });
+        }
+        let launched = match &scoped_control {
+            Some(control) => control.scope(launch),
+            None => launch(),
+        };
+        let mut outcome = match launched {
+            Ok(outcome) => outcome,
+            Err(_)
+                if scoped_control
+                    .as_ref()
+                    .is_some_and(|control| control.check().is_err()) =>
+            {
+                return Ok(pilot::parent_session::DestroyedChild {
+                    child: turn.child.clone(),
+                    succeeded: false,
+                    answer: "Turn cancelled after child teardown.".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
         super::super::validate_executed_tool(&mut outcome, &self.declared.resolved.program_hash);
+        if let WorkerBrokers::Scoped { results, .. } = &mut self.brokers {
+            results(turn, &outcome)?;
+        }
         // run_cell_with_broker returned only after dropping its owned VM.
         // Do not convert execution errors or authority-report mismatches into
         // a cancellation acknowledgement. Parent cancellation still prevents

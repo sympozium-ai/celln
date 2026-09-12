@@ -170,6 +170,10 @@ enum Cmd {
         /// Optional public CA bundle for the fixed model gateway origin.
         #[arg(long)]
         scoped_gateway_ca: Option<PathBuf>,
+        /// Operator-owned native parent request template for enduring scoped runs.
+        /// The file contains no credentials and is pinned when the dispatcher starts.
+        #[arg(long)]
+        scoped_parent_request_file: Option<PathBuf>,
         /// This node's identity and capacity, used to admit
         /// `celln.dev/v1alpha1` ExecutionRequests posted to `/v1/executions`.
         #[command(flatten)]
@@ -752,6 +756,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             scoped_issuer,
             scoped_gateway_origin,
             scoped_gateway_ca,
+            scoped_parent_request_file,
             probe,
         } => dispatch_http::serve(
             listen,
@@ -764,6 +769,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
                 issuer: scoped_issuer.as_deref(),
                 gateway_origin: scoped_gateway_origin.as_deref(),
                 gateway_ca: scoped_gateway_ca.as_deref(),
+                parent_request_file: scoped_parent_request_file.as_deref(),
             },
             root,
             probe,

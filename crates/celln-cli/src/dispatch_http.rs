@@ -307,6 +307,7 @@ pub struct ScopedOptions<'a> {
     pub issuer: Option<&'a str>,
     pub gateway_origin: Option<&'a str>,
     pub gateway_ca: Option<&'a Path>,
+    pub parent_request_file: Option<&'a Path>,
 }
 
 /// Reopen the path each time: projected Secrets replace symlinks during rotation.

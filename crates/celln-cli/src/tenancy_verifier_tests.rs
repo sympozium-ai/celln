@@ -102,3 +102,25 @@ fn valid_overlap_rotation_can_run_concurrently_with_verification() {
         }
     });
 }
+
+#[test]
+fn fresh_read_and_cleanup_windows_may_follow_work_deadline_but_launch_may_not() {
+    let corpus = fixtures();
+    let vector = &corpus["vectors"][0];
+    let mut decision: Value = serde_json::from_str(
+        corpus["decisions"][vector["decisionRef"].as_str().unwrap()]["canonical"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let issued = decision["budget"]["turnDeadlineUnix"].as_i64().unwrap() + 10;
+    decision["windows"]["issuedAt"] = Value::from(issued);
+    decision["windows"]["notBefore"] = Value::from(issued);
+    decision["windows"]["admissionDeadline"] = Value::from(issued + 60);
+    for operation in ["execution.read", "execution.cleanup"] {
+        decision["operation"] = Value::from(operation);
+        assert_eq!(validate_decision(&decision), Ok(()), "{operation}");
+    }
+    decision["operation"] = Value::from("execution.start");
+    assert_eq!(validate_decision(&decision), Err("AUTH_LIFECYCLE_INVALID"));
+}

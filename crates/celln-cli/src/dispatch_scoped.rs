@@ -1,4 +1,4 @@
-//! Operator-authenticated, receiver-owned one-shot tenancy integration.
+//! Operator-authenticated, receiver-owned native tenancy integration.
 //! Prepared public material is durable and immutable; permits are never stored.
 
 use super::{
@@ -18,6 +18,7 @@ use celln_store::Store;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::{BTreeMap, HashMap},
     fs::{self, File, OpenOptions},
     io::{BufReader, Read},
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
@@ -46,6 +47,45 @@ struct GatewayConfig {
     ca: Option<PathBuf>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ParentTemplate {
+    api_version: String,
+    request: ExecutionRequest,
+    /// Logical host reservation selected by the operator. This is checked by
+    /// ParentRegistry; it is not represented as a physical RSS guarantee.
+    reserved_memory_bytes: u64,
+}
+
+struct PendingTurn {
+    control: celln_control::Control,
+    broker: HttpBroker,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeProvenance {
+    parent_incarnation: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    parent_id: String,
+    child_id: String,
+    cell_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    substrate: Option<Value>,
+}
+
+struct EnduringContext {
+    principal: String,
+    incarnation: Hash,
+    worker_binding: Hash,
+    pending: Arc<Mutex<BTreeMap<String, PendingTurn>>>,
+    active: Arc<Mutex<BTreeMap<String, celln_control::Control>>>,
+    results: Arc<Mutex<BTreeMap<String, NativeProvenance>>>,
+}
+
 pub(super) struct ScopedState {
     operator_token_file: PathBuf,
     jwks_file: PathBuf,
@@ -53,6 +93,8 @@ pub(super) struct ScopedState {
     admission: Arc<Journal>,
     root: PathBuf,
     gateway: Option<GatewayConfig>,
+    parent_template: Option<ParentTemplate>,
+    enduring: Mutex<HashMap<String, Arc<EnduringContext>>>,
     operation_lock: Mutex<()>,
 }
 
@@ -79,6 +121,20 @@ struct ScopedStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     receipt_digest: Option<String>,
     cleanup_confirmed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_incarnation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    child_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cell_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    substrate: Option<Value>,
 }
 
 impl ScopedState {
@@ -94,6 +150,13 @@ impl ScopedState {
         ];
         if configured.iter().any(|v| *v) && !configured.iter().all(|v| *v) {
             bail!("scoped receiver requires --scoped-operator-token-file, --scoped-jwks-file and --scoped-issuer together");
+        }
+        if !configured[0]
+            && (options.gateway_origin.is_some()
+                || options.gateway_ca.is_some()
+                || options.parent_request_file.is_some())
+        {
+            bail!("scoped gateway/parent configuration requires the scoped receiver credentials");
         }
         if !configured[0] {
             return Ok(None);
@@ -131,6 +194,26 @@ impl ScopedState {
             }
             None => None,
         };
+        let parent_template = match options.parent_request_file {
+            Some(path) => {
+                if gateway.is_none() {
+                    bail!("scoped enduring parent template requires the mediated gateway");
+                }
+                let raw = read_bounded(path, 262144, false)
+                    .context("reading scoped parent request template")?;
+                reject_secret_material(
+                    &serde_json::from_slice(&raw).context("parsing scoped parent template")?,
+                )?;
+                let template: ParentTemplate = serde_json::from_slice(&raw)
+                    .context("parsing scoped parent request template")?;
+                validate_parent_template(&template).map_err(anyhow::Error::msg)?;
+                for directory in ["parent-issuance", "trusted-parent-permits"] {
+                    operator_dir(&root.join(directory))?;
+                }
+                Some(template)
+            }
+            None => None,
+        };
         Ok(Some(Arc::new(Self {
             operator_token_file,
             jwks_file,
@@ -138,6 +221,8 @@ impl ScopedState {
             admission: Arc::new(admission),
             root: scoped_root,
             gateway,
+            parent_template,
+            enduring: Mutex::new(HashMap::new()),
             operation_lock: Mutex::new(()),
         })))
     }
@@ -184,8 +269,29 @@ impl ScopedState {
                             | "Failed"
                             | "Refused"
                             | "Cancelled"
+                            | "Uncertain"
                     )
                     || status.output.as_ref().is_some_and(|v| v.len() > 65536)
+                    || status
+                        .parent_incarnation
+                        .as_ref()
+                        .is_some_and(|v| !blake(v))
+                    || status.parent_id.as_ref().is_some_and(|v| !blake(v))
+                    || status.child_id.as_ref().is_some_and(|v| !blake(v))
+                    || status
+                        .turn_id
+                        .as_ref()
+                        .is_some_and(|v| v.is_empty() || v.len() > 128)
+                    || status
+                        .cell_id
+                        .as_ref()
+                        .is_some_and(|v| v.is_empty() || v.len() > 256)
+                    || status.execution.as_ref().is_some_and(|v| {
+                        serde_json::to_vec(v).map_or(true, |raw| raw.len() > 65536)
+                    })
+                    || status.substrate.as_ref().is_some_and(|v| {
+                        serde_json::to_vec(v).map_or(true, |raw| raw.len() > 65536)
+                    })
                     || status.receipt_digest.as_ref().is_some_and(|v| {
                         v.strip_prefix("blake3:").map_or(true, |hex| {
                             hex.len() != 64
@@ -326,6 +432,7 @@ fn start(
     #[serde(deny_unknown_fields)]
     struct Request {
         id: String,
+        owner: String,
     }
     let request: Request = match serde_json::from_slice(body) {
         Ok(v) => v,
@@ -344,7 +451,15 @@ fn start(
         None => return reply(stream, 401, &json!({"error":"execution permit required"})),
     };
     let external = external_request(&prepared.operation, &prepared.decision)?;
-    let receiver = receiver_context(&prepared.operation, &prepared.decision, "execution.start")?;
+    let launch_operation = text(&prepared.decision["operation"], "operation")?;
+    if !matches!(launch_operation, "execution.start" | "execution.turn") {
+        return reply(
+            stream,
+            422,
+            &json!({"error":"invalid scoped launch operation"}),
+        );
+    }
+    let receiver = receiver_context(&prepared.operation, &prepared.decision, launch_operation)?;
     let decision = crate::tenancy_contract::canonical(&serde_json::to_vec(&prepared.decision)?)
         .map_err(|_| anyhow::anyhow!("invalid prepared decision"))?;
     if let Err(reason) = scoped
@@ -355,6 +470,44 @@ fn start(
             stream,
             401,
             &json!({"error":"scoped admission refused","reason":reason}),
+        );
+    }
+    let model_route = prepared.decision["route"]["provider"] != "none";
+    if model_route {
+        let Some(model_permit) = metadata.model_permit else {
+            return reply(
+                stream,
+                401,
+                &json!({"error":"scoped admission refused","reason":"AUTH_CRED_MALFORMED"}),
+            );
+        };
+        let mut model_receiver = receiver.clone();
+        model_receiver.expected_operation = "model.invoke".into();
+        model_receiver.expected_audience = "sympozium-model-gateway".into();
+        if let Err(reason) = scoped
+            .verifier
+            .verify(model_permit, &decision, &model_receiver)
+        {
+            return reply(
+                stream,
+                401,
+                &json!({"error":"scoped admission refused","reason":reason}),
+            );
+        }
+    } else if metadata.model_permit.is_some() {
+        return reply(
+            stream,
+            401,
+            &json!({"error":"scoped admission refused","reason":"AUTH_ROUTE_MISMATCH"}),
+        );
+    }
+    // Pin the epoch returned by /prepare after full credential verification
+    // but before duplicate lookup or any native launch side effect.
+    if request.owner != prepared.owner || request.owner != scoped.admission.owner() {
+        return reply(
+            stream,
+            409,
+            &json!({"error":"scoped admission refused","reason":"AUTH_CONTEXT_LOST"}),
         );
     }
     let existing_status = scoped.load_status(&request.id).ok().flatten();
@@ -368,11 +521,22 @@ fn start(
             &ScopedStatus {
                 id: request.id,
                 owner: prepared.owner,
-                phase: "Admitted".into(),
+                phase: "Uncertain".into(),
                 reason: Some("AUTH_CONTEXT_LOST".into()),
                 output: None,
                 receipt_digest: None,
                 cleanup_confirmed: false,
+                parent_incarnation: prepared.decision["parent"]["incarnation"]
+                    .as_str()
+                    .map(str::to_owned),
+                turn_id: prepared.decision["parent"]["turnId"]
+                    .as_str()
+                    .map(str::to_owned),
+                parent_id: None,
+                child_id: None,
+                cell_id: None,
+                execution: None,
+                substrate: None,
             },
         );
     }
@@ -402,11 +566,22 @@ fn start(
                 .unwrap_or(ScopedStatus {
                     id: request.id,
                     owner: record.owner().to_owned(),
-                    phase: "Admitted".into(),
+                    phase: "Uncertain".into(),
                     reason: Some("original owner status is unavailable; replay refused".into()),
                     output: None,
                     receipt_digest: None,
                     cleanup_confirmed: false,
+                    parent_incarnation: prepared.decision["parent"]["incarnation"]
+                        .as_str()
+                        .map(str::to_owned),
+                    turn_id: prepared.decision["parent"]["turnId"]
+                        .as_str()
+                        .map(str::to_owned),
+                    parent_id: None,
+                    child_id: None,
+                    cell_id: None,
+                    execution: None,
+                    substrate: None,
                 });
             return reply(
                 stream,
@@ -416,10 +591,7 @@ fn start(
         }
         Claim::Fresh(fresh) => fresh,
     };
-    let timeout = prepared.operation["resolution"]["execution"]["runtimeLimits"]["timeoutMillis"]
-        .as_u64()
-        .unwrap_or(0);
-    let control = match celln_control::Control::new(Duration::from_millis(timeout.max(1))) {
+    let control = match operation_control(&prepared) {
         Ok(v) => v,
         Err(_) => {
             let status = terminal_refusal(
@@ -445,6 +617,11 @@ fn start(
             return reply(stream, 422, &status);
         }
     };
+    if prepared.decision["lifecycle"] != "one-shot" {
+        return start_enduring(
+            dispatcher, scoped, stream, prepared, fresh, native, broker, control,
+        );
+    }
     let record = ExecutionRecord {
         request_id: request.id.clone(),
         phase: "Admitted".into(),
@@ -481,6 +658,13 @@ fn start(
         output: None,
         receipt_digest: None,
         cleanup_confirmed: false,
+        parent_incarnation: None,
+        turn_id: None,
+        parent_id: None,
+        child_id: None,
+        cell_id: None,
+        execution: None,
+        substrate: None,
     };
     if persist_status(scoped, &status).is_err() {
         control.cancel();
@@ -550,6 +734,692 @@ fn start(
     reply(stream, 202, &status)
 }
 
+fn operation_control(prepared: &PreparedRecord) -> Result<celln_control::Control, String> {
+    let deadline = prepared.decision["budget"]["turnDeadlineUnix"]
+        .as_i64()
+        .ok_or("invalid operation deadline")?;
+    let remaining_seconds = (deadline as i128) - (now() as i128);
+    if remaining_seconds <= 0 {
+        return Err("AUTH_WORK_DEADLINE_EXPIRED".into());
+    }
+    let remaining = Duration::from_secs(
+        u64::try_from(remaining_seconds).map_err(|_| "invalid operation deadline")?,
+    );
+    let configured = Duration::from_millis(
+        prepared.operation["resolution"]["execution"]["runtimeLimits"]["timeoutMillis"]
+            .as_u64()
+            .ok_or("invalid runtime timeout")?
+            .max(1),
+    );
+    celln_control::Control::new(configured.min(remaining))
+        .map_err(|_| "invalid operation deadline".into())
+}
+
+fn parent_scope(prepared: &PreparedRecord) -> Result<String, String> {
+    let source = &prepared.operation["resolution"]["execution"]["source"];
+    serde_json::to_string(&json!([
+        "celln.scoped-parent/v1",
+        text(&source["clusterId"], "cluster").map_err(|e| e.to_string())?,
+        text(&source["namespaceUid"], "namespace UID").map_err(|e| e.to_string())?
+    ]))
+    .map_err(|_| "invalid parent scope".into())
+}
+
+fn local_turn_id(prepared: &PreparedRecord) -> Result<String, String> {
+    if let Some(turn) = prepared.decision["parent"]["turnId"].as_str() {
+        return Ok(turn.into());
+    }
+    let hex = id_hex(&prepared.id).map_err(|_| "invalid initial operation identity")?;
+    Ok(format!("initial_{}", &hex[..48]))
+}
+
+fn start_enduring(
+    dispatcher: &State,
+    scoped: &Arc<ScopedState>,
+    stream: &mut std::net::TcpStream,
+    prepared: PreparedRecord,
+    fresh: Fresh,
+    worker: ExecutionRequest,
+    broker: Option<HttpBroker>,
+    control: celln_control::Control,
+) -> Result<()> {
+    let lifecycle = text(&prepared.decision["lifecycle"], "lifecycle")?;
+    let incarnation = Hash(
+        text(
+            &prepared.decision["parent"]["incarnation"],
+            "parent incarnation",
+        )?
+        .into(),
+    );
+    let principal = worker.workload.caller.clone();
+    let turn_id = local_turn_id(&prepared).map_err(anyhow::Error::msg)?;
+    let broker = match broker {
+        Some(broker) if broker.is_mediated() => broker,
+        _ => {
+            let status = prepared_refusal(
+                scoped,
+                &fresh,
+                &prepared,
+                "AUTH_PROTOCOL_UNSUPPORTED".into(),
+            );
+            return reply(stream, 422, &status);
+        }
+    };
+    let worker_config: pilot::json_harness::Config = worker
+        .invocation
+        .as_ref()
+        .and_then(|_| {
+            let execution = &prepared.operation["resolution"]["execution"];
+            let profile = &execution["profileSpec"];
+            let tools = execution["tools"]
+                .as_array()?
+                .iter()
+                .zip(prepared.decision["tools"].as_array()?)
+                .map(|(material, binding)| native_tool(scoped, material, binding).ok())
+                .collect::<Option<Vec<_>>>()?;
+            serde_json::from_value(json!({
+                "contract":pilot::json_harness::CONTRACT,"task":"",
+                "system":execution["systemPrompt"],"url":prepared.decision["route"]["endpointOrigin"],
+                "model":prepared.decision["route"]["model"],"tools":tools,
+                "max_turns":profile["json"]["maxTurns"].as_u64()?.min(prepared.decision["budget"]["turnCap"]["requests"].as_u64()?),
+                "max_calls":profile["json"]["maxCalls"],
+                "require_tool_call":profile["json"].get("requireToolCall").cloned().unwrap_or(Value::Bool(false))
+            })).ok()
+        })
+        .ok_or_else(|| anyhow::anyhow!("invalid enduring worker template"))?;
+    let worker_binding =
+        crate::dispatch::parent_create::scoped::worker_binding(&worker, &worker_config)
+            .map_err(anyhow::Error::msg)?;
+
+    if lifecycle == "enduring-turn" {
+        let context = scoped
+            .enduring
+            .lock()
+            .map_err(|_| anyhow::anyhow!("enduring owner registry unavailable"))?
+            .get(&incarnation.0)
+            .cloned();
+        let Some(context) = context else {
+            let status = uncertain_status(&prepared, "AUTH_CONTEXT_LOST");
+            let _ = persist_status(scoped, &status);
+            return reply(stream, 409, &status);
+        };
+        if context.principal != principal || context.worker_binding != worker_binding {
+            let status = prepared_refusal(
+                scoped,
+                &fresh,
+                &prepared,
+                "AUTH_REQUEST_BINDING_MISMATCH".into(),
+            );
+            return reply(stream, 409, &status);
+        }
+        return submit_enduring_turn(
+            dispatcher, scoped, stream, prepared, fresh, context, turn_id, broker, control, false,
+        );
+    }
+    if lifecycle != "enduring-initial" {
+        let status = prepared_refusal(scoped, &fresh, &prepared, "AUTH_LIFECYCLE_INVALID".into());
+        return reply(stream, 422, &status);
+    }
+    let template = match scoped.parent_template.clone() {
+        Some(template) => template,
+        None => {
+            let status = prepared_refusal(
+                scoped,
+                &fresh,
+                &prepared,
+                "AUTH_PROTOCOL_UNSUPPORTED".into(),
+            );
+            return reply(stream, 503, &status);
+        }
+    };
+    let source = &prepared.operation["resolution"]["execution"]["source"];
+    let scope = parent_scope(&prepared).map_err(anyhow::Error::msg)?;
+    let expected =
+        warden::parent_permit::run_incarnation(&scope, text(&source["runUid"], "run UID")?)?;
+    if expected != incarnation {
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "AUTH_PARENT_TURN_MISMATCH".into(),
+        );
+        return reply(stream, 409, &status);
+    }
+    let parent_deadline = prepared.decision["budget"]["parentDeadlineUnix"]
+        .as_i64()
+        .ok_or_else(|| anyhow::anyhow!("invalid parent deadline"))?;
+    let parent_remaining = (parent_deadline as i128) - (now() as i128);
+    if parent_remaining <= 0 {
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "AUTH_WORK_DEADLINE_EXPIRED".into(),
+        );
+        return reply(stream, 422, &status);
+    }
+    let reserved_memory_bytes = template.reserved_memory_bytes;
+    let mut parent = template.request;
+    parent.id = format!("scoped-parent-{}", &incarnation.0[7..]);
+    parent.workload.id = parent.id.clone();
+    parent.workload.caller = principal.clone();
+    let parent_remaining_ms = u64::try_from(parent_remaining)
+        .ok()
+        .and_then(|v| v.checked_mul(1000))
+        .ok_or_else(|| anyhow::anyhow!("invalid parent deadline"))?;
+    parent.capabilities.timeout_ms = parent
+        .capabilities
+        .timeout_ms
+        .min(parent_remaining_ms)
+        .max(1);
+    let binding = warden::parent_permit::Binding {
+        principal: principal.clone(),
+        incarnation: incarnation.clone(),
+        parent_configuration: parent
+            .configuration_binding(celln_spec::ConfigurationRole::Parent)
+            .map_err(anyhow::Error::msg)?,
+        worker_configuration: worker_binding.clone(),
+        parent_memory_bytes: parent.capabilities.memory_bytes,
+        child_memory_bytes: worker.capabilities.memory_bytes,
+        lifetime_ms: parent.capabilities.timeout_ms,
+        turn_timeout_ms: worker.capabilities.timeout_ms,
+        max_turns: prepared.decision["budget"]["maxTurns"]
+            .as_u64()
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or_else(|| anyhow::anyhow!("invalid enduring turn limit"))?,
+        turn_model_requests: prepared.decision["budget"]["turnCap"]["requests"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("invalid turn budget"))?,
+        turn_output_tokens: prepared.decision["budget"]["turnCap"]["outputTokens"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("invalid turn budget"))?,
+        total_model_requests: prepared.decision["budget"]["runCap"]["requests"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("invalid run budget"))?,
+        total_output_tokens: prepared.decision["budget"]["runCap"]["outputTokens"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("invalid run budget"))?,
+    };
+    let reservation_floor = binding
+        .parent_memory_bytes
+        .checked_add(binding.child_memory_bytes)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or_else(|| anyhow::anyhow!("parent reservation overflow"))?;
+    if reserved_memory_bytes <= reservation_floor {
+        let status = prepared_refusal(scoped, &fresh, &prepared, "AUTH_CAPACITY".into());
+        return reply(stream, 503, &status);
+    }
+    if control.check().is_err() {
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "AUTH_WORK_DEADLINE_EXPIRED".into(),
+        );
+        return reply(stream, 422, &status);
+    }
+    {
+        let registry = dispatcher.executions.lock().unwrap();
+        let node = current_node(dispatcher, &registry);
+        if node.live_cells.saturating_add(2) > node.max_cells
+            || reserved_memory_bytes > node.memory_bytes
+            || node.egress_slots == 0
+        {
+            drop(registry);
+            let status = prepared_refusal(scoped, &fresh, &prepared, "AUTH_CAPACITY".into());
+            return reply(stream, 503, &status);
+        }
+        for request in [&parent, &worker] {
+            if let crate::node::Admission::Refused { reason, .. } =
+                crate::node::admit(request, &node)
+            {
+                drop(registry);
+                let status = prepared_refusal(
+                    scoped,
+                    &fresh,
+                    &prepared,
+                    format!("native admission refused: {reason:?}"),
+                );
+                return reply(stream, 503, &status);
+            }
+        }
+    }
+    // This local permit is derived only after the independent durable scoped
+    // claim above. It contains no model credential and is immediately consumed
+    // by the retained owner factory.
+    let intent = Hash::of(&serde_json::to_vec(&json!({
+        "apiVersion":"celln.scoped-parent-intent/v1","operation":prepared.operation,
+        "decision":prepared.decision,"parent":parent,"workerBinding":worker_binding
+    }))?);
+    let permit = match warden::parent_permit::issue_for_run(
+        &dispatcher.root,
+        &scope,
+        text(&source["runUid"], "run UID")?,
+        &intent,
+        binding.clone(),
+        Duration::from_millis(300_000),
+    ) {
+        Ok(permit) => permit,
+        Err(_) => {
+            let status = prepared_refusal(
+                scoped,
+                &fresh,
+                &prepared,
+                "native parent permit issuance unavailable".into(),
+            );
+            return reply(stream, 503, &status);
+        }
+    };
+    let permit = match permit.publish(&dispatcher.root) {
+        Ok(permit) => permit,
+        Err(_) => {
+            let status = prepared_refusal(
+                scoped,
+                &fresh,
+                &prepared,
+                "native parent permit publication unavailable".into(),
+            );
+            return reply(stream, 503, &status);
+        }
+    };
+    let pending = Arc::new(Mutex::new(BTreeMap::<String, PendingTurn>::new()));
+    let active = Arc::new(Mutex::new(BTreeMap::<String, celln_control::Control>::new()));
+    let results = Arc::new(Mutex::new(BTreeMap::<String, NativeProvenance>::new()));
+    let supply_pending = Arc::clone(&pending);
+    let supply_active = Arc::clone(&active);
+    let result_active = Arc::clone(&active);
+    let result_sink = Arc::clone(&results);
+    let supply_incarnation = incarnation.clone();
+    let result_incarnation = incarnation.clone();
+    let brokers: crate::dispatch::parent_create::scoped::Brokers = Box::new(move |turn| {
+        if turn.parent != supply_incarnation {
+            return Err("reserved turn belongs to another parent".into());
+        }
+        let pending = supply_pending
+            .lock()
+            .map_err(|_| "scoped turn broker registry unavailable")?
+            .remove(&turn.request.turn_id)
+            .ok_or("fresh scoped broker unavailable for reserved turn")?;
+        let parent_control =
+            celln_control::current().ok_or("scoped broker factory requires exact child control")?;
+        let remaining = if pending.control.check().is_err() {
+            Duration::ZERO
+        } else {
+            pending.control.remaining()
+        };
+        let child_control = parent_control
+            .child(remaining)
+            .map_err(|_| "invalid absolute turn deadline")?;
+        supply_active
+            .lock()
+            .map_err(|_| "scoped active turn registry unavailable")?
+            .insert(turn.request.turn_id.clone(), pending.control);
+        Ok(crate::dispatch::parent_create::scoped::ScopedTurnBroker {
+            broker: pending.broker,
+            control: child_control,
+        })
+    });
+    let result_callback: crate::dispatch::parent_create::scoped::Results =
+        Box::new(move |turn, outcome| {
+            if turn.parent != result_incarnation {
+                return Err("native child result belongs to another parent".into());
+            }
+            result_active
+                .lock()
+                .map_err(|_| "scoped active turn registry unavailable")?
+                .remove(&turn.request.turn_id);
+            if outcome.cell_id.is_empty()
+                || outcome.execution.is_none()
+                || outcome.substrate.is_none()
+            {
+                return Err("native child provenance is incomplete".into());
+            }
+            let provenance = NativeProvenance {
+                parent_incarnation: turn.parent.0.clone(),
+                turn_id: Some(turn.request.turn_id.clone()),
+                parent_id: turn.parent.0.clone(),
+                child_id: turn.child.0.clone(),
+                cell_id: outcome.cell_id.clone(),
+                execution: outcome
+                    .execution
+                    .as_ref()
+                    .and_then(|v| serde_json::to_value(v).ok()),
+                substrate: outcome
+                    .substrate
+                    .as_ref()
+                    .and_then(|v| serde_json::to_value(v).ok()),
+            };
+            result_sink
+                .lock()
+                .map_err(|_| "scoped turn result registry unavailable")?
+                .insert(turn.request.turn_id.clone(), provenance);
+            Ok(())
+        });
+    let plan = crate::dispatch::parent_create::scoped::Plan {
+        parent,
+        worker,
+        template: worker_config,
+        permit,
+        binding: binding.clone(),
+    };
+    let factory = match crate::dispatch::parent_create::scoped::claim(
+        dispatcher.root.clone(),
+        plan,
+        &principal,
+        brokers,
+        result_callback,
+    ) {
+        Ok(factory) => factory,
+        Err(reason) => {
+            let status = prepared_refusal(scoped, &fresh, &prepared, reason);
+            return reply(stream, 503, &status);
+        }
+    };
+    if control.check().is_err() {
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "AUTH_WORK_DEADLINE_EXPIRED".into(),
+        );
+        return reply(stream, 422, &status);
+    }
+    let context = Arc::new(EnduringContext {
+        principal: principal.clone(),
+        incarnation: incarnation.clone(),
+        worker_binding,
+        pending,
+        active,
+        results,
+    });
+    scoped
+        .enduring
+        .lock()
+        .map_err(|_| anyhow::anyhow!("enduring owner registry unavailable"))?
+        .insert(incarnation.0.clone(), Arc::clone(&context));
+    if let Err(reason) = dispatcher.parents.spawn_admitted_with_children(
+        &principal,
+        &incarnation,
+        Duration::from_millis(binding.lifetime_ms),
+        reserved_memory_bytes,
+        factory,
+    ) {
+        scoped.enduring.lock().unwrap().remove(&incarnation.0);
+        let status = prepared_refusal(scoped, &fresh, &prepared, reason);
+        return reply(stream, 503, &status);
+    }
+    submit_enduring_turn(
+        dispatcher, scoped, stream, prepared, fresh, context, turn_id, broker, control, true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_enduring_turn(
+    dispatcher: &State,
+    scoped: &Arc<ScopedState>,
+    stream: &mut std::net::TcpStream,
+    prepared: PreparedRecord,
+    fresh: Fresh,
+    context: Arc<EnduringContext>,
+    turn_id: String,
+    broker: HttpBroker,
+    control: celln_control::Control,
+    initial: bool,
+) -> Result<()> {
+    if control.check().is_err() {
+        if initial
+            && dispatcher
+                .parents
+                .stop(&context.principal, &context.incarnation)
+                .is_err()
+        {
+            let status = uncertain_status(
+                &prepared,
+                "initial deadline expired and retained parent teardown is unconfirmed",
+            );
+            let _ = persist_status(scoped, &status);
+            return reply(stream, 503, &status);
+        }
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "AUTH_WORK_DEADLINE_EXPIRED".into(),
+        );
+        return reply(stream, 422, &status);
+    }
+    let child = Hash::of(
+        &serde_json::to_vec(&(&context.incarnation.0, &turn_id))
+            .map_err(|_| anyhow::anyhow!("invalid child identity"))?,
+    );
+    let replaced = context
+        .pending
+        .lock()
+        .map_err(|_| anyhow::anyhow!("scoped turn broker registry unavailable"))?
+        .insert(turn_id.clone(), PendingTurn { control, broker });
+    if replaced.is_some() {
+        let status = uncertain_status(&prepared, "fresh turn broker identity already occupied");
+        let _ = persist_status(scoped, &status);
+        return reply(stream, 409, &status);
+    }
+    let status = ScopedStatus {
+        id: prepared.id.clone(),
+        owner: scoped.admission.owner().into(),
+        phase: "Admitted".into(),
+        reason: None,
+        output: None,
+        receipt_digest: None,
+        cleanup_confirmed: false,
+        parent_incarnation: Some(context.incarnation.0.clone()),
+        turn_id: prepared.decision["parent"]["turnId"]
+            .as_str()
+            .map(str::to_owned),
+        parent_id: Some(context.incarnation.0.clone()),
+        child_id: Some(child.0),
+        cell_id: None,
+        execution: None,
+        substrate: None,
+    };
+    if persist_status(scoped, &status).is_err() {
+        context.pending.lock().unwrap().remove(&turn_id);
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "durable result journal unavailable".into(),
+        );
+        return reply(stream, 503, &status);
+    }
+    let envelope = serde_json::to_vec(&json!({
+        "kind":"turn","apiVersion":pilot::parent_harness::VERSION,
+        "turnId":turn_id,"message":prepared.operation["resolution"]["execution"]["payload"]
+    }))?;
+    let response =
+        match dispatcher
+            .parents
+            .submit(&context.principal, &context.incarnation, &envelope)
+        {
+            Ok(response) => response,
+            Err(reason) => {
+                context.pending.lock().unwrap().remove(&turn_id);
+                let status = uncertain_status(&prepared, &reason);
+                let _ = persist_status(scoped, &status);
+                return reply(stream, 409, &status);
+            }
+        };
+    let id = prepared.id.clone();
+    let worker_scoped = Arc::clone(scoped);
+    let worker_context = Arc::clone(&context);
+    let failed_prepared = prepared.clone();
+    let fresh_slot = Arc::new(Mutex::new(Some(fresh)));
+    let worker_fresh = Arc::clone(&fresh_slot);
+    let spawn = thread::Builder::new()
+        .name("celln-scoped-enduring-turn".into())
+        .spawn(move || {
+            let fresh = worker_fresh
+                .lock()
+                .expect("enduring fresh claim not poisoned")
+                .take()
+                .expect("enduring fresh claim consumed once");
+            finish_enduring_turn(
+                worker_scoped,
+                worker_context,
+                fresh,
+                prepared,
+                turn_id,
+                response,
+                initial,
+            )
+        });
+    if spawn.is_err() {
+        let status = uncertain_status(
+            &failed_prepared,
+            "enduring result worker unavailable after accepted parent submission",
+        );
+        let _ = persist_status(scoped, &status);
+        // Keep the fresh claim unfinished: the retained owner may still execute
+        // the accepted command after this local observation failure.
+        drop(fresh_slot.lock().ok().and_then(|mut slot| slot.take()));
+        return reply(stream, 503, &status);
+    }
+    reply(stream, 202, &ScopedStatus { id, ..status })
+}
+
+fn finish_enduring_turn(
+    scoped: Arc<ScopedState>,
+    context: Arc<EnduringContext>,
+    fresh: Fresh,
+    prepared: PreparedRecord,
+    turn_id: String,
+    response: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    initial: bool,
+) {
+    let response = response.recv();
+    if let Ok(mut active) = context.active.lock() {
+        active.remove(&turn_id);
+    }
+    let provenance = context
+        .results
+        .lock()
+        .ok()
+        .and_then(|mut r| r.remove(&turn_id));
+    let (phase, reason, output, cleanup_confirmed) = match response {
+        Ok(Ok(bytes)) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value) if value["kind"] == "completed" && value["turnId"] == turn_id => {
+                let succeeded = value["succeeded"].as_bool().unwrap_or(false);
+                (
+                    if succeeded {
+                        if initial {
+                            "Running"
+                        } else {
+                            "Succeeded"
+                        }
+                    } else if initial {
+                        "Failed"
+                    } else {
+                        "Cancelled"
+                    },
+                    if succeeded {
+                        None
+                    } else {
+                        Some("native child did not commit a successful result".into())
+                    },
+                    value["answer"].as_str().map(str::to_owned),
+                    !initial,
+                )
+            }
+            _ => (
+                "Uncertain",
+                Some("invalid retained parent result".into()),
+                None,
+                false,
+            ),
+        },
+        Ok(Err(reason)) => (
+            if provenance.is_some() {
+                "Failed"
+            } else {
+                "Uncertain"
+            },
+            Some(reason),
+            None,
+            provenance.is_some() && !initial,
+        ),
+        Err(_) => (
+            "Uncertain",
+            Some("retained parent owner result lost".into()),
+            None,
+            false,
+        ),
+    };
+    let receipt_digest = provenance.as_ref().and_then(|native| {
+        serde_json::to_vec(&json!({
+            "apiVersion":"celln.scoped-native-receipt/v1","operationId":prepared.id,
+            "owner":scoped.admission.owner(),"phase":phase,"native":native
+        }))
+        .ok()
+        .map(|bytes| Hash::of(&bytes).0)
+    });
+    let reserved_child =
+        Hash::of(&serde_json::to_vec(&(&context.incarnation.0, &turn_id)).unwrap_or_default()).0;
+    let status = ScopedStatus {
+        id: prepared.id.clone(),
+        owner: scoped.admission.owner().into(),
+        phase: phase.into(),
+        reason,
+        output,
+        receipt_digest: receipt_digest.clone(),
+        cleanup_confirmed,
+        parent_incarnation: Some(context.incarnation.0.clone()),
+        turn_id: prepared.decision["parent"]["turnId"]
+            .as_str()
+            .map(str::to_owned),
+        parent_id: provenance
+            .as_ref()
+            .map(|p| p.parent_id.clone())
+            .or_else(|| Some(context.incarnation.0.clone())),
+        child_id: Some(
+            provenance
+                .as_ref()
+                .map(|p| p.child_id.clone())
+                .unwrap_or(reserved_child),
+        ),
+        cell_id: provenance.as_ref().map(|p| p.cell_id.clone()),
+        execution: provenance.as_ref().and_then(|p| p.execution.clone()),
+        substrate: provenance.as_ref().and_then(|p| p.substrate.clone()),
+    };
+    if persist_status(&scoped, &status).is_ok() {
+        if let Some(digest) = receipt_digest {
+            let _ = scoped.admission.finish(&fresh, Outcome::Receipt { digest });
+        }
+    }
+}
+
+fn uncertain_status(prepared: &PreparedRecord, reason: &str) -> ScopedStatus {
+    ScopedStatus {
+        id: prepared.id.clone(),
+        owner: prepared.owner.clone(),
+        phase: "Uncertain".into(),
+        reason: Some(reason.into()),
+        output: None,
+        receipt_digest: None,
+        cleanup_confirmed: false,
+        parent_incarnation: prepared.decision["parent"]["incarnation"]
+            .as_str()
+            .map(str::to_owned),
+        turn_id: prepared.decision["parent"]["turnId"]
+            .as_str()
+            .map(str::to_owned),
+        parent_id: prepared.decision["parent"]["incarnation"]
+            .as_str()
+            .map(str::to_owned),
+        child_id: None,
+        cell_id: None,
+        execution: None,
+        substrate: None,
+    }
+}
+
 fn run_scoped(
     scoped: Arc<ScopedState>,
     executions: super::Executions,
@@ -565,51 +1435,99 @@ fn run_scoped(
     let launched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::dispatch::launch_scoped_declared(&request, &motes, &tools, &root, broker)
     }));
-    let (phase, reason, output) = match launched {
-        Ok(Ok((outcome, _))) => {
-            let phase = if outcome.succeeded() {
-                "Succeeded"
-            } else if celln_control::current().and_then(|c| c.reason())
-                == Some(celln_control::Stopped::Cancelled)
-            {
-                "Cancelled"
-            } else {
-                "Failed"
-            };
-            (
-                phase,
-                outcome.denial,
-                outcome
-                    .output
-                    .map(|v| String::from_utf8_lossy(&v).into_owned()),
-            )
-        }
-        Ok(Err(reason)) => {
-            let phase = if celln_control::current().and_then(|c| c.reason())
-                == Some(celln_control::Stopped::Cancelled)
-            {
-                "Cancelled"
-            } else {
-                "Failed"
-            };
-            (phase, Some(reason), None)
-        }
-        Err(_) => (
-            "Failed",
-            Some("execution worker panicked during teardown".into()),
-            None,
-        ),
-    };
-    let receipt_bytes = serde_json::to_vec(&json!({"id":id,"owner":scoped.admission.owner(),"phase":phase,"reason":reason,"output":output})).unwrap_or_default();
-    let receipt_digest = Hash::of(&receipt_bytes).0;
+    let (mut phase, mut reason, output, execution, substrate, cell_id, cleanup_confirmed) =
+        match launched {
+            Ok(Ok((outcome, _))) => {
+                let phase = if outcome.succeeded() {
+                    "Succeeded"
+                } else if celln_control::current().and_then(|c| c.reason())
+                    == Some(celln_control::Stopped::Cancelled)
+                {
+                    "Cancelled"
+                } else {
+                    "Failed"
+                };
+                let execution = outcome
+                    .execution
+                    .as_ref()
+                    .and_then(|value| serde_json::to_value(value).ok());
+                let substrate = outcome
+                    .substrate
+                    .as_ref()
+                    .and_then(|value| serde_json::to_value(value).ok());
+                (
+                    phase,
+                    outcome.denial,
+                    outcome
+                        .output
+                        .map(|v| String::from_utf8_lossy(&v).into_owned()),
+                    execution,
+                    substrate,
+                    Some(outcome.cell_id),
+                    true,
+                )
+            }
+            Ok(Err(reason)) => {
+                let phase = if celln_control::current().and_then(|c| c.reason())
+                    == Some(celln_control::Stopped::Cancelled)
+                {
+                    "Cancelled"
+                } else {
+                    "Failed"
+                };
+                (phase, Some(reason), None, None, None, None, true)
+            }
+            Err(_) => (
+                "Uncertain",
+                Some("execution worker panicked; native teardown is unconfirmed".into()),
+                None,
+                None,
+                None,
+                None,
+                false,
+            ),
+        };
+    if phase == "Succeeded"
+        && (cell_id.as_deref().is_none_or(str::is_empty)
+            || execution.is_none()
+            || substrate.is_none())
+    {
+        phase = "Failed";
+        reason = Some("native execution provenance is incomplete".into());
+    }
+    let receipt = cell_id
+        .as_ref()
+        .filter(|cell_id| !cell_id.is_empty())
+        .and_then(|cell_id| {
+            if execution.is_none() || substrate.is_none() {
+                return None;
+            }
+            Some(json!({
+                "apiVersion":"celln.scoped-native-receipt/v1", "operationId":id,
+                "owner":scoped.admission.owner(), "cellId":cell_id,
+                "execution":execution, "substrate":substrate, "phase":phase
+            }))
+        });
+    let receipt_digest = receipt.as_ref().and_then(|receipt| {
+        serde_json::to_vec(receipt)
+            .ok()
+            .map(|bytes| Hash::of(&bytes).0)
+    });
     let status = ScopedStatus {
         id: id.clone(),
         owner: scoped.admission.owner().into(),
         phase: phase.into(),
         reason: reason.clone(),
         output: output.clone(),
-        receipt_digest: Some(receipt_digest.clone()),
-        cleanup_confirmed: true,
+        receipt_digest: receipt_digest.clone(),
+        cleanup_confirmed,
+        parent_incarnation: None,
+        turn_id: None,
+        parent_id: None,
+        child_id: None,
+        cell_id,
+        execution,
+        substrate,
     };
     super::update_execution(&executions, &id, |record| {
         record.phase = phase.into();
@@ -617,13 +1535,17 @@ fn run_scoped(
         record.output = output;
     });
     let persisted = persist_status(&scoped, &status).is_ok();
-    if persisted {
-        let _ = scoped.admission.finish(
-            &fresh,
-            Outcome::Receipt {
-                digest: receipt_digest,
-            },
-        );
+    if persisted && cleanup_confirmed {
+        if let Some(receipt_digest) = receipt_digest {
+            let _ = scoped.admission.finish(
+                &fresh,
+                Outcome::Receipt {
+                    digest: receipt_digest,
+                },
+            );
+        } else {
+            let _ = scoped.admission.finish(&fresh, Outcome::Refused);
+        }
     }
 }
 
@@ -718,8 +1640,140 @@ fn access(
         }
         Err(e) => return admission_reply(stream, e),
     };
+    if admission.owner() != scoped.admission.owner() {
+        let historical = prepared.decision["lifecycle"] != "one-shot"
+            && prepared.decision["parent"]["incarnation"]
+                .as_str()
+                .map(|parent| {
+                    let principal = format!(
+                        "sympozium:{}:{}",
+                        receiver.cluster_id, receiver.namespace_uid
+                    );
+                    warden::parent_journal::historical_teardown(
+                        &dispatcher.root,
+                        &Hash(parent.into()),
+                        &principal,
+                    )
+                    .unwrap_or(false)
+                })
+                .unwrap_or(false);
+        if let Ok(Some(mut status)) = scoped.load_status(&request.id) {
+            if cleanup && historical {
+                status.phase = "Cancelled".into();
+                status.reason = Some("original native owner process teardown confirmed".into());
+                status.cleanup_confirmed = true;
+                let _ = persist_status(scoped, &status);
+            } else if !status.cleanup_confirmed {
+                status.phase = "Uncertain".into();
+                status.reason = Some("original receiver owner context is unavailable".into());
+                let _ = persist_status(scoped, &status);
+            }
+        }
+    }
     if cleanup && admission.owner() == scoped.admission.owner() {
-        if let Some(entry) = dispatcher.executions.lock().unwrap().get_mut(&request.id) {
+        let lifecycle = prepared.decision["lifecycle"].as_str().unwrap_or_default();
+        if lifecycle == "enduring-initial" {
+            let incarnation = Hash(
+                prepared.decision["parent"]["incarnation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+            );
+            let principal = format!(
+                "sympozium:{}:{}",
+                receiver.cluster_id, receiver.namespace_uid
+            );
+            if let Some(context) = scoped
+                .enduring
+                .lock()
+                .ok()
+                .and_then(|owners| owners.get(&incarnation.0).cloned())
+            {
+                if let Ok(mut pending) = context.pending.lock() {
+                    for turn in pending.values() {
+                        turn.control.cancel();
+                    }
+                    pending.clear();
+                }
+                if let Ok(active) = context.active.lock() {
+                    for control in active.values() {
+                        control.cancel();
+                    }
+                }
+            }
+            let stopped = dispatcher.parents.stop(&principal, &incarnation);
+            if let Ok(Some(mut status)) = scoped.load_status(&request.id) {
+                status.phase = if stopped.is_ok() {
+                    "Cancelled"
+                } else {
+                    "Uncertain"
+                }
+                .into();
+                status.reason = Some(if stopped.is_ok() {
+                    "retained parent and descendants stopped".into()
+                } else {
+                    "retained parent teardown unconfirmed".into()
+                });
+                status.cleanup_confirmed = stopped.is_ok();
+                let _ = persist_status(scoped, &status);
+            }
+        } else if lifecycle == "enduring-turn" {
+            let incarnation = Hash(
+                prepared.decision["parent"]["incarnation"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .into(),
+            );
+            let turn = prepared.decision["parent"]["turnId"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            let principal = format!(
+                "sympozium:{}:{}",
+                receiver.cluster_id, receiver.namespace_uid
+            );
+            if let Some(context) = scoped
+                .enduring
+                .lock()
+                .ok()
+                .and_then(|owners| owners.get(&incarnation.0).cloned())
+            {
+                let pending = context
+                    .pending
+                    .lock()
+                    .ok()
+                    .and_then(|p| p.get(&turn).map(|pending| pending.control.clone()));
+                if let Some(control) = pending.as_ref() {
+                    control.cancel();
+                }
+                if let Some(control) = context
+                    .active
+                    .lock()
+                    .ok()
+                    .and_then(|active| active.get(&turn).cloned())
+                {
+                    control.cancel();
+                }
+                if pending.is_none() {
+                    let child =
+                        Hash::of(&serde_json::to_vec(&(&incarnation.0, &turn)).unwrap_or_default());
+                    let identity = warden::parent_child_control::Identity {
+                        parent: incarnation.clone(),
+                        turn: turn.clone(),
+                        child,
+                    };
+                    let _ = dispatcher.parents.cancel_child(&principal, &identity);
+                }
+            }
+            if let Ok(Some(mut status)) = scoped.load_status(&request.id) {
+                if !status.cleanup_confirmed {
+                    status.phase = "Cancelling".into();
+                    status.reason =
+                        Some("exact child cancellation requested; teardown pending".into());
+                    let _ = persist_status(scoped, &status);
+                }
+            }
+        } else if let Some(entry) = dispatcher.executions.lock().unwrap().get_mut(&request.id) {
             if execution_is_active(&entry.value) {
                 if let Some(control) = &entry.control {
                     control.cancel();
@@ -730,6 +1784,40 @@ fn access(
                     status.phase = "Cancelling".into();
                     status.reason = Some("cancellation requested; teardown pending".into());
                     status.cleanup_confirmed = false;
+                    let _ = persist_status(scoped, &status);
+                }
+            }
+        }
+    }
+    if prepared.decision["lifecycle"] == "enduring-initial" {
+        let incarnation = Hash(
+            prepared.decision["parent"]["incarnation"]
+                .as_str()
+                .unwrap_or_default()
+                .into(),
+        );
+        let principal = format!(
+            "sympozium:{}:{}",
+            receiver.cluster_id, receiver.namespace_uid
+        );
+        let owner_status = dispatcher.parents.status(&principal, &incarnation);
+        if matches!(
+            &owner_status,
+            Ok(warden::parent_registry::Status::ContextLost)
+                | Ok(warden::parent_registry::Status::TeardownUncertain)
+        ) {
+            if let Ok(Some(mut status)) = scoped.load_status(&request.id) {
+                if !status.cleanup_confirmed {
+                    status.phase = "Uncertain".into();
+                    status.reason = Some("original retained parent owner is unavailable".into());
+                    let _ = persist_status(scoped, &status);
+                }
+            }
+        } else if matches!(&owner_status, Ok(warden::parent_registry::Status::Stopping)) {
+            if let Ok(Some(mut status)) = scoped.load_status(&request.id) {
+                if !status.cleanup_confirmed {
+                    status.phase = "Cancelling".into();
+                    status.reason = Some("retained parent teardown pending".into());
                     let _ = persist_status(scoped, &status);
                 }
             }
@@ -752,6 +1840,17 @@ fn access(
                 output: None,
                 receipt_digest: None,
                 cleanup_confirmed: false,
+                parent_incarnation: prepared.decision["parent"]["incarnation"]
+                    .as_str()
+                    .map(str::to_owned),
+                turn_id: prepared.decision["parent"]["turnId"]
+                    .as_str()
+                    .map(str::to_owned),
+                parent_id: None,
+                child_id: None,
+                cell_id: None,
+                execution: None,
+                substrate: None,
             },
         ),
         Err(_) => reply(
@@ -774,6 +1873,7 @@ fn build_native(
     let profile = &execution["profileSpec"];
     let decision = &prepared.decision;
     validate_artifacts(scoped, execution, profile, decision)?;
+    let enduring = decision["lifecycle"] != "one-shot";
     let tool_values = execution["tools"]
         .as_array()
         .ok_or("prepared tools missing")?;
@@ -786,6 +1886,9 @@ fn build_native(
     }
     let provider =
         text(&decision["route"]["provider"], "route provider").map_err(|e| e.to_string())?;
+    if enduring && provider == "none" {
+        return Err("AUTH_PROTOCOL_UNSUPPORTED".into());
+    }
     let config = if provider == "none" {
         if tools.len() != 1 || model_permit.is_some() {
             return Err("AUTH_PROTOCOL_UNSUPPORTED".into());
@@ -819,10 +1922,15 @@ fn build_native(
         let max_turns = u64v(&Value::Object(json_limits.clone())["maxTurns"], "maxTurns")?.min(
             u64v(&decision["budget"]["turnCap"]["requests"], "requests")?,
         );
-        let value = json!({"contract":pilot::json_harness::CONTRACT,"task":execution["payload"],"system":execution["systemPrompt"],"url":route["endpointOrigin"],"model":route["model"],"tools":tools,"max_turns":max_turns,"max_calls":json_limits.get("maxCalls").and_then(Value::as_u64).ok_or("AUTH_PROTOCOL_UNSUPPORTED")?});
+        let value = json!({"contract":pilot::json_harness::CONTRACT,"task":if enduring {Value::String(String::new())} else {execution["payload"].clone()},"system":execution["systemPrompt"],"url":route["endpointOrigin"],"model":route["model"],"tools":tools,"max_turns":max_turns,"max_calls":json_limits.get("maxCalls").and_then(Value::as_u64).ok_or("AUTH_PROTOCOL_UNSUPPORTED")?});
         let typed: pilot::json_harness::Config =
             serde_json::from_value(value.clone()).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
-        pilot::json_harness::validate(&typed).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+        if enduring {
+            pilot::turn_worker::Template::new(typed.clone())
+                .map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+        } else {
+            pilot::json_harness::validate(&typed).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+        }
         let protocol = match text(&route["protocol"], "protocol").map_err(|e| e.to_string())? {
             "openai-chat" => ModelProtocol::OpenaiChat,
             "anthropic-messages" => ModelProtocol::AnthropicMessages,
@@ -868,7 +1976,7 @@ fn build_native(
             Ok::<_, String>(value.min(u64v(&binding["limits"]["memoryBytes"], "tool memory")?))
         },
     )?;
-    let route_egress: Vec<String> = if provider == "none" {
+    let route_egress: Vec<String> = if provider == "none" || enduring {
         vec![]
     } else {
         vec![text(&decision["route"]["endpointOrigin"], "endpoint")
@@ -876,11 +1984,11 @@ fn build_native(
             .into()]
     };
     let native: ExecutionRequest = serde_json::from_value(json!({
-        "apiVersion":"celln.dev/v1alpha1","id":prepared.id,
-        "workload":{"id":prepared.id,"caller":format!("sympozium:{}:{}",receiver.cluster_id,receiver.namespace_uid)},
+        "apiVersion":"celln.dev/v1alpha1","id":if enduring {format!("scoped-worker-{}", &decision["parent"]["incarnation"].as_str().ok_or("AUTH_PARENT_TURN_MISMATCH")?[7..])} else {prepared.id.clone()},
+        "workload":{"id":if enduring {format!("scoped-worker-{}", &decision["parent"]["incarnation"].as_str().ok_or("AUTH_PARENT_TURN_MISMATCH")?[7..])} else {prepared.id.clone()},"caller":format!("sympozium:{}:{}",receiver.cluster_id,receiver.namespace_uid)},
         "mote":{"hash":profile["mote"]["hash"]},
         "tools":[{"alias":profile["entryPoint"],"hash":profile["executable"]["hash"],"closure":{"hash":profile["closure"]["hash"]}}],
-        "invocation":{"alias":profile["entryPoint"],"args":[config.0]},
+        "invocation":{"alias":profile["entryPoint"],"args":if enduring {json!([])} else {json!([config.0.clone()])}},
         "capabilities":{"workspace":"none","egress":route_egress,"timeoutMs":execution["runtimeLimits"]["timeoutMillis"],"memoryBytes":memory,"outputBytes":execution["runtimeLimits"]["outputBytes"]},
         "execution":{"lane":"agent","requireHardwareIsolation":true}
     })).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
@@ -896,12 +2004,17 @@ fn validate_artifacts(
     profile: &Value,
     decision: &Value,
 ) -> Result<(), String> {
+    let required_lifecycle = if decision["lifecycle"] == "one-shot" {
+        "disposable-one-shot"
+    } else {
+        "enduring"
+    };
     if profile["contractVersion"] != pilot::json_harness::CONTRACT
         || profile["platform"] != "linux/amd64"
         || profile["lane"] != "agent"
         || !profile["lifecycles"]
             .as_array()
-            .is_some_and(|v| v.iter().any(|item| item == "disposable-one-shot"))
+            .is_some_and(|v| v.iter().any(|item| item == required_lifecycle))
         || execution["runtimeLimits"]["workspace"] != "none"
     {
         return Err("AUTH_PROTOCOL_UNSUPPORTED".into());
@@ -1104,10 +2217,24 @@ fn validate_prepared(operation: &Value, final_decision: &Value) -> Result<()> {
     if !execution.is_object()
         || base["apiVersion"] != "celln.sympozium.ai/authorisation-decision-v1"
         || final_decision["apiVersion"] != base["apiVersion"]
-        || final_decision["lifecycle"] != "one-shot"
-        || final_decision["operation"] != "execution.start"
     {
         bail!("unsupported scoped decision")
+    }
+    match (
+        final_decision["lifecycle"].as_str(),
+        final_decision["operation"].as_str(),
+    ) {
+        (Some("one-shot"), Some("execution.start"))
+            if final_decision["parent"].is_null() && execution.get("turnUid").is_none() => {}
+        (Some("enduring-initial"), Some("execution.start"))
+            if final_decision["parent"]["incarnation"].as_str().is_some()
+                && final_decision["parent"]["turnId"].is_null()
+                && execution.get("turnUid").is_none() => {}
+        (Some("enduring-turn"), Some("execution.turn"))
+            if final_decision["parent"]["incarnation"].as_str().is_some()
+                && final_decision["parent"]["turnId"].as_str().is_some()
+                && execution["turnUid"] == final_decision["parent"]["turnId"] => {}
+        _ => bail!("unsupported scoped lifecycle operation"),
     }
     let source = &execution["source"];
     if source["clusterId"] != final_decision["clusterId"]
@@ -1276,6 +2403,30 @@ fn terminal_refusal(scoped: &ScopedState, fresh: &Fresh, id: &str, reason: Strin
     let _ = scoped.admission.finish(fresh, Outcome::Refused);
     status
 }
+
+fn prepared_refusal(
+    scoped: &ScopedState,
+    fresh: &Fresh,
+    prepared: &PreparedRecord,
+    reason: String,
+) -> ScopedStatus {
+    let mut status = terminal_status(
+        &prepared.id,
+        scoped.admission.owner(),
+        "Refused",
+        Some(reason),
+        None,
+    );
+    status.parent_incarnation = prepared.decision["parent"]["incarnation"]
+        .as_str()
+        .map(str::to_owned);
+    status.turn_id = prepared.decision["parent"]["turnId"]
+        .as_str()
+        .map(str::to_owned);
+    let _ = persist_status(scoped, &status);
+    let _ = scoped.admission.finish(fresh, Outcome::Refused);
+    status
+}
 fn terminal_status(
     id: &str,
     owner: &str,
@@ -1291,7 +2442,65 @@ fn terminal_status(
         output,
         receipt_digest: None,
         cleanup_confirmed: true,
+        parent_incarnation: None,
+        turn_id: None,
+        parent_id: None,
+        child_id: None,
+        cell_id: None,
+        execution: None,
+        substrate: None,
     }
+}
+
+fn validate_parent_template(template: &ParentTemplate) -> Result<(), String> {
+    let request = &template.request;
+    if template.api_version != "celln.scoped-parent-template/v1"
+        || request.id != "$parent"
+        || request.workload.id != "$parent"
+        || request.workload.caller != "$principal"
+        || template.reserved_memory_bytes == 0
+        || request.harness.is_some()
+        || request.forge.is_some()
+        || !request.inputs.is_empty()
+        || !request.capabilities.egress.is_empty()
+        || request.capabilities.workspace != celln_spec::WorkspaceAccess::None
+        || request.execution.lane != celln_spec::RequestedLane::Agent
+        || !request.execution.require_hardware_isolation
+        || request.tools.len() != 1
+        || request.tools[0].closure.is_none()
+        || !request
+            .invocation
+            .as_ref()
+            .is_some_and(|i| i.args.is_empty())
+        || !request.problems().is_empty()
+    {
+        return Err("invalid operator scoped parent request template".into());
+    }
+    let floor = request
+        .capabilities
+        .memory_bytes
+        .checked_mul(2)
+        .ok_or("operator parent reservation overflow")?;
+    if template.reserved_memory_bytes <= floor {
+        return Err("operator parent reservation omits retained substrate overhead".into());
+    }
+    Ok(())
+}
+
+fn operator_dir(path: &Path) -> Result<()> {
+    match fs::create_dir(path) {
+        Ok(()) => File::open(path.parent().unwrap())?.sync_all()?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir()
+        || metadata.uid() != unsafe { libc::geteuid() }
+        || metadata.permissions().mode() & 0o022 != 0
+    {
+        bail!("operator parent authority directory is not protected")
+    }
+    Ok(())
 }
 
 fn private_dir(path: &Path) -> Result<()> {
@@ -1370,6 +2579,15 @@ fn id_hex(id: &str) -> Result<&str> {
         bail!("invalid scoped id")
     }
     Ok(value)
+}
+
+fn blake(value: &str) -> bool {
+    value.strip_prefix("blake3:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 fn reject_secret_material(value: &Value) -> Result<()> {
@@ -1465,6 +2683,36 @@ mod tests {
     }
 
     #[test]
+    fn preparation_accepts_only_correlated_enduring_root_and_turn_shapes() {
+        let (mut operation, mut decision) = fixture();
+        let scope = r#"["celln.scoped-parent/v1","cluster","namespace-uid"]"#;
+        let incarnation = warden::parent_permit::run_incarnation(scope, "run-uid")
+            .unwrap()
+            .0;
+        decision["lifecycle"] = json!("enduring-initial");
+        decision["parent"] = json!({"incarnation":incarnation,"turnId":null});
+        decision["budget"]["maxTurns"] = json!(2);
+        decision["budget"]["parentDeadlineUnix"] = json!(2_000_000_100i64);
+        decision["requestDigest"] = json!(crate::tenancy_contract::digest(
+            &external_request(&operation, &decision).unwrap()
+        ));
+        operation["resolution"]["decision"] = decision.clone();
+        validate_prepared(&operation, &decision).unwrap();
+
+        decision["lifecycle"] = json!("enduring-turn");
+        decision["operation"] = json!("execution.turn");
+        decision["parent"]["turnId"] = json!("turn-uid");
+        operation["resolution"]["execution"]["turnUid"] = json!("turn-uid");
+        decision["requestDigest"] = json!(crate::tenancy_contract::digest(
+            &external_request(&operation, &decision).unwrap()
+        ));
+        operation["resolution"]["decision"] = decision.clone();
+        validate_prepared(&operation, &decision).unwrap();
+        operation["resolution"]["execution"]["turnUid"] = json!("other");
+        assert!(validate_prepared(&operation, &decision).is_err());
+    }
+
+    #[test]
     fn only_gateway_credential_uid_pin_may_change_the_prepared_decision() {
         let (mut operation, mut decision) = fixture();
         let reference = json!({"kind":"Secret","secretName":"provider","secretKey":"token"});
@@ -1495,6 +2743,48 @@ mod tests {
     }
 
     #[test]
+    fn scoped_control_uses_remaining_absolute_turn_deadline() {
+        let (operation, mut decision) = fixture();
+        decision["budget"]["turnDeadlineUnix"] = json!(now() + 2);
+        let prepared = PreparedRecord {
+            version: 1,
+            id: operation_id(&operation, &decision).unwrap(),
+            owner: format!("sha256:{}", "a".repeat(64)),
+            operation,
+            decision,
+        };
+        let control = operation_control(&prepared).unwrap();
+        assert!(control.remaining() <= Duration::from_secs(2));
+        assert!(control.remaining() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn parent_scope_and_incarnation_match_the_cross_language_tuple() {
+        let (mut operation, mut decision) = fixture();
+        decision["lifecycle"] = json!("enduring-initial");
+        decision["parent"] = json!({"incarnation":Hash::of(b"placeholder").0,"turnId":null});
+        operation["resolution"]["decision"] = decision.clone();
+        let prepared = PreparedRecord {
+            version: 1,
+            id: operation_id(&operation, &decision).unwrap(),
+            owner: format!("sha256:{}", "a".repeat(64)),
+            operation,
+            decision,
+        };
+        let scope = parent_scope(&prepared).unwrap();
+        assert_eq!(
+            scope,
+            r#"["celln.scoped-parent/v1","cluster","namespace-uid"]"#
+        );
+        let actual = warden::parent_permit::run_incarnation(&scope, "run-uid").unwrap();
+        let expected = Hash::of(
+            &serde_json::to_vec(&("celln.parent-run-incarnation/v1", scope.as_str(), "run-uid"))
+                .unwrap(),
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn scoped_receiver_is_disabled_or_fails_closed_on_partial_operator_config() {
         let root = tempfile::tempdir().unwrap();
         let probe = crate::NodeProbeArgs {
@@ -1512,7 +2802,8 @@ mod tests {
                 jwks_file: None,
                 issuer: None,
                 gateway_origin: None,
-                gateway_ca: None
+                gateway_ca: None,
+                parent_request_file: None
             },
             &probe
         )
@@ -1525,7 +2816,8 @@ mod tests {
                 jwks_file: None,
                 issuer: None,
                 gateway_origin: None,
-                gateway_ca: None
+                gateway_ca: None,
+                parent_request_file: None
             },
             &probe
         )
@@ -1545,6 +2837,8 @@ mod tests {
             admission: Arc::new(Journal::open(&root.join("scoped/admission"), 16).unwrap()),
             root: root.join("scoped"),
             gateway: None,
+            parent_template: None,
+            enduring: Mutex::new(HashMap::new()),
             operation_lock: Mutex::new(()),
         }
     }
