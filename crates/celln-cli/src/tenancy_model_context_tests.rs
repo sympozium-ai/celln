@@ -2,6 +2,37 @@ use super::*;
 use std::io::Read;
 
 #[test]
+fn model_request_canonical_bounds() {
+    for depth in [64, 65] {
+        let raw = format!("{}0{}", "[".repeat(depth), "]".repeat(depth));
+        assert_eq!(canonical_model_request(raw.as_bytes()).is_err(), depth > 64);
+    }
+    assert!(canonical_model_request(&vec![b' '; 262145]).is_err());
+}
+
+#[test]
+fn shared_model_request_canonical_vectors() {
+    let raw = include_bytes!("../../../tests/fixtures/celln-model-requests/v1.json");
+    let fixture: Value = serde_json::from_slice(raw).unwrap();
+    assert_eq!(
+        fixture["apiVersion"],
+        "celln.sympozium.ai/model-request-conformance-v1"
+    );
+    let vectors = fixture["vectors"].as_array().unwrap();
+    assert_eq!(vectors.len(), 11);
+    for vector in vectors {
+        let result = canonical_model_request(vector["request"].as_str().unwrap().as_bytes());
+        if let Some(expected) = vector["canonical"].as_str() {
+            let (body, digest) = result.unwrap();
+            assert_eq!(body, expected.as_bytes(), "{}", vector["name"]);
+            assert_eq!(digest, crate::tenancy_contract::digest(expected.as_bytes()));
+        } else {
+            assert!(result.is_err(), "{}", vector["name"]);
+        }
+    }
+}
+
+#[test]
 fn paired_capabilities_are_isolated_redacted_and_cancelled() {
     let bytes = include_bytes!("../../../tests/fixtures/celln-authorisation/v1/cases.json.gz");
     let mut raw = Vec::new();

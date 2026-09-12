@@ -24,6 +24,17 @@ at its configured verified-TLS gateway origin and must never serialize it to a
 guest, journal, receipt, log or shared file. Provider credentials are not inputs
 to this context.
 
+## Canonical model request bytes
+
+`canonical_model_request` returns the v1 body bytes and typed SHA-256 digest for
+later gateway reservation. The independently implemented encoder agrees with Go
+on eleven shared golden vectors in `tests/fixtures/celln-model-requests/v1.json`,
+including HTML/U+2028, UTF-16 key ordering, duplicates, malformed Unicode and
+invalid numeric forms. Bounds are 262144 bytes and 64 object/array levels. The
+profile is integer-only: fractional sampling parameters, exponents and negative
+zero refuse rather than being silently converted. No network or reservation is
+performed by this function; the broker still needs to call it at actual dispatch.
+
 ## Tests
 
 Run `cargo test -p celln-cli --lib --locked` and focused library Clippy. Tests use

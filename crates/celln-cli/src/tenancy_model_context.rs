@@ -7,6 +7,27 @@ use serde_json::Value;
 use std::{fmt, time::Duration};
 use zeroize::Zeroizing;
 
+/// Canonical provider body and typed digest for the v1 gateway reservation
+/// protocol. Uses the independently implemented integer-only JCS encoder;
+/// neither Go/serde map ordering nor ordinary JSON escaping is a wire contract.
+/// No network operation, allowance reservation or retry is performed here.
+pub fn canonical_model_request(raw: &[u8]) -> Result<(Vec<u8>, String), Refusal> {
+    let body = crate::tenancy_contract::canonical(raw).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+    fn depth(value: &Value) -> usize {
+        match value {
+            Value::Array(items) => 1 + items.iter().map(depth).max().unwrap_or(0),
+            Value::Object(items) => 1 + items.values().map(depth).max().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    let value: Value = serde_json::from_slice(&body).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+    if depth(&value) > 64 {
+        return Err("AUTH_PROTOCOL_UNSUPPORTED");
+    }
+    let digest = crate::tenancy_contract::digest(&body);
+    Ok((body, digest))
+}
+
 pub struct ModelContext {
     bearer: Option<Zeroizing<String>>,
     control: Control,
