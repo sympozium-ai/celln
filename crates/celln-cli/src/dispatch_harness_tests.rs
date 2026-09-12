@@ -80,22 +80,28 @@ fn controller_hook(
 #[test]
 #[ignore = "billable: requires CELLN_HARNESS_PACKAGE, CELLN_MODEL_TOKEN_FILE and real KVM"]
 fn harness_model_over_authenticated_dispatch() {
-    model_over_authenticated_dispatch(false, false);
+    model_over_authenticated_dispatch(false, false, false);
 }
 
 #[test]
 #[ignore = "billable: requires JSON CELLN_HARNESS_PACKAGE, CELLN_MODEL_TOKEN_FILE and real KVM"]
 fn json_harness_model_over_authenticated_dispatch() {
-    model_over_authenticated_dispatch(true, false);
+    model_over_authenticated_dispatch(true, false, false);
 }
 
 #[test]
 #[ignore = "requires real KVM and a native JSON Harness package; no model calls"]
 fn json_harness_grant_issuance_on_real_kvm() {
-    model_over_authenticated_dispatch(true, true);
+    model_over_authenticated_dispatch(true, true, false);
 }
 
-fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool) {
+#[test]
+#[ignore = "requires real KVM and rebuilt JSON Harness package; no model calls"]
+fn json_direct_adapter_on_real_kvm() {
+    model_over_authenticated_dispatch(true, true, true);
+}
+
+fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool, direct: bool) {
     let _lock = crate::dispatch::warm::PROOF_LOCK.lock().unwrap();
     let package = PathBuf::from(
         std::env::var_os("CELLN_HARNESS_PACKAGE")
@@ -167,6 +173,68 @@ fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool) {
             {"name":"multiply","path":"/multiply","hash":signed.closure.members["/multiply"].hash,"description":"Multiply two integer strings."}
         ])
     };
+    if direct {
+        assert!(
+            hook.is_none(),
+            "direct adapter proof does not support a controller hook"
+        );
+        // Native adapter proof only: no scoped HTTP admission or controller
+        // identity claim. In particular no legacy model grant is created/read.
+        let schema = r#"{"type":"object","properties":{"text":{"type":"string","minLength":1,"maxLength":64}},"required":["text"],"additionalProperties":false}"#;
+        let config = pilot::json_harness::DirectConfig {
+            contract: pilot::json_harness::DIRECT_CONTRACT.into(),
+            tool: pilot::json_harness::Tool {
+                name: "uppercase".into(),
+                path: "/uppercase".into(),
+                hash: signed.closure.members["/uppercase"].hash.clone(),
+                description: "Uppercase text".into(),
+                input_schema: pilot::json_harness::Schema {
+                    bytes: schema.into(),
+                    hash: Hash::of(schema.as_bytes()).0,
+                },
+                output_schema: pilot::json_harness::Schema {
+                    bytes: schema.into(),
+                    hash: Hash::of(schema.as_bytes()).0,
+                },
+                input_bytes: 1024,
+                output_bytes: 1024,
+                timeout_ms: 1000,
+            },
+            arguments: r#"{"text":"celln"}"#.into(),
+        };
+        let mut request: ExecutionRequest = serde_json::from_value(json!({
+            "apiVersion":"celln.dev/v1alpha1", "id":"direct-adapter-1",
+            "workload":{"id":"direct-adapter-1","caller":caller}, "mote":{"hash":mote.0},
+            "tools":[{"alias":"/harness","hash":runtime.0,"closure":{"hash":closure.0}}],
+            "invocation":{"alias":"/harness","args":[serde_json::to_string(&config).unwrap()]},
+            "capabilities":{"workspace":"none","egress":[],"timeoutMs":60000,"memoryBytes":268435456,"outputBytes":65536},
+            "execution":{"lane":"agent","requireHardwareIsolation":true}
+        })).unwrap();
+        assert!(request.problems().is_empty(), "{:?}", request.problems());
+        let mut ids = Vec::new();
+        for n in 1..=2 {
+            request.id = format!("direct-adapter-{n}");
+            request.workload.id = request.id.clone();
+            let (outcome, _) = crate::dispatch::launch_declared(
+                &request,
+                &root.join("motes"),
+                &root.join("tools"),
+                root,
+            )
+            .unwrap();
+            assert!(outcome.denial.is_none(), "{outcome:?}");
+            assert_eq!(outcome.exit_code, Some(0), "{outcome:?}");
+            assert!(outcome.execution.is_some(), "no confirmed execution grant");
+            assert_eq!(outcome.broker.requests, 0);
+            let output: Value = serde_json::from_slice(outcome.output.as_ref().unwrap()).unwrap();
+            assert_eq!(output, json!({"text":"CELLN"}));
+            ids.push(outcome.cell_id);
+        }
+        assert_ne!(ids[0], ids[1]);
+        assert!(!root.join("trusted-harness").exists());
+        eprintln!("PASS: two distinct native model-free adapter cells; no scoped admission/controller claim");
+        return;
+    }
     let options = json!({"system":"Use the explicitly lent tools.","maxTurns":3,"maxCalls":2});
     let mut grant = json!({"apiVersion":"celln.dev/harness-grant-v1","caller":caller,"mote":mote.0,"runtime":runtime.0,"closure":closure.0,"borrowedTools":borrowed,"url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","credentialFile":token,"maxRequests":3,"maxOutputTokens":512,"maxTotalOutputTokens":1536});
     if json_adapter {
