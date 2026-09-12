@@ -34,6 +34,8 @@ zeroize = "=1.8.1"
 tempfile.workspace = true
 sha2 = "0.10"
 flate2 = "=1.0.35"
+ed25519-dalek = "=2.1.1"
+base64 = "=0.22.1"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
