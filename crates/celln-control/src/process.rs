@@ -16,7 +16,7 @@ pub fn output_with_timeout(
     crate::check()?;
     #[cfg(target_os = "linux")]
     {
-        unix_output(command, limit)
+        unix_output(command, limit, None)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -30,9 +30,31 @@ pub fn output_with_timeout(
     }
 }
 
+/// Feed bounded private input over an anonymous pipe, while continuing to poll
+/// cancellation and drain output. No input is put in argv, environment or files.
 #[cfg(target_os = "linux")]
-fn unix_output(command: &mut Command, limit: Option<std::time::Duration>) -> io::Result<Output> {
-    use std::io::Read;
+pub fn output_with_input(
+    command: &mut Command,
+    input: &[u8],
+    limit: std::time::Duration,
+) -> io::Result<Output> {
+    if input.len() > 2 * 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "subprocess input exceeded 2 MiB",
+        ));
+    }
+    crate::check()?;
+    unix_output(command, Some(limit), Some(input))
+}
+
+#[cfg(target_os = "linux")]
+fn unix_output(
+    command: &mut Command,
+    limit: Option<std::time::Duration>,
+    input: Option<&[u8]>,
+) -> io::Result<Output> {
+    use std::io::{Read, Write};
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Stdio};
@@ -83,11 +105,21 @@ fn unix_output(command: &mut Command, limit: Option<std::time::Duration>) -> io:
     }
     command
         .process_group(0)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = Owned(command.spawn()?, true);
     let started = std::time::Instant::now();
+    let mut stdin = child.0.stdin.take();
+    if let Some(writer) = stdin.as_ref() {
+        nonblocking(writer.as_raw_fd())?;
+    }
+    let input = input.unwrap_or_default();
+    let mut written = 0;
     let mut stdout = child.0.stdout.take().expect("piped stdout");
     let mut stderr = child.0.stderr.take().expect("piped stderr");
     nonblocking(stdout.as_raw_fd())?;
@@ -100,6 +132,29 @@ fn unix_output(command: &mut Command, limit: Option<std::time::Duration>) -> io:
                 io::ErrorKind::TimedOut,
                 "subprocess deadline exceeded",
             ));
+        }
+        if let Some(writer) = stdin.as_mut() {
+            if written < input.len() {
+                let end = (written + 8192).min(input.len());
+                match writer.write(&input[written..end]) {
+                    Ok(0) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WriteZero,
+                            "subprocess input closed",
+                        ))
+                    }
+                    Ok(n) => written += n,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            if written == input.len() {
+                stdin.take();
+            }
         }
         drain(&mut stdout, &mut out)?;
         drain(&mut stderr, &mut err)?;
@@ -145,6 +200,30 @@ fn unix_output(command: &mut Command, limit: Option<std::time::Duration>) -> io:
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn private_input_is_drained_without_pipe_deadlock() {
+        let input = vec![b'x'; 512 * 1024];
+        let out =
+            output_with_input(&mut Command::new("cat"), &input, Duration::from_secs(5)).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, input);
+    }
+
+    #[test]
+    fn blocked_private_input_obeys_cancellation() {
+        let control = crate::Control::new(Duration::from_millis(80)).unwrap();
+        let started = Instant::now();
+        let result = control.scope(|| {
+            output_with_input(
+                Command::new("sleep").arg("30"),
+                &vec![b'x'; 512 * 1024],
+                Duration::from_secs(30),
+            )
+        });
+        assert!(result.is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     fn not_running(pid: &str) -> bool {
         std::fs::read_to_string(format!("/proc/{}/stat", pid.trim()))

@@ -83,6 +83,13 @@ pub enum FetchDenied {
     Fetch(String),
 }
 
+/// Host-owned mediated transport. It receives only the validated provider body,
+/// never a guest-selected destination or headers. The implementation owns the
+/// fixed gateway origin, scoped credential, request identity and cancellation.
+pub trait ModelRelay: Send {
+    fn invoke(&mut self, body: &[u8]) -> Result<Vec<u8>, FetchDenied>;
+}
+
 /// Per-cell host capability state. It lives with `warden`, never in the
 /// guest, so a compromised guest can at most spend its own bounded allowance.
 pub struct HttpBroker {
@@ -90,6 +97,7 @@ pub struct HttpBroker {
     used: usize,
     get_used: usize,
     post_output_reserved: std::collections::BTreeMap<String, u64>,
+    model_relay: Option<Box<dyn ModelRelay>>,
 }
 
 impl HttpBroker {
@@ -99,7 +107,30 @@ impl HttpBroker {
             used: 0,
             get_used: 0,
             post_output_reserved: Default::default(),
+            model_relay: None,
         }
+    }
+
+    /// Separate constructor: mediated model execution cannot carry a standing
+    /// provider credential file or silently fall back to the legacy transport.
+    pub fn new_mediated(
+        policy: HttpPolicy,
+        relay: Box<dyn ModelRelay>,
+    ) -> Result<Self, FetchDenied> {
+        if policy.allow_insecure
+            || policy.json_posts.len() != 1
+            || !policy.json_posts[0]
+                .bearer_token_file
+                .as_os_str()
+                .is_empty()
+        {
+            return Err(FetchDenied::Fetch(
+                "mediated model grant requires exactly one credential-free route".into(),
+            ));
+        }
+        let mut broker = Self::new(policy);
+        broker.model_relay = Some(relay);
+        Ok(broker)
     }
 
     pub fn used(&self) -> usize {

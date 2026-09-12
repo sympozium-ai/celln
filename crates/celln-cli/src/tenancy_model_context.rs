@@ -29,6 +29,7 @@ pub fn canonical_model_request(raw: &[u8]) -> Result<(Vec<u8>, String), Refusal>
 }
 
 pub struct ModelContext {
+    pub(crate) decision: Vec<u8>,
     bearer: Option<Zeroizing<String>>,
     control: Control,
 }
@@ -89,6 +90,8 @@ impl ModelContext {
             .map_err(|_| "AUTH_WINDOW_INVALID")?;
         control.check().map_err(|_| "AUTH_WORK_DEADLINE_EXPIRED")?;
         Ok(Self {
+            decision: crate::tenancy_contract::canonical(decision)
+                .map_err(|_| "AUTH_CRED_MALFORMED")?,
             bearer: Some(model_token),
             control,
         })
