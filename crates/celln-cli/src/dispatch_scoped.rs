@@ -1430,6 +1430,31 @@ fn uncertain_status(prepared: &PreparedRecord, reason: &str) -> ScopedStatus {
     }
 }
 
+fn model_completion(transcript: &str) -> std::result::Result<String, String> {
+    let mut answer = None;
+    for raw in transcript
+        .lines()
+        .filter_map(|line| line.strip_prefix("CELLN_HARNESS_EVENT "))
+    {
+        crate::tenancy_contract::canonical(raw.as_bytes())
+            .map_err(|_| "invalid model completion event")?;
+        let event: Value =
+            serde_json::from_str(raw).map_err(|_| "invalid model completion event")?;
+        if event["type"] == "completed" {
+            let value = event["answer"].as_str().ok_or("missing model answer")?;
+            if answer.is_some()
+                || value.trim().is_empty()
+                || value.len() > 65536
+                || value.contains('\0')
+            {
+                return Err("invalid or duplicate model completion".into());
+            }
+            answer = Some(value.to_owned());
+        }
+    }
+    answer.ok_or_else(|| "missing model completion".into())
+}
+
 fn run_scoped(
     scoped: Arc<ScopedState>,
     executions: super::Executions,
@@ -1442,10 +1467,11 @@ fn run_scoped(
     root: PathBuf,
 ) {
     super::update_execution(&executions, &id, |r| r.phase = "Running".into());
+    let model_backed = broker.is_some();
     let launched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         crate::dispatch::launch_scoped_declared(&request, &motes, &tools, &root, broker)
     }));
-    let (mut phase, mut reason, output, execution, substrate, cell_id, cleanup_confirmed) =
+    let (mut phase, mut reason, mut output, execution, substrate, cell_id, cleanup_confirmed) =
         match launched {
             Ok(Ok((outcome, _))) => {
                 let phase = if outcome.succeeded() {
@@ -1497,6 +1523,16 @@ fn run_scoped(
                 false,
             ),
         };
+    if phase == "Succeeded" && model_backed {
+        match model_completion(output.as_deref().unwrap_or("")) {
+            Ok(answer) => output = Some(answer),
+            Err(error) => {
+                phase = "Failed";
+                reason = Some(error);
+                output = None;
+            }
+        }
+    }
     if phase == "Succeeded"
         && (cell_id.as_deref().is_none_or(str::is_empty)
             || execution.is_none()
@@ -2648,6 +2684,15 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scoped_model_result_requires_one_unambiguous_completion() {
+        let valid = "CELLN_HARNESS_EVENT {\"type\":\"completed\",\"answer\":\"CELLN\"}\n";
+        assert_eq!(model_completion(valid).unwrap(), "CELLN");
+        assert!(model_completion(&(valid.to_owned() + valid)).is_err());
+        assert!(model_completion("CELLN_HARNESS_EVENT {\"type\":\"completed\",\"answer\":\"first\",\"answer\":\"second\"}\n").is_err());
+        assert!(model_completion("CELLN_HARNESS_EVENT {\"type\":\"model\"}\n").is_err());
+    }
 
     fn fixture() -> (Value, Value) {
         let profile = json!({
