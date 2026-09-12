@@ -447,11 +447,18 @@ pub(crate) fn launch_scoped_declared(
         || !request.execution.require_hardware_isolation
         || !request.problems().is_empty()
         || broker.as_ref().is_some_and(|b| !b.is_mediated())
-        || (broker.is_none() != request.capabilities.egress.is_empty())
+        || !request.capabilities.egress.is_empty()
     {
         return Err("AUTH_PROTOCOL_UNSUPPORTED".into());
     }
-    let prepared = prepare_declared_mode(request, mote_root, tool_root, state_root, true)?;
+    let prepared = prepare_declared_mode(
+        request,
+        mote_root,
+        tool_root,
+        state_root,
+        true,
+        broker.is_some(),
+    )?;
     celln_control::check().map_err(|e| e.to_string())?;
     if request.configuration_binding(celln_spec::ConfigurationRole::OneShot)?
         != prepared.request_binding
@@ -480,7 +487,7 @@ fn prepare_declared(
     tool_root: &Path,
     state_root: &Path,
 ) -> Result<PreparedDeclared, String> {
-    prepare_declared_mode(request, mote_root, tool_root, state_root, false)
+    prepare_declared_mode(request, mote_root, tool_root, state_root, false, false)
 }
 
 fn prepare_declared_mode(
@@ -489,6 +496,7 @@ fn prepare_declared_mode(
     tool_root: &Path,
     state_root: &Path,
     scoped: bool,
+    mediated: bool,
 ) -> Result<PreparedDeclared, String> {
     if !scoped {
         super::check_supported_authority(request)?;
@@ -538,7 +546,7 @@ fn prepare_declared_mode(
             "args": harness.as_ref().map_or(&invocation.args, |h|&h.args), "expected_hash": resolved.program_hash,
             "agent_authored_input": request.execution.lane == celln_spec::RequestedLane::Agent,
             "force_agent_lane": force_agent,
-            "allow_fetch": !request.capabilities.egress.is_empty(),
+            "allow_fetch": mediated || !request.capabilities.egress.is_empty(),
             "report_output_limit": request.capabilities.output_bytes,
             "workspace_access": request.capabilities.workspace,
             "inputs": inputs,

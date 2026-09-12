@@ -638,6 +638,11 @@ fn start(
             .lock()
             .expect("dispatcher registry not poisoned");
         let node = current_node(dispatcher, &registry);
+        if broker.is_some() && node.egress_slots == 0 {
+            drop(registry);
+            let status = terminal_refusal(scoped, &fresh, &request.id, "AUTH_CAPACITY".into());
+            return reply(stream, 503, &status);
+        }
         if let crate::node::Admission::Refused { reason, .. } = crate::node::admit(&native, &node) {
             drop(registry);
             let status = terminal_refusal(
@@ -650,7 +655,9 @@ fn start(
         }
         let mut entry = Entry::new(record);
         entry.control = Some(control.clone());
-        entry.reservation = Some(Reservation::for_request(&native));
+        let mut reservation = Reservation::for_request(&native);
+        reservation.egress_slots = u32::from(broker.is_some());
+        entry.reservation = Some(reservation);
         registry.insert(request.id.clone(), entry);
     }
     let status = ScopedStatus {
@@ -1986,11 +1993,9 @@ fn build_native(
             Ok::<_, String>(value.min(u64v(&binding["limits"]["memoryBytes"], "tool memory")?))
         },
     )?;
-    let route_egress: Vec<String> = if provider == "none" || enduring {
-        vec![]
-    } else {
-        vec!["https://celln-model.invalid".into()]
-    };
+    // The owned broker is the sole transport authority. Never turn its logical
+    // guest endpoint into a legacy standing egress grant in the native request.
+    let route_egress: Vec<String> = vec![];
     let native: ExecutionRequest = serde_json::from_value(json!({
         "apiVersion":"celln.dev/v1alpha1","id":if enduring {format!("scoped-worker-{}", &decision["parent"]["incarnation"].as_str().ok_or("AUTH_PARENT_TURN_MISMATCH")?[7..])} else {prepared.id.clone()},
         "workload":{"id":if enduring {format!("scoped-worker-{}", &decision["parent"]["incarnation"].as_str().ok_or("AUTH_PARENT_TURN_MISMATCH")?[7..])} else {prepared.id.clone()},"caller":format!("sympozium:{}:{}",receiver.cluster_id,receiver.namespace_uid)},
