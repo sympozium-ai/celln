@@ -4,6 +4,8 @@
 use super::*;
 
 pub(crate) type Brokers = parent_worker::ScopedTurnBrokers;
+pub(crate) type Results = parent_worker::ScopedTurnResults;
+pub(crate) use parent_worker::ScopedTurnBroker;
 
 pub(crate) struct Plan {
     pub parent: ExecutionRequest,
@@ -30,6 +32,7 @@ pub(crate) fn claim(
     plan: Plan,
     principal: &str,
     brokers: Brokers,
+    results: Results,
 ) -> Result<
     impl FnOnce(
             std::sync::Arc<warden::parent_child_control::ChildControlSlot>,
@@ -72,6 +75,7 @@ pub(crate) fn claim(
             &tools,
             &root,
             brokers,
+            results,
         )?;
         let mut session = parent.into_claimed_session(worker, Some(claim), Some(children))?;
         Ok(
