@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for Strict {
     }
 }
 
-fn canonical(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
+pub(super) fn canonical(raw: &[u8]) -> Result<Vec<u8>, &'static str> {
     if raw.is_empty() || raw.len() > MAX_BYTES {
         return Err("size exceeded");
     }
@@ -103,7 +103,7 @@ fn encode(value: &Value, out: &mut Vec<u8>) {
         _ => serde_json::to_writer(out, value).unwrap(),
     }
 }
-fn digest(raw: &[u8]) -> String {
+pub(super) fn digest(raw: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(raw))
 }
 

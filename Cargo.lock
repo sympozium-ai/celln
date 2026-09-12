@@ -77,6 +77,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -145,6 +151,7 @@ name = "celln-cli"
 version = "0.5.10"
 dependencies = [
  "anyhow",
+ "base64",
  "celln-assay",
  "celln-control",
  "celln-forge",
@@ -154,6 +161,7 @@ dependencies = [
  "celln-store",
  "celln-warden",
  "clap",
+ "ed25519-dalek",
  "flate2",
  "is-terminal",
  "libc",

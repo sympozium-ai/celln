@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod tenancy_contract;
+#[cfg(test)]
+mod tenancy_credentials;
 
 mod agent;
 mod capabilities;
