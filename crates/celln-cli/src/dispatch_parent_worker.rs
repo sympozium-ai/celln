@@ -328,7 +328,19 @@ impl PreparedWorker {
             }
             Err(error) => return Err(error),
         };
+        let mut substrate = self.declared.identity.clone();
+        substrate.invocation = Hash::of(&invocation).0;
+        outcome.substrate = Some(substrate);
         super::super::validate_executed_tool(&mut outcome, &self.declared.resolved.program_hash);
+        // Operator-only bounded diagnostics must survive a failed worker too.
+        // No host transport or provider credential is ever part of this data.
+        if let Some(directory) = &audit_directory {
+            retain_audit(directory, &turn.child, &serde_json::to_vec_pretty(&serde_json::json!({
+                "broker":outcome.broker,"output":String::from_utf8_lossy(outcome.output.as_deref().unwrap_or_default()),
+                "denial":outcome.denial,"exitCode":outcome.exit_code,"execution":outcome.execution,"substrate":outcome.substrate,
+                "cancelled":cancelled_after_teardown(outcome.denial.as_deref(),celln_control::current().and_then(|control|control.reason()))
+            })).map_err(|e|e.to_string())?)?;
+        }
         if let WorkerBrokers::Scoped { results, .. } = &mut self.brokers {
             results(turn, &outcome)?;
         }
@@ -353,19 +365,6 @@ impl PreparedWorker {
                     .ok_or("missing native worker output")?,
             )?
         };
-        // Explicit host opt-in only: contains sensitive conversation/tool data,
-        // never authority to replay. Default production operation retains none.
-        if let Some(directory) = audit_directory {
-            retain_audit(
-                &directory,
-                &turn.child,
-                &serde_json::to_vec_pretty(&serde_json::json!({"broker":outcome.broker,
-                "output":String::from_utf8_lossy(outcome.output.as_deref().unwrap_or_default()),
-                "cancelled":cancelled,
-                "execution":outcome.execution}))
-                .map_err(|e| e.to_string())?,
-            )?;
-        }
         Ok(pilot::parent_session::DestroyedChild {
             child: turn.child.clone(),
             succeeded: !cancelled,
