@@ -965,7 +965,7 @@ spec:
   resultSchema: {{hash: "{}"}}
   platform: linux/amd64
   lane: tool
-  limits: {{timeoutMillis: 5000, memoryBytes: 67108864, argumentBytes: 4096, outputBytes: 4096, workspace: none, effects: none}}
+  limits: {{timeoutMillis: 5000, memoryBytes: 134217728, argumentBytes: 4096, outputBytes: 4096, workspace: none, effects: none}}
 "#,
         Hash::of(&one_source.descriptor),
         bundles[0].executable,
