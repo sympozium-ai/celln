@@ -138,6 +138,20 @@ impl HttpBroker {
         self.model_relay.is_some()
     }
 
+    /// Check a model-only transfer against an already reserved native turn.
+    /// This cannot establish tenant identity; the supplying owner must bind the
+    /// relay to that turn's independently verified capability context.
+    pub fn fits_mediated_turn(&self, requests: u64, output_tokens: u64) -> bool {
+        self.is_mediated()
+            && self.policy.allow_hosts.is_empty()
+            && self.policy.workspace.is_none()
+            && (self.policy.max_requests as u128) <= u128::from(requests)
+            && self.policy.json_posts.len() == 1
+            && self.policy.json_posts[0].max_total_output_tokens <= output_tokens
+            && self.policy.json_posts[0].max_output_tokens
+                <= self.policy.json_posts[0].max_total_output_tokens
+    }
+
     pub fn used(&self) -> usize {
         self.used
     }

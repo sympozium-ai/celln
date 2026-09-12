@@ -9,8 +9,19 @@ pub(super) struct PreparedWorker {
     request: ExecutionRequest,
     binding: Binding,
     template: Template,
-    brokers: super::parent_model::ChildBrokers,
+    brokers: WorkerBrokers,
     root: std::path::PathBuf,
+}
+
+/// Supplies an owned relay only for the independently admitted, durably
+/// reserved turn. Implementations must consume original per-turn custody and
+/// refuse replay/context loss; a parent grant is not a fresh model allowance.
+pub(super) type ScopedTurnBrokers =
+    Box<dyn FnMut(&ReservedTurn) -> Result<warden::egress::HttpBroker, String> + Send>;
+
+enum WorkerBrokers {
+    Legacy(super::parent_model::ChildBrokers),
+    Scoped(ScopedTurnBrokers),
 }
 
 fn check_tools(
@@ -99,6 +110,80 @@ pub(super) fn prepare_worker(
         request,
         &template,
     )?;
+    finish_preparation(
+        request,
+        template,
+        binding,
+        mote_root,
+        tool_root,
+        state_root,
+        WorkerBrokers::Legacy(brokers),
+    )
+}
+
+pub(super) fn scoped_worker_binding(
+    request: &ExecutionRequest,
+    template: &Template,
+) -> Result<Hash, String> {
+    let bytes = serde_json::to_vec(&(
+        "celln.scoped-worker/v1",
+        request.configuration_binding(celln_spec::ConfigurationRole::Worker)?,
+        template.binding(),
+    ))
+    .map_err(|e| e.to_string())?;
+    Ok(Hash::of(&bytes))
+}
+
+pub(super) fn prepare_worker_scoped(
+    request: &ExecutionRequest,
+    template: Template,
+    binding: &Binding,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    brokers: ScopedTurnBrokers,
+) -> Result<PreparedWorker, String> {
+    if scoped_worker_binding(request, &template)? != binding.worker_configuration
+        || request.workload.caller != binding.principal
+        || request.harness.is_some()
+        || request.forge.is_some()
+        || !request.inputs.is_empty()
+        || !request.capabilities.egress.is_empty()
+        || request.capabilities.workspace != celln_spec::WorkspaceAccess::None
+        || request.execution.lane != celln_spec::RequestedLane::Agent
+        || !request.execution.require_hardware_isolation
+        || request.capabilities.memory_bytes != binding.child_memory_bytes
+        || request.capabilities.timeout_ms != binding.turn_timeout_ms
+        || request.tools.len() != 1
+        || request.tools[0].closure.is_none()
+        || !request
+            .invocation
+            .as_ref()
+            .is_some_and(|i| i.args.is_empty())
+        || !request.problems().is_empty()
+    {
+        return Err("scoped worker request exceeds native turn contract".into());
+    }
+    finish_preparation(
+        request,
+        template,
+        binding,
+        mote_root,
+        tool_root,
+        state_root,
+        WorkerBrokers::Scoped(brokers),
+    )
+}
+
+fn finish_preparation(
+    request: &ExecutionRequest,
+    template: Template,
+    binding: &Binding,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    brokers: WorkerBrokers,
+) -> Result<PreparedWorker, String> {
     let declared = prepare_declared(request, mote_root, tool_root, state_root)?;
     let closure = super::super::closure::resolve(request, &declared.resolved, state_root)?
         .ok_or("worker needs signed closure")?;
@@ -140,9 +225,34 @@ impl PreparedWorker {
         for member in closure.signed.closure.members.values() {
             local_agent_constraint(&member.hash, &self.root)?;
         }
-        let mut broker = self.brokers.for_turn(turn)?;
-        // Kept through the owned VM execution; any exit revokes all grant copies.
-        let _workspace_lease = self.brokers.workspace_for_turn(turn, &mut broker)?;
+        // Keep the legacy workspace lease alive through execution. Scoped
+        // workers never consult standing provider/workspace profile files.
+        let (broker, _workspace_lease, egress) = match &mut self.brokers {
+            WorkerBrokers::Legacy(brokers) => {
+                let mut policy = brokers.for_turn(turn)?;
+                let lease = brokers.workspace_for_turn(turn, &mut policy)?;
+                let egress = policy
+                    .allow_hosts
+                    .iter()
+                    .map(|host| format!("https://{host}"))
+                    .collect();
+                (warden::egress::HttpBroker::new(policy), lease, egress)
+            }
+            WorkerBrokers::Scoped(supply) => {
+                celln_control::current()
+                    .ok_or("scoped worker requires live child control")?
+                    .check()
+                    .map_err(|e| e.to_string())?;
+                let broker = supply(turn)?;
+                if !broker.fits_mediated_turn(turn.limits.model_requests, turn.limits.output_tokens)
+                {
+                    return Err(
+                        "scoped worker transport exceeds the reserved model-only turn".into(),
+                    );
+                }
+                (broker, None, Vec::new())
+            }
+        };
         let mut invocation: serde_json::Value =
             serde_json::from_slice(&self.declared.invocation).map_err(|e| e.to_string())?;
         invocation["args"] = serde_json::json!(args);
@@ -162,17 +272,13 @@ impl PreparedWorker {
         if request.capabilities.timeout_ms == 0 {
             return Err("remaining worker timeout is below execution resolution".into());
         }
-        request.capabilities.egress = broker
-            .allow_hosts
-            .iter()
-            .map(|host| format!("https://{host}"))
-            .collect();
+        request.capabilities.egress = egress;
         let mut outcome = super::super::run_cell_with_broker(
             &request,
             &request.invocation.as_ref().unwrap().alias,
             cell,
             &self.root,
-            Some(warden::egress::HttpBroker::new(broker)),
+            Some(broker),
         )?;
         super::super::validate_executed_tool(&mut outcome, &self.declared.resolved.program_hash);
         // run_cell_with_broker returned only after dropping its owned VM.
