@@ -1698,6 +1698,59 @@ fn access(
         }
         return reply(stream, 200, &status);
     }
+    // An authenticated, already-confirmed terminal result is immutable cleanup
+    // evidence. Do not replace a pre-creation refusal with an absent-parent
+    // stop error, nor manufacture a new teardown attempt after completion.
+    if cleanup {
+        if let Ok(Some(status)) = scoped.load_status(&request.id) {
+            if status.id == request.id
+                && status.owner == admission.owner()
+                && status.cleanup_confirmed
+            {
+                return reply(stream, 200, &status);
+            }
+        }
+    }
+    if cleanup
+        && prepared.decision["lifecycle"] == "enduring-initial"
+        && admission.outcome() == Some(&Outcome::Refused)
+        && admission.fenced()
+    {
+        let parent = Hash(
+            prepared.decision["parent"]["incarnation"]
+                .as_str()
+                .unwrap_or_default()
+                .into(),
+        );
+        let principal = format!(
+            "sympozium:{}:{}",
+            receiver.cluster_id, receiver.namespace_uid
+        );
+        if warden::parent_journal::fence_uncreated(
+            &dispatcher.root.join("parent-journal"),
+            &parent,
+            &principal,
+        )
+        .unwrap_or(false)
+        {
+            let mut status = terminal_status(
+                &request.id,
+                admission.owner(),
+                "Refused",
+                Some("parent never created; incarnation permanently fenced".into()),
+                None,
+            );
+            status.parent_incarnation = Some(parent.0);
+            if persist_status(scoped, &status).is_err() {
+                return reply(
+                    stream,
+                    503,
+                    &json!({"error":"cleanup publication unconfirmed"}),
+                );
+            }
+            return reply(stream, 200, &status);
+        }
+    }
     if admission.owner() != scoped.admission.owner() {
         let historical = prepared.decision["lifecycle"] != "one-shot"
             && prepared.decision["parent"]["incarnation"]
