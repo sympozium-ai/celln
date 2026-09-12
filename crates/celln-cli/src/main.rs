@@ -11,6 +11,8 @@ mod dispatch;
 #[cfg(all(test, target_os = "linux"))]
 mod dispatch_conformance;
 mod dispatch_http;
+#[cfg(target_os = "linux")]
+mod framework_package;
 mod host;
 mod image;
 mod mote_admit;
@@ -82,6 +84,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Build signed native artifacts and catalogue resources for scoped framework deployment.
+    FrameworkPackage {
+        #[arg(long)]
+        runtime_dir: PathBuf,
+        #[arg(long)]
+        guest_dir: PathBuf,
+        #[arg(long)]
+        kernel: PathBuf,
+        #[arg(long)]
+        source_revision: String,
+        #[arg(long)]
+        source_tree_sha256: String,
+        #[arg(long)]
+        source_epoch: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Verify a generated scoped framework package without installing it.
+    FrameworkInspect { package: PathBuf },
     /// Publish the bounded native starter model profile and installation metadata.
     StarterConfigure {
         plan: PathBuf,
@@ -563,6 +584,52 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::FrameworkPackage {
+            runtime_dir,
+            guest_dir,
+            kernel,
+            source_revision,
+            source_tree_sha256,
+            source_epoch,
+            output,
+        } => {
+            #[cfg(target_os = "linux")]
+            {
+                framework_package::run(
+                    runtime_dir,
+                    guest_dir,
+                    kernel,
+                    source_revision,
+                    source_tree_sha256,
+                    *source_epoch,
+                    output,
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (
+                    runtime_dir,
+                    guest_dir,
+                    kernel,
+                    source_revision,
+                    source_tree_sha256,
+                    source_epoch,
+                    output,
+                );
+                anyhow::bail!("Unsupported: framework packaging requires Linux")
+            }
+        }
+        Cmd::FrameworkInspect { package } => {
+            #[cfg(target_os = "linux")]
+            {
+                framework_package::inspect(package)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = package;
+                anyhow::bail!("Unsupported: framework package inspection requires Linux")
+            }
+        }
         Cmd::StarterConfigure {
             plan,
             approve_starter_effects,
