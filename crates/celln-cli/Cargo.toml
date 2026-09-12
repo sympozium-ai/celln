@@ -32,6 +32,8 @@ zeroize = "=1.8.1"
 
 [dev-dependencies]
 tempfile.workspace = true
+sha2 = "0.10"
+flate2 = "=1.0.35"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
