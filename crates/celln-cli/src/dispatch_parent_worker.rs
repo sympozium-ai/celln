@@ -172,7 +172,7 @@ impl PreparedWorker {
             &request.invocation.as_ref().unwrap().alias,
             cell,
             &self.root,
-            Some(broker),
+            Some(warden::egress::HttpBroker::new(broker)),
         )?;
         super::super::validate_executed_tool(&mut outcome, &self.declared.resolved.program_hash);
         // run_cell_with_broker returned only after dropping its owned VM.

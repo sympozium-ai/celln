@@ -73,6 +73,14 @@ process, live Kubernetes authority and PostgreSQL for both tenants, including
 durable budget refusal. This is host transport evidence, not a controller-created
 native parent, a VM journey, or tenant RBAC isolation proof.
 
+## Native attachment boundary
+
+The native worker execution helper now moves an owned `HttpBroker` into the VM
+rather than rebuilding it from `HttpPolicy`. This preserves a scoped relay and
+its counters through VM execution and drops its context with the owned VM.
+Repeated owned-broker attachment refuses. Existing legacy worker callers still
+construct their legacy broker explicitly; this is not yet mediated admission.
+
 ## Remaining integration
 
 - #500's complete durable owner/run admission and HTTP authorization surface.

@@ -528,7 +528,7 @@ fn run_cell_with_broker(
     alias: &str,
     mut cell: warden::vmm::boot::LinuxCell,
     state_root: &Path,
-    broker: Option<warden::egress::HttpPolicy>,
+    broker: Option<warden::egress::HttpBroker>,
 ) -> Result<LaunchOutcome, String> {
     cell.set_timeout(std::time::Duration::from_millis(
         request.capabilities.timeout_ms.max(1),
@@ -547,8 +547,18 @@ fn run_cell_with_broker(
         .map(|record| record.id.clone())
         .unwrap_or_default();
 
-    if let Some(policy) = broker {
-        cell.enable_http_fetch(policy);
+    if let Some(broker) = broker {
+        if let Err(error) = cell.enable_http_broker(broker) {
+            if let Some(record) = record.as_mut() {
+                crate::cells::finish(
+                    state_root,
+                    record,
+                    "kvm",
+                    Some("HTTP broker attachment refused".into()),
+                );
+            }
+            return Err(error.to_string());
+        }
     } else if request.harness.is_none() && !request.capabilities.egress.is_empty() {
         let hosts: Vec<String> = request
             .capabilities

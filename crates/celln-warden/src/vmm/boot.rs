@@ -1039,6 +1039,20 @@ impl LinuxCell {
         self.http = Some(HttpBroker::new(policy));
     }
 
+    /// Move an already-admitted host broker into this cell. In particular a
+    /// mediated broker must not be reconstructed from its policy: that would
+    /// discard its scoped relay and restore the legacy credential-file path.
+    /// Refuse replacement so a second attachment cannot reset local counters.
+    pub fn enable_http_broker(&mut self, broker: HttpBroker) -> Result<(), VmmError> {
+        if self.http.is_some() {
+            return Err(VmmError::Backend(
+                "cell HTTP broker already installed".into(),
+            ));
+        }
+        self.http = Some(broker);
+        Ok(())
+    }
+
     /// Deliver bounded data to pilot after a warm fork. Port 0x510 returns
     /// little-endian u32 length followed by opaque JSON bytes, once only.
     pub fn set_invocation(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
@@ -2007,6 +2021,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             b"\x02\x00\x00\x00{}"
         );
+    }
+
+    #[test]
+    fn owned_broker_cannot_be_replaced_and_drops_with_vm() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Relay(Arc<AtomicUsize>);
+        impl crate::egress::ModelRelay for Relay {
+            fn invoke(&mut self, _: &[u8]) -> Result<Vec<u8>, crate::egress::FetchDenied> {
+                panic!("attachment must not perform model I/O")
+            }
+        }
+        impl Drop for Relay {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut policy = HttpPolicy::new(vec![]);
+        policy.json_posts.push(crate::egress::JsonPostGrant {
+            protocol: Default::default(),
+            url: "https://model.invalid/invoke".into(),
+            bearer_token_file: Default::default(),
+            model: "fixture".into(),
+            max_output_tokens: 1,
+            max_total_output_tokens: 1,
+        });
+        let original = Arc::new(AtomicUsize::new(0));
+        let replacement = Arc::new(AtomicUsize::new(0));
+        let first =
+            HttpBroker::new_mediated(policy.clone(), Box::new(Relay(original.clone()))).unwrap();
+        let second =
+            HttpBroker::new_mediated(policy, Box::new(Relay(replacement.clone()))).unwrap();
+        let mut cell = LinuxCell::boot(BootConfig::new(kernel)).unwrap();
+        cell.enable_http_broker(first).unwrap();
+        assert!(cell.enable_http_broker(second).is_err());
+        assert_eq!(replacement.load(Ordering::SeqCst), 1);
+        assert_eq!(original.load(Ordering::SeqCst), 0);
+        drop(cell);
+        assert_eq!(original.load(Ordering::SeqCst), 1);
+        // This proves VM-object ownership, not guest execution or isolation.
     }
 
     fn kernel_or_skip() -> Option<PathBuf> {
