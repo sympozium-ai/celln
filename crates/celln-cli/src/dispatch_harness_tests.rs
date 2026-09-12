@@ -282,6 +282,7 @@ fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool, di
             egress_slots: 1,
         },
         executions: Arc::new(Mutex::new(HashMap::new())),
+        scoped: None,
     };
     let state = Arc::new(state);
     let resolved =
