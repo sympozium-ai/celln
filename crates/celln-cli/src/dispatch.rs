@@ -591,7 +591,7 @@ fn run_cell_with_broker(
     if let Some(grant) = &outcome.execution {
         let workspace = serde_json::to_value(request.capabilities.workspace).unwrap();
         if grant.workspace.as_deref() != workspace.as_str()
-            || grant.fetch != !request.capabilities.egress.is_empty()
+            || grant.fetch == request.capabilities.egress.is_empty()
             || !matches!(grant.lane.as_str(), "agent" | "tool")
             || (request.execution.lane == RequestedLane::Agent && grant.lane != "agent")
         {
@@ -931,7 +931,10 @@ mod tests {
         )
         .unwrap();
         assert!(!outcome.succeeded());
-        assert_eq!(outcome.denial.as_deref(), Some("pilot exec setup failed"));
+        assert!(outcome
+            .denial
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("pilot exec setup failed (errno ")));
         assert!(outcome.execution.is_none());
         // An agent artifact stays in the agent lane even if a later caller
         // asks for the tool lane. The spoof probe also attempts unshare.

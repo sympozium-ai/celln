@@ -1409,8 +1409,13 @@ fn run_one(manifest: &Manifest, req: &RunRequest) {
                             signal: s.signal().unwrap_or(0),
                         },
                     },
-                    Err(_) => Frame::Failed {
-                        reason: "pilot exec setup failed".into(),
+                    Err(error) => Frame::Failed {
+                        // Preserve a bounded OS diagnostic, never guest paths,
+                        // arguments or credential-bearing request contents.
+                        reason: format!(
+                            "pilot exec setup failed (errno {:?})",
+                            error.raw_os_error()
+                        ),
                     },
                 });
             }

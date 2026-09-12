@@ -1593,17 +1593,15 @@ impl LinuxCell {
                             }
                         }
                         VcpuExit::MmioRead(_, data) => data.fill(0),
-                        VcpuExit::MmioWrite(gpa, _) => {
-                            // A write that reached us instead of memory. If it
-                            // landed in a sealed tool region, stage-2 just
-                            // refused a guest write to lent tool code.
+                        // A write trapped in a sealed tool region was refused
+                        // by stage-2 protection rather than reaching tool code.
+                        VcpuExit::MmioWrite(gpa, _)
                             if self
                                 .tools
                                 .values()
-                                .any(|&(_, base, len)| gpa >= base && gpa < base + len as u64)
-                            {
-                                sealed_writes_blocked += 1;
-                            }
+                                .any(|&(_, base, len)| gpa >= base && gpa < base + len as u64) =>
+                        {
+                            sealed_writes_blocked += 1;
                         }
                         VcpuExit::Hlt => break BootEnd::Halted,
                         VcpuExit::Shutdown | VcpuExit::SystemEvent(_, _) => {
