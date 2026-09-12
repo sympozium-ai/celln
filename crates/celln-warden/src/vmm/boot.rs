@@ -229,6 +229,27 @@ pub enum BootEnd {
     Parked,
 }
 
+// Place only in mapped high RAM, never in a sealed tool slot or over the
+// kernel. Refuse oversized images without arithmetic wrapping or widening RAM.
+fn initrd_address(memory: usize, window: u64, size: usize) -> Result<u64, VmmError> {
+    let top = (memory as u64)
+        .checked_add(window)
+        .ok_or_else(|| VmmError::Backend("initrd memory bound overflow".into()))?;
+    let start = top
+        .checked_sub(size as u64)
+        .ok_or_else(|| VmmError::Backend("initrd exceeds guest RAM".into()))?
+        & !((PAGE as u64) - 1);
+    let hole_end = TOOL_WINDOW_GPA
+        .checked_add(window)
+        .ok_or_else(|| VmmError::Backend("tool window overflow".into()))?;
+    if size == 0 || start < hole_end || top > (1u64 << 32) || size > u32::MAX as usize {
+        return Err(VmmError::Backend(
+            "initrd does not fit in mapped high RAM below 4 GiB".into(),
+        ));
+    }
+    Ok(start)
+}
+
 /// What a boot run produced.
 #[derive(Debug)]
 pub struct BootReport {
@@ -939,8 +960,10 @@ impl LinuxCell {
             Some(p) => {
                 let bytes = std::fs::read(p)
                     .map_err(|e| VmmError::Backend(format!("reading {}: {e}", p.display())))?;
-                // Park it high, below the 4 GiB line and page-aligned.
-                let addr = ((cfg.mem_size - bytes.len()) & !(PAGE - 1)) as u64;
+                // mem_size counts RAM, not the sealed pmem hole. Addressing
+                // from mem_size alone can put initrd inside that tool window
+                // (e.g. 128 MiB RAM with a 32 MiB window at 96 MiB).
+                let addr = initrd_address(cfg.mem_size, window, bytes.len())?;
                 mem.write(addr, &bytes)?;
                 Some((addr as u32, bytes.len() as u32))
             }
@@ -1802,6 +1825,21 @@ fn set_long_mode(vcpu: &VcpuFd) -> Result<(), VmmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initrd_stays_above_sealed_tool_window_with_small_ram() {
+        let memory = 128 << 20;
+        let window = 32 << 20;
+        let size = 3 << 20;
+        let address = initrd_address(memory, window, size).unwrap();
+        assert_eq!(address, 157 << 20);
+        assert!(address >= TOOL_WINDOW_GPA + window);
+        assert!(address + size as u64 <= memory as u64 + window);
+        assert!(initrd_address(memory, window, 33 << 20).is_err());
+        assert!(initrd_address(memory, window, usize::MAX).is_err());
+        assert!(initrd_address(memory, u64::MAX, size).is_err());
+        assert!(initrd_address(memory, 1u64 << 32, size).is_err());
+    }
 
     #[test]
     fn parent_owner_cancels_real_guest_and_joins_vm_owner() {
