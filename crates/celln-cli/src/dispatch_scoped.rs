@@ -29,6 +29,9 @@ use std::{
 use warden::egress::{HttpBroker, HttpPolicy, JsonPostGrant, ModelProtocol};
 use zeroize::Zeroizing;
 
+// Logical guest-facing route only. The owned relay sends exclusively to the
+// operator-configured gateway, which resolves the signed provider origin.
+const MODEL_ALIAS: &str = "https://celln-model.invalid/v1/invoke";
 const MAX_BODY: usize = 262144;
 const MAX_PREPARED: usize = 768 * 1024;
 const MAX_STATUS: usize = 96 * 1024;
@@ -808,18 +811,15 @@ fn build_native(
         )
         .map_err(str::to_owned)?;
         let route = &decision["route"];
-        warden::egress::model_endpoint_target(
-            text(&route["endpointOrigin"], "endpoint").map_err(|e| e.to_string())?,
-            false,
-        )
-        .map_err(|_| "AUTH_ROUTE_MISMATCH")?;
+        warden::egress::model_endpoint_target(MODEL_ALIAS, false)
+            .map_err(|_| "AUTH_ROUTE_MISMATCH")?;
         let json_limits = profile["json"]
             .as_object()
             .ok_or("AUTH_PROTOCOL_UNSUPPORTED")?;
         let max_turns = u64v(&Value::Object(json_limits.clone())["maxTurns"], "maxTurns")?.min(
             u64v(&decision["budget"]["turnCap"]["requests"], "requests")?,
         );
-        let value = json!({"contract":pilot::json_harness::CONTRACT,"task":execution["payload"],"system":execution["systemPrompt"],"url":route["endpointOrigin"],"model":route["model"],"tools":tools,"max_turns":max_turns,"max_calls":json_limits.get("maxCalls").and_then(Value::as_u64).ok_or("AUTH_PROTOCOL_UNSUPPORTED")?});
+        let value = json!({"contract":pilot::json_harness::CONTRACT,"task":execution["payload"],"system":execution["systemPrompt"],"url":MODEL_ALIAS,"model":route["model"],"tools":tools,"max_turns":max_turns,"max_calls":json_limits.get("maxCalls").and_then(Value::as_u64).ok_or("AUTH_PROTOCOL_UNSUPPORTED")?});
         let typed: pilot::json_harness::Config =
             serde_json::from_value(value.clone()).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
         pilot::json_harness::validate(&typed).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
@@ -837,9 +837,7 @@ fn build_native(
         policy.max_response_bytes = 1 << 20;
         policy.json_posts.push(JsonPostGrant {
             protocol,
-            url: text(&route["endpointOrigin"], "endpoint")
-                .map_err(|e| e.to_string())?
-                .into(),
+            url: MODEL_ALIAS.into(),
             bearer_token_file: PathBuf::new(),
             model: text(&route["model"], "model")
                 .map_err(|e| e.to_string())?
@@ -871,9 +869,7 @@ fn build_native(
     let route_egress: Vec<String> = if provider == "none" {
         vec![]
     } else {
-        vec![text(&decision["route"]["endpointOrigin"], "endpoint")
-            .map_err(|e| e.to_string())?
-            .into()]
+        vec!["https://celln-model.invalid".into()]
     };
     let native: ExecutionRequest = serde_json::from_value(json!({
         "apiVersion":"celln.dev/v1alpha1","id":prepared.id,
