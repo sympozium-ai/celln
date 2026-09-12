@@ -133,6 +133,11 @@ impl HttpBroker {
         Ok(broker)
     }
 
+    /// Transport identity only; exposes neither credentials nor mutable policy.
+    pub fn is_mediated(&self) -> bool {
+        self.model_relay.is_some()
+    }
+
     pub fn used(&self) -> usize {
         self.used
     }

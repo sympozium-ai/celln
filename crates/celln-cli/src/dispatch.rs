@@ -20,6 +20,9 @@ mod substrate;
 pub(crate) use substrate::check_members;
 pub(crate) use substrate::launch_declared;
 #[cfg(target_os = "linux")]
+#[allow(unused_imports)] // Scoped receiver wiring consumes this owned transport entry point.
+pub(crate) use substrate::launch_scoped_declared;
+#[cfg(target_os = "linux")]
 pub(crate) use substrate::parent_create;
 pub(crate) use substrate::validate_member_request;
 #[path = "dispatch_inputs.rs"]

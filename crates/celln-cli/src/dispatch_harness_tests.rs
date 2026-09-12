@@ -215,11 +215,12 @@ fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool, di
         for n in 1..=2 {
             request.id = format!("direct-adapter-{n}");
             request.workload.id = request.id.clone();
-            let (outcome, _) = crate::dispatch::launch_declared(
+            let (outcome, _) = crate::dispatch::launch_scoped_declared(
                 &request,
                 &root.join("motes"),
                 &root.join("tools"),
                 root,
+                None,
             )
             .unwrap();
             assert!(outcome.denial.is_none(), "{outcome:?}");
