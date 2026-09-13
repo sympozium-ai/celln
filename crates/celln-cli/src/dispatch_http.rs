@@ -271,12 +271,11 @@ fn current_node(
                 .live_cells
                 .saturating_add(reserved.owners.saturating_mul(2));
             node.memory_bytes = node.memory_bytes.saturating_sub(reserved.memory_bytes);
-            if reserved.owners != 0 {
-                // Parent registry does not yet carry exact broker-slot charges.
-                // Do not advertise spare egress until creation admission binds
-                // those charges and shares this node's admission lock.
-                node.egress_slots = 0;
-            }
+            node.egress_slots = match reserved.broker_slots {
+                Some(slots) => node.egress_slots.saturating_sub(slots),
+                // Legacy/unaccounted owners still fence spare egress.
+                None => 0,
+            };
         }
         Err(_) => {
             node.live_cells = node.max_cells;

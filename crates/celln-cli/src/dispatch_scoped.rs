@@ -981,8 +981,10 @@ fn start_enduring(
         );
         return reply(stream, 422, &status);
     }
+    // Share the one-shot/legacy parent admission lock until the scoped owner's
+    // memory, child-cell and broker reservation is visible in ParentRegistry.
+    let registry = dispatcher.executions.lock().unwrap();
     {
-        let registry = dispatcher.executions.lock().unwrap();
         let node = current_node(dispatcher, &registry);
         if node.live_cells.saturating_add(2) > node.max_cells
             || reserved_memory_bytes > node.memory_bytes
@@ -1160,7 +1162,7 @@ fn start_enduring(
         .lock()
         .map_err(|_| anyhow::anyhow!("enduring owner registry unavailable"))?
         .insert(incarnation.0.clone(), Arc::clone(&context));
-    if let Err(reason) = dispatcher.parents.spawn_admitted_with_children(
+    if let Err(reason) = dispatcher.parents.spawn_admitted_with_child_broker(
         &principal,
         &incarnation,
         Duration::from_millis(binding.lifetime_ms),
@@ -1171,6 +1173,7 @@ fn start_enduring(
         let status = uncertain_parent_refusal(scoped, &fresh, &prepared, reason);
         return reply(stream, 503, &status);
     }
+    drop(registry);
     submit_enduring_turn(
         dispatcher, scoped, stream, prepared, fresh, context, turn_id, broker, control, true,
     )
