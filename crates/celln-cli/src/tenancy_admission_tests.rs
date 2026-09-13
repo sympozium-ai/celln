@@ -72,12 +72,29 @@ impl Fixture {
         self.resign(d);
     }
     fn lookup(&self, journal: &Journal) -> Result<Record, Error> {
+        self.lookup_as(journal, journal.owner())
+    }
+    fn lookup_as(&self, journal: &Journal, enrolled_owner: &str) -> Result<Record, Error> {
         let verifier = Verifier::from_jwks(
             "sympozium-control-plane".into(),
             include_bytes!("../../../tests/fixtures/celln-authorisation/v1/signing/test-jwks.json"),
         )
         .unwrap();
-        journal.access(&verifier, &self.token, &self.decision, &self.context)
+        let mut enrolled: Value = serde_json::from_slice(&self.decision).unwrap();
+        enrolled["operation"] = if self.context.parent["turnId"].is_null() {
+            "execution.start".into()
+        } else {
+            "execution.turn".into()
+        };
+        journal.access(
+            &verifier,
+            &self.token,
+            &self.decision,
+            &self.context,
+            &canonical(&serde_json::to_vec(&enrolled).unwrap()).unwrap(),
+            &self.request,
+            enrolled_owner,
+        )
     }
     fn resign(&mut self, d: Value) {
         self.decision = canonical(&serde_json::to_vec(&d).unwrap()).unwrap();
@@ -283,6 +300,160 @@ fn concurrent_delivery_publishes_one_fresh_claim() {
 }
 
 #[test]
+fn authenticated_missing_cleanup_durably_fences_without_launch_authority() {
+    let root = private_root();
+    let journal = Journal::open(root.path(), 4).unwrap();
+    let mut cleanup = Fixture::named("direct-one-shot");
+    cleanup.access("execution.cleanup");
+
+    let fenced = cleanup.lookup(&journal).unwrap();
+    assert_eq!(fenced.outcome(), Some(&Outcome::NeverStarted));
+    assert!(fenced.fenced());
+    assert_eq!(fenced.owner(), journal.owner());
+    assert_eq!(cleanup.lookup(&journal).unwrap(), fenced);
+    assert!(matches!(
+        Fixture::named("direct-one-shot").claim(&journal),
+        Err(Error::Fenced)
+    ));
+
+    cleanup.access("execution.read");
+    assert_eq!(
+        cleanup.lookup(&journal).unwrap().outcome(),
+        Some(&Outcome::NeverStarted)
+    );
+}
+
+#[test]
+fn no_start_cleanup_is_not_blocked_by_execution_record_capacity() {
+    let root = private_root();
+    let journal = Journal::open(root.path(), 1).unwrap();
+    let admitted = fresh(Fixture::named("parent-create").claim(&journal).unwrap());
+    journal.finish(&admitted, receipt()).unwrap();
+    assert!(matches!(
+        Fixture::turn("capacity-turn").claim(&journal),
+        Err(Error::Capacity)
+    ));
+
+    let mut cleanup = Fixture::turn("capacity-turn");
+    cleanup.access("execution.cleanup");
+    assert_eq!(
+        cleanup.lookup(&journal).unwrap().outcome(),
+        Some(&Outcome::NeverStarted)
+    );
+}
+
+#[test]
+fn no_start_fence_and_first_claim_are_serialized_by_one_lock() {
+    let root = private_root();
+    let journal = Arc::new(Journal::open(root.path(), 4).unwrap());
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+
+    let claim_journal = Arc::clone(&journal);
+    let claim_barrier = Arc::clone(&barrier);
+    let claim = std::thread::spawn(move || {
+        let fixture = Fixture::named("direct-one-shot");
+        claim_barrier.wait();
+        for _ in 0..100 {
+            match fixture.claim(&claim_journal) {
+                Ok(Claim::Fresh(_)) => return true,
+                Err(Error::Fenced) => return false,
+                Err(Error::Unavailable) => std::thread::sleep(Duration::from_millis(2)),
+                _ => panic!("unexpected claim result"),
+            }
+        }
+        panic!("claim remained busy")
+    });
+    let cleanup_journal = Arc::clone(&journal);
+    let cleanup = std::thread::spawn(move || {
+        let mut fixture = Fixture::named("direct-one-shot");
+        fixture.access("execution.cleanup");
+        barrier.wait();
+        for _ in 0..100 {
+            match fixture.lookup(&cleanup_journal) {
+                Ok(record) => return record.outcome() == Some(&Outcome::NeverStarted),
+                Err(Error::Unavailable) => std::thread::sleep(Duration::from_millis(2)),
+                other => panic!("unexpected cleanup result: {other:?}"),
+            }
+        }
+        panic!("cleanup remained busy")
+    });
+
+    let claim_won = claim.join().unwrap();
+    let cleanup_won = cleanup.join().unwrap();
+    assert_ne!(claim_won, cleanup_won);
+    assert!(matches!(
+        Fixture::named("direct-one-shot").claim(&journal),
+        Ok(Claim::Recovery(_)) | Err(Error::Fenced)
+    ));
+}
+
+#[test]
+fn restarted_cleanup_preserves_enrollment_owner_and_foreign_uncertainty() {
+    let missing_root = private_root();
+    let enrolled = Journal::open(missing_root.path(), 4).unwrap();
+    let enrolled_owner = enrolled.owner().to_owned();
+    drop(enrolled);
+    let restarted = Journal::open(missing_root.path(), 4).unwrap();
+    let mut cleanup = Fixture::named("direct-one-shot");
+    cleanup.access("execution.cleanup");
+    let fenced = cleanup.lookup_as(&restarted, &enrolled_owner).unwrap();
+    assert_eq!(fenced.outcome(), Some(&Outcome::NeverStarted));
+    assert_eq!(fenced.owner(), enrolled_owner);
+    assert_ne!(fenced.owner(), restarted.owner());
+
+    let admitted_root = private_root();
+    let original = Journal::open(admitted_root.path(), 4).unwrap();
+    let original_owner = original.owner().to_owned();
+    let _fresh = fresh(Fixture::named("direct-one-shot").claim(&original).unwrap());
+    drop(original);
+    let foreign = Journal::open(admitted_root.path(), 4).unwrap();
+    let existing = cleanup.lookup_as(&foreign, &original_owner).unwrap();
+    assert_eq!(existing.owner(), original_owner);
+    assert_eq!(existing.outcome(), None);
+    assert!(existing.fenced());
+}
+
+#[test]
+fn cleanup_credentials_are_checked_before_fenced_record_lookup() {
+    let root = private_root();
+    let journal = Journal::open(root.path(), 4).unwrap();
+    let mut cleanup = Fixture::named("direct-one-shot");
+    cleanup.access("execution.cleanup");
+    let fenced = cleanup.lookup(&journal).unwrap();
+    fs::write(journal.path(&fenced.scope), b"corrupt-record").unwrap();
+    cleanup.token = "not-a-jwt".into();
+    assert!(matches!(
+        cleanup.lookup(&journal),
+        Err(Error::Credential("AUTH_CRED_MALFORMED"))
+    ));
+}
+
+#[test]
+fn child_no_start_fence_does_not_fence_parent_or_consume_turn_budget() {
+    let root = private_root();
+    let journal = Journal::open(root.path(), 20).unwrap();
+    let parent_fixture = Fixture::named("parent-create");
+    let parent = fresh(parent_fixture.claim(&journal).unwrap());
+    journal.finish(&parent, receipt()).unwrap();
+
+    let mut skipped = Fixture::turn("turn-skipped");
+    skipped.access("execution.cleanup");
+    assert_eq!(
+        skipped.lookup(&journal).unwrap().outcome(),
+        Some(&Outcome::NeverStarted)
+    );
+    let mut parent_read = Fixture::named("parent-create");
+    parent_read.access("execution.read");
+    assert!(!parent_read.lookup(&journal).unwrap().fenced());
+    assert!(matches!(
+        Fixture::turn("turn-skipped").claim(&journal),
+        Err(Error::Fenced)
+    ));
+    let next = fresh(Fixture::turn("turn-next").claim(&journal).unwrap());
+    journal.finish(&next, receipt()).unwrap();
+}
+
+#[test]
 fn enduring_turns_keep_original_owner_and_count_initial_task() {
     let root = private_root();
     let j = Journal::open(root.path(), 20).unwrap();
@@ -327,6 +498,12 @@ fn incomplete_child_publication_is_uncertain_not_a_retry() {
     fs::remove_file(j.path(&child.record.scope)).unwrap();
     assert!(matches!(
         turn.claim(&j),
+        Err(Error::Credential("AUTH_CONTEXT_LOST"))
+    ));
+    let mut cleanup = Fixture::turn("turn-1");
+    cleanup.access("execution.cleanup");
+    assert!(matches!(
+        cleanup.lookup(&j),
         Err(Error::Credential("AUTH_CONTEXT_LOST"))
     ));
 }

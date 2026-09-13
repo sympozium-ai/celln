@@ -26,6 +26,7 @@ struct Entry {
     owner: Option<ParentOwner>,
     status: Status,
     reserved_bytes: u64,
+    broker_slots: Option<u32>,
 }
 struct State {
     entries: BTreeMap<String, Entry>,
@@ -43,6 +44,8 @@ pub struct ParentRegistry {
 pub struct ReservedCapacity {
     pub owners: u32,
     pub memory_bytes: u64,
+    /// None preserves the conservative fence for owners without an explicit charge.
+    pub broker_slots: Option<u32>,
 }
 
 impl ParentRegistry {
@@ -102,6 +105,11 @@ impl ParentRegistry {
                 .filter(|entry| entry.reserved_bytes != 0)
                 .count() as u32,
             memory_bytes: state.reserved_bytes,
+            broker_slots: state
+                .entries
+                .values()
+                .filter(|entry| entry.reserved_bytes != 0)
+                .try_fold(0u32, |total, entry| total.checked_add(entry.broker_slots?)),
         })
     }
     /// Budget must include parent, child and retained warm-mote memory as
@@ -137,7 +145,7 @@ impl ParentRegistry {
         F: FnOnce() -> Result<H, String> + Send + 'static,
         H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
     {
-        self.insert_admitted(principal, incarnation, reserved_bytes, || {
+        self.insert_admitted(principal, incarnation, reserved_bytes, None, || {
             ParentOwner::spawn(lifetime, initialize)
         })
     }
@@ -160,7 +168,31 @@ impl ParentRegistry {
             + 'static,
         H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
     {
-        self.insert_admitted(principal, incarnation, reserved_bytes, || {
+        self.insert_admitted(principal, incarnation, reserved_bytes, None, || {
+            ParentOwner::spawn_with_children(incarnation.clone(), lifetime, initialize)
+        })
+    }
+
+    /// Scoped owners have one serialized child and one owned model broker.
+    /// The serving layer holds its shared node-admission lock through insertion.
+    /// The charge remains until the owner and descendants are joined.
+    pub fn spawn_admitted_with_child_broker<F, H>(
+        &self,
+        principal: &str,
+        incarnation: &Hash,
+        lifetime: Duration,
+        reserved_bytes: u64,
+        initialize: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(
+                std::sync::Arc<crate::parent_child_control::ChildControlSlot>,
+            ) -> Result<H, String>
+            + Send
+            + 'static,
+        H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
+    {
+        self.insert_admitted(principal, incarnation, reserved_bytes, Some(1), || {
             ParentOwner::spawn_with_children(incarnation.clone(), lifetime, initialize)
         })
     }
@@ -170,6 +202,7 @@ impl ParentRegistry {
         principal: &str,
         incarnation: &Hash,
         reserved_bytes: u64,
+        broker_slots: Option<u32>,
         spawn: impl FnOnce() -> std::io::Result<ParentOwner>,
     ) -> Result<(), String> {
         if principal.is_empty() || principal.len() > 512 || reserved_bytes == 0 {
@@ -201,6 +234,7 @@ impl ParentRegistry {
                 owner: Some(owner),
                 status: Status::Initializing,
                 reserved_bytes,
+                broker_slots,
             },
         );
         Ok(())
@@ -460,7 +494,8 @@ mod tests {
             registry.reserved_capacity().unwrap(),
             ReservedCapacity {
                 owners: 1,
-                memory_bytes: 100
+                memory_bytes: 100,
+                broker_slots: None,
             }
         );
         assert!(registry.submit("tenant-one", &expired, b"retry").is_err());
@@ -482,6 +517,55 @@ mod tests {
             b"still alive"
         );
         registry.stop("tenant-one", &live).unwrap();
+    }
+
+    #[test]
+    fn scoped_brokers_are_charged_until_join_and_legacy_stays_unknown() {
+        let registry = ParentRegistry::new(4, 400).unwrap();
+        let one = Hash::of(b"broker-one");
+        let two = Hash::of(b"broker-two");
+        for id in [&one, &two] {
+            registry
+                .spawn_admitted_with_child_broker(
+                    "tenant",
+                    id,
+                    Duration::from_secs(10),
+                    100,
+                    |_| Ok(|input: &[u8]| Ok(input.to_vec())),
+                )
+                .unwrap();
+        }
+        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(2));
+        registry.stop("tenant", &one).unwrap();
+        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(1));
+        let legacy = Hash::of(b"unaccounted");
+        registry
+            .spawn_admitted("tenant", &legacy, Duration::from_secs(10), 100, || {
+                Ok(|input: &[u8]| Ok(input.to_vec()))
+            })
+            .unwrap();
+        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, None);
+        registry.stop("tenant", &legacy).unwrap();
+        registry.stop("tenant", &two).unwrap();
+        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(0));
+    }
+
+    #[test]
+    fn uncertain_scoped_broker_remains_charged() {
+        let registry = ParentRegistry::new(2, 200).unwrap();
+        let id = Hash::of(b"broker-panic");
+        registry
+            .spawn_admitted_with_child_broker("tenant", &id, Duration::from_secs(10), 100, |_| {
+                Ok(|_: &[u8]| -> Result<Vec<u8>, String> { panic!("test panic") })
+            })
+            .unwrap();
+        assert!(registry
+            .submit("tenant", &id, b"fail")
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .is_err());
+        assert!(registry.stop("tenant", &id).is_err());
+        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(1));
     }
 
     #[test]
@@ -511,7 +595,8 @@ mod tests {
             registry.reserved_capacity().unwrap(),
             ReservedCapacity {
                 owners: 1,
-                memory_bytes: 100
+                memory_bytes: 100,
+                broker_slots: None,
             }
         );
         assert!(registry.stop("tenant-one", &id).is_err());
@@ -542,7 +627,8 @@ mod tests {
             registry.reserved_capacity().unwrap(),
             ReservedCapacity {
                 owners: 1,
-                memory_bytes: 100
+                memory_bytes: 100,
+                broker_slots: None,
             }
         );
         assert!(spawn(&registry, &Hash::of(b"new")).is_err());

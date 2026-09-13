@@ -21,7 +21,32 @@ fn valid_hash(hash: &str) -> bool {
     })
 }
 
-fn lock(root: &Path) -> Result<fs::File> {
+// flock belongs to an open file description: an unrelated concurrent fork can
+// retain it after this process closes its fd. End the critical section explicitly
+// in its owning process; a child dropping an inherited guard must not unlock it.
+struct AdmissionLock {
+    #[cfg(target_os = "linux")]
+    file: fs::File,
+    #[cfg(target_os = "linux")]
+    owner_pid: u32,
+}
+impl Drop for AdmissionLock {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if std::process::id() == self.owner_pid {
+            use std::os::fd::AsRawFd;
+            loop {
+                if unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) } == 0
+                    || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn lock(root: &Path) -> Result<AdmissionLock> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = root;
@@ -47,7 +72,10 @@ fn lock(root: &Path) -> Result<fs::File> {
             unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
             "admission is busy; retry later"
         );
-        Ok(file)
+        Ok(AdmissionLock {
+            file,
+            owner_pid: std::process::id(),
+        })
     }
 }
 
@@ -193,6 +221,43 @@ pub fn admit(
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    #[test]
+    fn forked_child_cannot_unlock_owners_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = lock(dir.path()).unwrap();
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            // Child path uses only getpid/close then _exit; no allocator, logging
+            // or general Rust cleanup after forking a multithreaded test runner.
+            drop(guard);
+            unsafe { libc::_exit(0) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert_eq!(status, 0);
+        assert!(lock(dir.path()).is_err());
+        drop(guard);
+        assert!(lock(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn duplicated_descriptor_cannot_extend_completed_admission_lock() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        let dir = tempfile::tempdir().unwrap();
+        let guard = lock(dir.path()).unwrap();
+        let duplicate = unsafe { libc::dup(guard.file.as_raw_fd()) };
+        assert!(duplicate >= 0);
+        let duplicate = unsafe { fs::File::from_raw_fd(duplicate) };
+        assert!(lock(dir.path()).is_err());
+        drop(guard);
+        let next = lock(dir.path()).unwrap();
+        drop(duplicate);
+        assert!(lock(dir.path()).is_err());
+        drop(next);
+        assert!(lock(dir.path()).is_ok());
+    }
+
     #[test]
     fn policy_commit_preserves_other_motes_and_detects_external_changes() {
         let dir = tempfile::tempdir().unwrap();

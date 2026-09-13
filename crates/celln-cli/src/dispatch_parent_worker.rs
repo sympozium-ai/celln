@@ -9,8 +9,33 @@ pub(super) struct PreparedWorker {
     request: ExecutionRequest,
     binding: Binding,
     template: Template,
-    brokers: super::parent_model::ChildBrokers,
+    brokers: WorkerBrokers,
     root: std::path::PathBuf,
+}
+
+/// Supplies an owned relay only for the independently admitted, durably
+/// reserved turn. Implementations must consume original per-turn custody and
+/// refuse replay/context loss; a parent grant is not a fresh model allowance.
+pub(super) type ScopedTurnBrokers =
+    Box<dyn FnMut(&ReservedTurn) -> Result<ScopedTurnBroker, String> + Send>;
+
+pub(crate) struct ScopedTurnBroker {
+    pub broker: warden::egress::HttpBroker,
+    /// Independently admitted operation control, already bounded by the
+    /// original absolute turn deadline. It is nested under the live parent's
+    /// exact child control while the VM runs.
+    pub control: celln_control::Control,
+}
+
+pub(super) type ScopedTurnResults =
+    Box<dyn FnMut(&ReservedTurn, &super::LaunchOutcome) -> Result<(), String> + Send>;
+
+enum WorkerBrokers {
+    Legacy(super::parent_model::ChildBrokers),
+    Scoped {
+        supply: ScopedTurnBrokers,
+        results: ScopedTurnResults,
+    },
 }
 
 fn check_tools(
@@ -99,6 +124,84 @@ pub(super) fn prepare_worker(
         request,
         &template,
     )?;
+    finish_preparation(
+        request,
+        template,
+        binding,
+        mote_root,
+        tool_root,
+        state_root,
+        WorkerBrokers::Legacy(brokers),
+    )
+}
+
+pub(super) fn scoped_worker_binding(
+    request: &ExecutionRequest,
+    template: &Template,
+) -> Result<Hash, String> {
+    let bytes = serde_json::to_vec(&(
+        "celln.scoped-worker/v1",
+        request.configuration_binding(celln_spec::ConfigurationRole::Worker)?,
+        template.binding(),
+    ))
+    .map_err(|e| e.to_string())?;
+    Ok(Hash::of(&bytes))
+}
+
+pub(super) fn prepare_worker_scoped(
+    request: &ExecutionRequest,
+    template: Template,
+    binding: &Binding,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    brokers: ScopedTurnBrokers,
+    results: ScopedTurnResults,
+) -> Result<PreparedWorker, String> {
+    if scoped_worker_binding(request, &template)? != binding.worker_configuration
+        || request.workload.caller != binding.principal
+        || request.harness.is_some()
+        || request.forge.is_some()
+        || !request.inputs.is_empty()
+        || !request.capabilities.egress.is_empty()
+        || request.capabilities.workspace != celln_spec::WorkspaceAccess::None
+        || request.execution.lane != celln_spec::RequestedLane::Agent
+        || !request.execution.require_hardware_isolation
+        || request.capabilities.memory_bytes != binding.child_memory_bytes
+        || request.capabilities.timeout_ms != binding.turn_timeout_ms
+        || request.tools.len() != 1
+        || request.tools[0].closure.is_none()
+        || !request
+            .invocation
+            .as_ref()
+            .is_some_and(|i| i.args.is_empty())
+        || !request.problems().is_empty()
+    {
+        return Err("scoped worker request exceeds native turn contract".into());
+    }
+    finish_preparation(
+        request,
+        template,
+        binding,
+        mote_root,
+        tool_root,
+        state_root,
+        WorkerBrokers::Scoped {
+            supply: brokers,
+            results,
+        },
+    )
+}
+
+fn finish_preparation(
+    request: &ExecutionRequest,
+    template: Template,
+    binding: &Binding,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    brokers: WorkerBrokers,
+) -> Result<PreparedWorker, String> {
     let declared = prepare_declared(request, mote_root, tool_root, state_root)?;
     let closure = super::super::closure::resolve(request, &declared.resolved, state_root)?
         .ok_or("worker needs signed closure")?;
@@ -140,9 +243,33 @@ impl PreparedWorker {
         for member in closure.signed.closure.members.values() {
             local_agent_constraint(&member.hash, &self.root)?;
         }
-        let mut broker = self.brokers.for_turn(turn)?;
-        // Kept through the owned VM execution; any exit revokes all grant copies.
-        let _workspace_lease = self.brokers.workspace_for_turn(turn, &mut broker)?;
+        // Keep the legacy workspace lease alive through execution. Scoped
+        // workers never consult standing provider/workspace profile files.
+        let (broker, scoped_control, _workspace_lease, egress) = match &mut self.brokers {
+            WorkerBrokers::Legacy(brokers) => {
+                let mut policy = brokers.for_turn(turn)?;
+                let lease = brokers.workspace_for_turn(turn, &mut policy)?;
+                let egress = policy
+                    .allow_hosts
+                    .iter()
+                    .map(|host| format!("https://{host}"))
+                    .collect();
+                (warden::egress::HttpBroker::new(policy), None, lease, egress)
+            }
+            WorkerBrokers::Scoped { supply, .. } => {
+                celln_control::current().ok_or("scoped worker requires live child control")?;
+                let supplied = supply(turn)?;
+                if !supplied
+                    .broker
+                    .fits_mediated_turn(turn.limits.model_requests, turn.limits.output_tokens)
+                {
+                    return Err(
+                        "scoped worker transport exceeds the reserved model-only turn".into(),
+                    );
+                }
+                (supplied.broker, Some(supplied.control), None, Vec::new())
+            }
+        };
         let mut invocation: serde_json::Value =
             serde_json::from_slice(&self.declared.invocation).map_err(|e| e.to_string())?;
         invocation["args"] = serde_json::json!(args);
@@ -162,19 +289,61 @@ impl PreparedWorker {
         if request.capabilities.timeout_ms == 0 {
             return Err("remaining worker timeout is below execution resolution".into());
         }
-        request.capabilities.egress = broker
-            .allow_hosts
-            .iter()
-            .map(|host| format!("https://{host}"))
-            .collect();
-        let mut outcome = super::super::run_cell_with_broker(
-            &request,
-            &request.invocation.as_ref().unwrap().alias,
-            cell,
-            &self.root,
-            Some(broker),
-        )?;
+        request.capabilities.egress = egress;
+        let launch = || {
+            super::super::run_cell_with_broker(
+                &request,
+                &request.invocation.as_ref().unwrap().alias,
+                cell,
+                &self.root,
+                Some(broker),
+            )
+        };
+        if scoped_control
+            .as_ref()
+            .is_some_and(|control| control.check().is_err())
+        {
+            return Ok(pilot::parent_session::DestroyedChild {
+                child: turn.child.clone(),
+                succeeded: false,
+                answer: "Turn cancelled before child launch.".into(),
+            });
+        }
+        let launched = match &scoped_control {
+            Some(control) => control.scope(launch),
+            None => launch(),
+        };
+        let mut outcome = match launched {
+            Ok(outcome) => outcome,
+            Err(_)
+                if scoped_control
+                    .as_ref()
+                    .is_some_and(|control| control.check().is_err()) =>
+            {
+                return Ok(pilot::parent_session::DestroyedChild {
+                    child: turn.child.clone(),
+                    succeeded: false,
+                    answer: "Turn cancelled after child teardown.".into(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let mut substrate = self.declared.identity.clone();
+        substrate.invocation = Hash::of(&invocation).0;
+        outcome.substrate = Some(substrate);
         super::super::validate_executed_tool(&mut outcome, &self.declared.resolved.program_hash);
+        // Operator-only bounded diagnostics must survive a failed worker too.
+        // No host transport or provider credential is ever part of this data.
+        if let Some(directory) = &audit_directory {
+            retain_audit(directory, &turn.child, &serde_json::to_vec_pretty(&serde_json::json!({
+                "broker":outcome.broker,"output":String::from_utf8_lossy(outcome.output.as_deref().unwrap_or_default()),
+                "denial":outcome.denial,"exitCode":outcome.exit_code,"execution":outcome.execution,"substrate":outcome.substrate,
+                "cancelled":cancelled_after_teardown(outcome.denial.as_deref(),celln_control::current().and_then(|control|control.reason()))
+            })).map_err(|e|e.to_string())?)?;
+        }
+        if let WorkerBrokers::Scoped { results, .. } = &mut self.brokers {
+            results(turn, &outcome)?;
+        }
         // run_cell_with_broker returned only after dropping its owned VM.
         // Do not convert execution errors or authority-report mismatches into
         // a cancellation acknowledgement. Parent cancellation still prevents
@@ -196,19 +365,6 @@ impl PreparedWorker {
                     .ok_or("missing native worker output")?,
             )?
         };
-        // Explicit host opt-in only: contains sensitive conversation/tool data,
-        // never authority to replay. Default production operation retains none.
-        if let Some(directory) = audit_directory {
-            retain_audit(
-                &directory,
-                &turn.child,
-                &serde_json::to_vec_pretty(&serde_json::json!({"broker":outcome.broker,
-                "output":String::from_utf8_lossy(outcome.output.as_deref().unwrap_or_default()),
-                "cancelled":cancelled,
-                "execution":outcome.execution}))
-                .map_err(|e| e.to_string())?,
-            )?;
-        }
         Ok(pilot::parent_session::DestroyedChild {
             child: turn.child.clone(),
             succeeded: !cancelled,

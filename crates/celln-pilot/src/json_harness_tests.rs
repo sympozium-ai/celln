@@ -2,6 +2,51 @@ use super::*;
 use std::cell::Cell;
 
 #[test]
+fn direct_adapter_executes_one_schema_bound_tool_without_model_configuration() {
+    let tool = config(&["echo"]).tools.remove(0);
+    let direct = DirectConfig {
+        contract: DIRECT_CONTRACT.into(),
+        tool,
+        arguments: r#"{"text":"celln"}"#.into(),
+    };
+    let calls = Cell::new(0);
+    let output = run_direct(&direct, |tool, bytes| {
+        calls.set(calls.get() + 1);
+        assert_eq!(tool.name, "echo");
+        assert_eq!(bytes, direct.arguments.as_bytes());
+        Ok(br#"{"text":"CELLN"}"#.to_vec())
+    })
+    .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(output, br#"{"text":"CELLN"}"#);
+    for field in ["model", "url", "credential_file", "history", "tools"] {
+        let mut value = serde_json::to_value(&direct).unwrap();
+        value[field] = "must-not-be-consumed".into();
+        assert!(serde_json::from_value::<DirectConfig>(value).is_err());
+    }
+}
+
+#[test]
+fn direct_adapter_refuses_before_execution_and_checks_returned_output() {
+    let tool = config(&["echo"]).tools.remove(0);
+    let mut direct = DirectConfig {
+        contract: DIRECT_CONTRACT.into(),
+        tool,
+        arguments: r#"{"unknown":"field"}"#.into(),
+    };
+    assert!(run_direct(&direct, |_, _| panic!("invalid input reached tool")).is_err());
+    direct.arguments = r#"{"text":"celln"}"#.into();
+    assert!(run_direct(&direct, |_, _| Ok(br#"{"text":42}"#.to_vec())).is_err());
+    direct.tool.output_bytes = 2;
+    assert!(run_direct(&direct, |_, _| Ok(
+        br#"{"text":"valid-but-too-large"}"#.to_vec()
+    ))
+    .is_err());
+    direct.tool.input_schema.hash = Hash::of(b"wrong-schema").0;
+    assert!(run_direct(&direct, |_, _| panic!("unbound schema reached tool")).is_err());
+}
+
+#[test]
 fn parent_history_maps_to_roles_without_replacing_host_persona() {
     let cfg = config(&[]);
     let history = [Exchange {

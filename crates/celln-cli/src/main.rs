@@ -11,6 +11,8 @@ mod dispatch;
 #[cfg(all(test, target_os = "linux"))]
 mod dispatch_conformance;
 mod dispatch_http;
+#[cfg(target_os = "linux")]
+mod framework_package;
 mod host;
 mod image;
 mod mote_admit;
@@ -27,6 +29,13 @@ mod starter_admit;
 mod starter_configure;
 #[cfg(target_os = "linux")]
 mod starter_package;
+#[cfg(target_os = "linux")]
+mod tenancy_admission;
+mod tenancy_contract;
+mod tenancy_credentials;
+mod tenancy_model_context;
+#[cfg(target_os = "linux")]
+mod tenancy_model_relay;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -75,6 +84,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Build signed native artifacts and catalogue resources for scoped framework deployment.
+    FrameworkPackage {
+        #[arg(long)]
+        runtime_dir: PathBuf,
+        #[arg(long)]
+        guest_dir: PathBuf,
+        #[arg(long)]
+        kernel: PathBuf,
+        #[arg(long)]
+        source_revision: String,
+        #[arg(long)]
+        source_tree_sha256: String,
+        #[arg(long)]
+        source_epoch: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Verify a generated scoped framework package without installing it.
+    FrameworkInspect { package: PathBuf },
     /// Publish the bounded native starter model profile and installation metadata.
     StarterConfigure {
         plan: PathBuf,
@@ -147,6 +175,26 @@ enum Cmd {
         /// Repeat for each allowed host; no entries means deny all egress.
         #[arg(long, env = "CELLN_DISPATCHER_EGRESS_HOSTS", value_delimiter = ',')]
         allow_egress_host: Vec<String>,
+        /// Independent operator bearer for /v1/scoped/*.
+        /// Scoped execution remains disabled when this or the JWKS/issuer is absent.
+        #[arg(long)]
+        scoped_operator_token_file: Option<PathBuf>,
+        /// Public Ed25519 JWKS used to verify scoped execution/model permits.
+        #[arg(long)]
+        scoped_jwks_file: Option<PathBuf>,
+        /// Exact issuer expected in scoped permits.
+        #[arg(long)]
+        scoped_issuer: Option<String>,
+        /// Fixed HTTPS origin of the model gateway. Required only for model routes.
+        #[arg(long)]
+        scoped_gateway_origin: Option<String>,
+        /// Optional public CA bundle for the fixed model gateway origin.
+        #[arg(long)]
+        scoped_gateway_ca: Option<PathBuf>,
+        /// Operator-owned native parent request template for enduring scoped runs.
+        /// The file contains no credentials and is pinned when the dispatcher starts.
+        #[arg(long)]
+        scoped_parent_request_file: Option<PathBuf>,
         /// This node's identity and capacity, used to admit
         /// `celln.dev/v1alpha1` ExecutionRequests posted to `/v1/executions`.
         #[command(flatten)]
@@ -540,6 +588,52 @@ fn resolve_root(explicit: &Option<PathBuf>) -> PathBuf {
 fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
     let root = resolve_root(&cli.root);
     match &cli.cmd {
+        Cmd::FrameworkPackage {
+            runtime_dir,
+            guest_dir,
+            kernel,
+            source_revision,
+            source_tree_sha256,
+            source_epoch,
+            output,
+        } => {
+            #[cfg(target_os = "linux")]
+            {
+                framework_package::run(
+                    runtime_dir,
+                    guest_dir,
+                    kernel,
+                    source_revision,
+                    source_tree_sha256,
+                    *source_epoch,
+                    output,
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = (
+                    runtime_dir,
+                    guest_dir,
+                    kernel,
+                    source_revision,
+                    source_tree_sha256,
+                    source_epoch,
+                    output,
+                );
+                anyhow::bail!("Unsupported: framework packaging requires Linux")
+            }
+        }
+        Cmd::FrameworkInspect { package } => {
+            #[cfg(target_os = "linux")]
+            {
+                framework_package::inspect(package)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = package;
+                anyhow::bail!("Unsupported: framework package inspection requires Linux")
+            }
+        }
         Cmd::StarterConfigure {
             plan,
             approve_starter_effects,
@@ -724,12 +818,26 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             unsafe_non_loopback,
             token_file,
             allow_egress_host,
+            scoped_operator_token_file,
+            scoped_jwks_file,
+            scoped_issuer,
+            scoped_gateway_origin,
+            scoped_gateway_ca,
+            scoped_parent_request_file,
             probe,
         } => dispatch_http::serve(
             listen,
             *unsafe_non_loopback,
             token_file,
             allow_egress_host,
+            dispatch_http::ScopedOptions {
+                operator_token_file: scoped_operator_token_file.as_deref(),
+                jwks_file: scoped_jwks_file.as_deref(),
+                issuer: scoped_issuer.as_deref(),
+                gateway_origin: scoped_gateway_origin.as_deref(),
+                gateway_ca: scoped_gateway_ca.as_deref(),
+                parent_request_file: scoped_parent_request_file.as_deref(),
+            },
             root,
             probe,
         ),

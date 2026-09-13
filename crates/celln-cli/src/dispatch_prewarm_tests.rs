@@ -84,6 +84,7 @@ fn state(root: &Path) -> State {
         },
         executions: Arc::new(Mutex::new(HashMap::new())),
         prewarm: Mutex::new(None),
+        scoped: None,
     }
 }
 fn request() -> serde_json::Value {

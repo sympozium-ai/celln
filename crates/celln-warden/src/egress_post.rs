@@ -420,6 +420,34 @@ impl HttpBroker {
             .checked_add(output_tokens)
             .filter(|total| *total <= grant.max_total_output_tokens)
             .ok_or_else(|| refused("model cumulative output budget exhausted"))?;
+        if let Some(relay) = self.model_relay.as_mut() {
+            celln_control::check().map_err(|_| refused("mediated model invocation cancelled"))?;
+            let provider_body = provider_request(&request.body, grant.protocol)?;
+            let body = serde_json::to_vec(&provider_body)
+                .map_err(|_| refused("invalid mediated model request"))?;
+            if body.len() > 262144 {
+                return Err(refused("mediated model request too large"));
+            }
+            // Reserve before calling the relay and never refund, including on
+            // cancellation, malformed output, response loss or transport error.
+            // This is a local ceiling; the gateway owns durable accounting.
+            self.used += 1;
+            self.post_output_reserved.insert(request.url.clone(), next);
+            let raw = relay.invoke(&body).map_err(|error| match error {
+                FetchDenied::Budget => FetchDenied::Budget,
+                _ => refused("mediated model invocation failed"),
+            })?;
+            celln_control::check().map_err(|_| refused("mediated model invocation cancelled"))?;
+            if raw.len() > self.policy.max_response_bytes {
+                return Err(refused("mediated model response too large"));
+            }
+            let response = provider_response(raw, grant.protocol)
+                .map_err(|_| refused("invalid mediated model response"))?;
+            if response.len() > self.policy.max_response_bytes {
+                return Err(refused("mediated model response too large"));
+            }
+            return Ok(response);
+        }
         let authorized = self.authorize(&request.url)?;
         self.used += 1;
         self.post_output_reserved.insert(request.url.clone(), next);
@@ -628,6 +656,77 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(value["choices"][0]["message"]["content"], "LOCAL-OK");
         server.join().unwrap();
+    }
+
+    struct RecordingRelay {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        fail: bool,
+    }
+
+    impl crate::egress::ModelRelay for RecordingRelay {
+        fn invoke(&mut self, body: &[u8]) -> Result<Vec<u8>, FetchDenied> {
+            self.calls.lock().unwrap().push(body.to_vec());
+            if self.fail {
+                return Err(FetchDenied::Fetch("private transport diagnostic".into()));
+            }
+            Ok(br#"{"choices":[{"message":{"role":"assistant","content":"relay-ok"}}]}"#.to_vec())
+        }
+    }
+
+    #[test]
+    fn mediated_transport_has_no_provider_file_or_dns_fallback() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut policy = model_policy();
+        let relay = || {
+            Box::new(RecordingRelay {
+                calls: calls.clone(),
+                fail: false,
+            })
+        };
+        // Standing credentials are forbidden even if the file does not exist.
+        assert!(HttpBroker::new_mediated(policy.clone(), relay()).is_err());
+        policy.json_posts[0].bearer_token_file.clear();
+        let mut broker = HttpBroker::new_mediated(policy, relay()).unwrap();
+        let wire = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
+            "url":"https://provider.invalid/chat","body":chat_body()})
+        .to_string();
+        let out = broker.fetch(&wire).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("relay-ok"));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&calls.lock().unwrap()[0]).unwrap();
+        assert_eq!(body, chat_body());
+        assert!(body.get("url").is_none());
+        assert!(body.get("headers").is_none());
+        let other = wire.replace("provider.invalid", "other.invalid");
+        assert!(broker.fetch(&other).is_err());
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mediated_errors_are_redacted_and_never_refunded() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut policy = model_policy();
+        policy.json_posts[0].bearer_token_file.clear();
+        policy.max_requests = 1;
+        let mut broker = HttpBroker::new_mediated(
+            policy,
+            Box::new(RecordingRelay {
+                calls: calls.clone(),
+                fail: true,
+            }),
+        )
+        .unwrap();
+        let wire = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
+            "url":"https://provider.invalid/chat","body":chat_body()})
+        .to_string();
+        let error = broker.fetch(&wire).unwrap_err();
+        assert_eq!(error, refused("mediated model invocation failed"));
+        assert_eq!(broker.fetch(&wire), Err(FetchDenied::Budget));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        assert_eq!(
+            broker.post_output_reserved["https://provider.invalid/chat"],
+            512
+        );
     }
 
     fn wire() -> String {

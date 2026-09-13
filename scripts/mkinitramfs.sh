@@ -161,7 +161,15 @@ else
 fi
 
 mkdir -p "$(dirname "$out")"
-( cd "$work" && find . -print0 | cpio --null -o -H newc --quiet --owner=0:0 ) > "$out"
+# Operator package builds supply a pinned source epoch. Normalize staged mtimes
+# and archive order so the same source/binary inputs produce the same initrd;
+# ordinary callers retain the historical behavior when it is absent.
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+  find "$work" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+  ( cd "$work" && find . -print0 | sort -z | cpio --null -o -H newc --quiet --owner=0:0 --reproducible ) > "$out"
+else
+  ( cd "$work" && find . -print0 | cpio --null -o -H newc --quiet --owner=0:0 ) > "$out"
+fi
 
 printf 'initramfs: %s (%s bytes, init %s bytes)\n' \
   "$out" "$(stat -c%s "$out")" "$(stat -c%s "$work/init")"

@@ -97,7 +97,23 @@ pub(super) fn pin(
             template.stop_when_guest_prints("CELLN:mote=parked");
             let report = template.run().map_err(|e| e.to_string())?;
             if report.end != BootEnd::Parked {
-                return Err("substrate did not reach the warm mote park point".into());
+                // This is pre-invocation boot of the immutable template: no
+                // task, model permit, or provider credential has entered it.
+                // Keep the diagnostic bounded so actual kernel/init failures
+                // are distinguishable without emitting execution transcripts.
+                let tail: String = report
+                    .console
+                    .chars()
+                    .rev()
+                    .take(2048)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                return Err(format!(
+                    "substrate did not reach the warm mote park point ({:?}): {}",
+                    report.end, tail
+                ));
             }
             let mote = Arc::new(template.park().map_err(|e| e.to_string())?);
             #[cfg(test)]

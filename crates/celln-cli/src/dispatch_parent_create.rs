@@ -31,6 +31,10 @@ pub(crate) struct Admission {
 
 pub(crate) type Handler = Box<dyn FnMut(&[u8]) -> Result<Vec<u8>, String>>;
 
+#[path = "dispatch_parent_scoped.rs"]
+#[allow(dead_code)] // Receiver enduring admission will own this factory.
+pub(crate) mod scoped;
+
 pub(crate) fn admit(root: &Path, hash: &Hash, principal: &str) -> Result<Admission, String> {
     if !hash.0.strip_prefix("blake3:").is_some_and(|s| {
         s.len() == 64

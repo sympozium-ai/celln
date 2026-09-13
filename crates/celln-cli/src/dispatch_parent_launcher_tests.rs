@@ -105,11 +105,22 @@ fn declared_parent_launcher_on_real_kvm() {
     let rootfs = work.path().join("rootfs");
     std::fs::create_dir(&rootfs).unwrap();
     std::fs::create_dir(rootfs.join("tmp")).unwrap();
+    // Host evidence remains private under umask 077. Guest image permissions
+    // must not inherit either that umask or Cargo's freshly linked binary mode.
+    use std::os::unix::fs::PermissionsExt;
+    for directory in [&rootfs, &rootfs.join("tmp")] {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let program = std::fs::read(pilot_dir.join("celln-harness-parent")).unwrap();
     let program_hash = Hash::of(&program);
     std::fs::copy(
         pilot_dir.join("celln-harness-parent"),
         rootfs.join("parent"),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        rootfs.join("parent"),
+        std::fs::Permissions::from_mode(0o555),
     )
     .unwrap();
     let image = work.path().join("toolfs.ext2");
