@@ -1143,6 +1143,23 @@ impl LinuxCell {
             }
             Err(e) => {
                 self.fetch_activity.1 = self.fetch_activity.1.saturating_add(1);
+                // Constant diagnostic categories only: never print URLs, request
+                // bodies, provider errors, headers or transport credentials.
+                let code = match &e {
+                    crate::egress::FetchDenied::Fetch(reason) => match reason.as_str() {
+                        "JSON POST endpoint not granted" => "ENDPOINT",
+                        "model not granted" => "MODEL",
+                        "model output token limit exceeded"
+                        | "model cumulative output budget exhausted" => "OUTPUT_BUDGET",
+                        "mediated model invocation failed" => "GATEWAY",
+                        "mediated model invocation cancelled" => "CANCELLED",
+                        "unsupported model request parameters" => "PARAMETERS",
+                        _ => "REQUEST",
+                    },
+                    crate::egress::FetchDenied::Budget => "REQUEST_BUDGET",
+                    _ => "POLICY",
+                };
+                eprintln!("CELLN_BROKER_REFUSAL {code}");
                 format!("CELLN_FETCH_ERROR:{e}").into_bytes()
             }
         };

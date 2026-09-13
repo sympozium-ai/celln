@@ -775,6 +775,27 @@ fn parent_scope(prepared: &PreparedRecord) -> Result<String, String> {
     .map_err(|_| "invalid parent scope".into())
 }
 
+fn native_json_config(
+    prepared: &PreparedRecord,
+    tools: &[Value],
+    enduring: bool,
+) -> Result<Value, String> {
+    let execution = &prepared.operation["resolution"]["execution"];
+    let limits = &execution["profileSpec"]["json"];
+    let max_turns = u64v(&limits["maxTurns"], "maxTurns")?.min(u64v(
+        &prepared.decision["budget"]["turnCap"]["requests"],
+        "requests",
+    )?);
+    // One shared adapter: the provider origin is never a guest destination,
+    // including retained workers and subsequent mailbox turns.
+    Ok(json!({"contract":pilot::json_harness::CONTRACT,
+        "task":if enduring {Value::String(String::new())} else {execution["payload"].clone()},
+        "system":execution["systemPrompt"],"url":MODEL_ALIAS,"model":prepared.decision["route"]["model"],
+        "tools":tools,"max_turns":max_turns,"max_calls":u64v(&limits["maxCalls"],"maxCalls")?,
+        "require_tool_call":limits.get("requireToolCall").cloned().unwrap_or(Value::Bool(false))
+    }))
+}
+
 fn local_turn_id(prepared: &PreparedRecord) -> Result<String, String> {
     if let Some(turn) = prepared.decision["parent"]["turnId"].as_str() {
         return Ok(turn.into());
@@ -820,21 +841,13 @@ fn start_enduring(
         .as_ref()
         .and_then(|_| {
             let execution = &prepared.operation["resolution"]["execution"];
-            let profile = &execution["profileSpec"];
             let tools = execution["tools"]
                 .as_array()?
                 .iter()
                 .zip(prepared.decision["tools"].as_array()?)
                 .map(|(material, binding)| native_tool(scoped, material, binding).ok())
                 .collect::<Option<Vec<_>>>()?;
-            serde_json::from_value(json!({
-                "contract":pilot::json_harness::CONTRACT,"task":"",
-                "system":execution["systemPrompt"],"url":prepared.decision["route"]["endpointOrigin"],
-                "model":prepared.decision["route"]["model"],"tools":tools,
-                "max_turns":profile["json"]["maxTurns"].as_u64()?.min(prepared.decision["budget"]["turnCap"]["requests"].as_u64()?),
-                "max_calls":profile["json"]["maxCalls"],
-                "require_tool_call":profile["json"].get("requireToolCall").cloned().unwrap_or(Value::Bool(false))
-            })).ok()
+            serde_json::from_value(native_json_config(&prepared, &tools, true).ok()?).ok()
         })
         .ok_or_else(|| anyhow::anyhow!("invalid enduring worker template"))?;
     let worker_binding =
@@ -1121,7 +1134,7 @@ fn start_enduring(
     ) {
         Ok(factory) => factory,
         Err(reason) => {
-            let status = prepared_refusal(scoped, &fresh, &prepared, reason);
+            let status = uncertain_parent_refusal(scoped, &fresh, &prepared, reason);
             return reply(stream, 503, &status);
         }
     };
@@ -1155,7 +1168,7 @@ fn start_enduring(
         factory,
     ) {
         scoped.enduring.lock().unwrap().remove(&incarnation.0);
-        let status = prepared_refusal(scoped, &fresh, &prepared, reason);
+        let status = uncertain_parent_refusal(scoped, &fresh, &prepared, reason);
         return reply(stream, 503, &status);
     }
     submit_enduring_turn(
@@ -2024,13 +2037,7 @@ fn build_native(
         let route = &decision["route"];
         warden::egress::model_endpoint_target(MODEL_ALIAS, false)
             .map_err(|_| "AUTH_ROUTE_MISMATCH")?;
-        let json_limits = profile["json"]
-            .as_object()
-            .ok_or("AUTH_PROTOCOL_UNSUPPORTED")?;
-        let max_turns = u64v(&Value::Object(json_limits.clone())["maxTurns"], "maxTurns")?.min(
-            u64v(&decision["budget"]["turnCap"]["requests"], "requests")?,
-        );
-        let value = json!({"contract":pilot::json_harness::CONTRACT,"task":if enduring {Value::String(String::new())} else {execution["payload"].clone()},"system":execution["systemPrompt"],"url":MODEL_ALIAS,"model":route["model"],"tools":tools,"max_turns":max_turns,"max_calls":json_limits.get("maxCalls").and_then(Value::as_u64).ok_or("AUTH_PROTOCOL_UNSUPPORTED")?});
+        let value = native_json_config(prepared, &tools, enduring)?;
         let typed: pilot::json_harness::Config =
             serde_json::from_value(value.clone()).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
         if enduring {
@@ -2506,6 +2513,23 @@ fn terminal_refusal(scoped: &ScopedState, fresh: &Fresh, id: &str, reason: Strin
     status
 }
 
+fn uncertain_parent_refusal(
+    scoped: &ScopedState,
+    fresh: &Fresh,
+    prepared: &PreparedRecord,
+    _reason: String,
+) -> ScopedStatus {
+    // Claim/registry errors can refer to a pre-existing or partially published
+    // owner. Refusal alone never proves that owner's VM has been destroyed.
+    let status = uncertain_status(
+        prepared,
+        "parent claim refused; original ownership and teardown unconfirmed",
+    );
+    let _ = scoped.admission.finish(fresh, Outcome::Refused);
+    let _ = persist_status(scoped, &status);
+    status
+}
+
 fn prepared_refusal(
     scoped: &ScopedState,
     fresh: &Fresh,
@@ -2910,6 +2934,31 @@ mod tests {
         assert!(status.cell_id.is_none());
         assert!(status.execution.is_none());
         assert!(status.substrate.is_none());
+    }
+
+    #[test]
+    fn both_guest_adapters_use_only_the_mediated_alias() {
+        let (mut operation, mut decision) = fixture();
+        operation["resolution"]["execution"]["profileSpec"]["json"] =
+            json!({"maxTurns":8,"maxCalls":2,"requireToolCall":true});
+        operation["resolution"]["execution"]["payload"] = json!("task");
+        decision["route"]["endpointOrigin"] = json!("https://private-provider.example/path");
+        decision["budget"]["turnCap"]["requests"] = json!(2);
+        let prepared = PreparedRecord {
+            version: 1,
+            id: String::new(),
+            owner: String::new(),
+            operation,
+            decision,
+        };
+        for enduring in [false, true] {
+            let config = native_json_config(&prepared, &[], enduring).unwrap();
+            assert_eq!(config["url"], MODEL_ALIAS);
+            assert!(!config.to_string().contains("private-provider"));
+            assert_eq!(config["require_tool_call"], true);
+            assert_eq!(config["max_turns"], 2);
+            assert_eq!(config["task"], if enduring { "" } else { "task" });
+        }
     }
 
     #[test]
