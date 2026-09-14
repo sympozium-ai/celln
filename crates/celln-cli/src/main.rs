@@ -166,8 +166,10 @@ enum Cmd {
         backends: Vec<String>,
 
         /// DNS name of a headless Service whose A records are dispatcher
-        /// backends. Combined with --backends. Example:
-        /// celln-dispatcher.celln-system.svc.cluster.local.
+        /// backends, re-resolved every few seconds so owners can join or
+        /// leave without a restart. Combined with --backends; may be the only
+        /// source, in which case the router serves 503 until an owner resolves.
+        /// Example: celln-node.celln-system.svc.cluster.local.
         #[arg(long)]
         backends_srv: Option<String>,
 

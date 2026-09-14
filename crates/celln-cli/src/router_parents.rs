@@ -142,7 +142,7 @@ pub(super) fn forward(
             }
         }
     };
-    if !state.backends.contains(&backend) {
+    if !state.backends().contains(&backend) {
         return reply(
             stream,
             503,

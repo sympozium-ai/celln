@@ -14,11 +14,12 @@ use crate::dispatch_http::{
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::io::{BufReader, Read, Write};
+use std::net::IpAddr;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 #[path = "router_ownership.rs"]
 mod ownership;
@@ -101,40 +102,10 @@ pub fn serve(
     parent_token_file: Option<&Path>,
     ownership_dir: &Path,
 ) -> Result<u8> {
-    let mut urls: Vec<String> = backends
-        .into_iter()
-        .map(|b| b.trim_end_matches('/').to_string())
-        .collect();
-
-    // DNS-based discovery: resolve the SRV name to all pod IPs.
-    if let Some(srv) = backends_srv {
-        let srv = srv.trim_end_matches('/');
-        let addr = if srv.contains(':') {
-            srv.to_string()
-        } else {
-            format!("{srv}:8787")
-        };
-        match addr.to_socket_addrs() {
-            Ok(addrs) => {
-                for a in addrs {
-                    let url = format!("http://{}:{}", a.ip(), a.port());
-                    if !urls.contains(&url) {
-                        urls.push(url);
-                    }
-                }
-            }
-            Err(e) => eprintln!("celln route: warning: could not resolve {addr}: {e}"),
-        }
-    }
-
-    if urls.is_empty() {
-        bail!("at least one dispatcher backend URL is required (--backends or --backends-srv)");
-    }
-    for url in &urls {
-        backend_to_addr(url)?;
-    }
+    let (urls, discovery) = initial_backends(backends, backends_srv)?;
     let state = Arc::new(RouterState {
-        backends: urls.clone(),
+        backends: urls,
+        discovery,
         mode,
         cursor: AtomicUsize::new(0),
         executions: ownership::Ledger::open(ownership_dir, 100_000)?,
@@ -149,7 +120,7 @@ pub fn serve(
     let listener = TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
     eprintln!(
         "celln route listening on {listen} ({} backends, {mode:?})",
-        urls.len()
+        state.backends().len()
     );
     for stream in listener.incoming() {
         match stream {
@@ -167,8 +138,108 @@ pub fn serve(
     Ok(crate::exit::OK)
 }
 
+/// Owners discovered by name (typically a headless Service). They are
+/// re-resolved so a fleet can grow or shrink without a router restart; the
+/// ownership ledgers still pin every action to the exact address that took it,
+/// so an owner that disappears is reported, never replaced.
+struct Discovery {
+    address: String,
+    resolved: RwLock<Vec<String>>,
+    refreshed: Mutex<Option<Instant>>,
+}
+
+const DISCOVERY_TTL: Duration = Duration::from_secs(5);
+
+impl Discovery {
+    fn new(address: String) -> Self {
+        let discovery = Self {
+            address,
+            resolved: RwLock::new(Vec::new()),
+            refreshed: Mutex::new(None),
+        };
+        discovery.refresh();
+        discovery
+    }
+
+    fn refresh(&self) {
+        match resolve_backends(&self.address) {
+            Ok(urls) => *self.resolved.write().unwrap_or_else(|e| e.into_inner()) = urls,
+            // Keep the last good answer: a DNS blip must not evict live owners.
+            Err(error) => eprintln!(
+                "celln route: warning: could not resolve {}: {error}",
+                self.address
+            ),
+        }
+        *self.refreshed.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    fn current(&self) -> Vec<String> {
+        let stale = self
+            .refreshed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map_or(true, |at| at.elapsed() >= DISCOVERY_TTL);
+        if stale {
+            self.refresh();
+        }
+        self.resolved
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+fn resolve_backends(address: &str) -> Result<Vec<String>> {
+    let mut urls: Vec<String> = address
+        .to_socket_addrs()?
+        .map(|a| match a.ip() {
+            IpAddr::V6(ip) => format!("http://[{ip}]:{}", a.port()),
+            ip => format!("http://{ip}:{}", a.port()),
+        })
+        .collect();
+    urls.sort();
+    urls.dedup();
+    Ok(urls)
+}
+
+/// Static `--backends` are validated once; `--backends-srv` becomes live
+/// discovery. Without any static backend, discovery may legitimately be empty
+/// at startup (no owner is ready yet) and the router answers 503 until one is.
+fn initial_backends(
+    backends: Vec<String>,
+    backends_srv: Option<&str>,
+) -> Result<(Vec<String>, Option<Discovery>)> {
+    let urls: Vec<String> = backends
+        .into_iter()
+        .map(|b| b.trim_end_matches('/').to_string())
+        .collect();
+    for url in &urls {
+        backend_to_addr(url)?;
+    }
+    let discovery = backends_srv.map(|srv| {
+        let srv = srv.trim_end_matches('/');
+        Discovery::new(if srv.contains(':') {
+            srv.to_string()
+        } else {
+            format!("{srv}:8787")
+        })
+    });
+    match &discovery {
+        None if urls.is_empty() => {
+            bail!("at least one dispatcher backend URL is required (--backends or --backends-srv)")
+        }
+        Some(discovery) if urls.is_empty() && discovery.current().is_empty() => eprintln!(
+            "celln route: warning: no owners resolved from {} yet; refusing work until one is",
+            discovery.address
+        ),
+        _ => {}
+    }
+    Ok((urls, discovery))
+}
+
 struct RouterState {
     backends: Vec<String>,
+    discovery: Option<Discovery>,
     mode: RoutingMode,
     cursor: AtomicUsize,
     /// Shared durable ownership and anti-replay tombstones.
@@ -179,6 +250,22 @@ struct RouterState {
     client_token_file: PathBuf,
     capability_token_file: Option<PathBuf>,
     capability_probe_active: AtomicBool,
+}
+
+impl RouterState {
+    /// Every backend the router may forward to right now: the static list plus
+    /// whatever discovery currently resolves.
+    fn backends(&self) -> Vec<String> {
+        let mut urls = self.backends.clone();
+        if let Some(discovery) = &self.discovery {
+            for url in discovery.current() {
+                if !urls.contains(&url) {
+                    urls.push(url);
+                }
+            }
+        }
+        urls
+    }
 }
 
 fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
@@ -348,7 +435,7 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
     // Pins are trusted-controller routing intent, not tenant URLs. Match only
     // an exact operator-configured endpoint and never probe/select a fallback.
     if let Some(backend) = &pinned_backend {
-        if backend.len() > 1024 || !state.backends.contains(backend) {
+        if backend.len() > 1024 || !state.backends().contains(backend) {
             return reply(
                 stream,
                 400,
@@ -421,7 +508,8 @@ fn capability_report(
 ) -> Result<()> {
     // Bound fanout and permit only one probe at a time per router. No request or
     // owner ledger is mutated by discovery; failures never trigger execution.
-    if state.backends.len() > 32 || state.capability_probe_active.swap(true, Ordering::AcqRel) {
+    let backends = state.backends();
+    if backends.len() > 32 || state.capability_probe_active.swap(true, Ordering::AcqRel) {
         return reply(
             stream,
             503,
@@ -436,7 +524,7 @@ fn capability_report(
     }
     let _guard = ProbeGuard(&state.capability_probe_active);
     let nodes = std::thread::scope(|scope| {
-        let probes: Vec<_> = state.backends.iter().enumerate().map(|(index, backend)| {
+        let probes: Vec<_> = backends.iter().enumerate().map(|(index, backend)| {
             scope.spawn(move || {
                 let report = (|| -> Result<crate::capabilities::DispatcherCapabilities> {
                     let addr = backend_to_addr(backend)?;
@@ -645,7 +733,7 @@ fn forward_owned(
     path: &str,
     token: &Option<String>,
 ) -> Result<()> {
-    if !state.backends.iter().any(|url| url == backend) {
+    if !state.backends().iter().any(|url| url == backend) {
         return reply(
             stream,
             503,
@@ -688,7 +776,11 @@ fn valid_path_id(id: &str) -> bool {
 }
 
 fn pick_backend(state: &RouterState, action_id: &str, token: &Option<String>) -> Result<String> {
-    let n = state.backends.len();
+    let backends = state.backends();
+    let n = backends.len();
+    if n == 0 {
+        bail!("no dispatcher backends configured or discovered");
+    }
     let start = match state.mode {
         RoutingMode::RoundRobin => (fnv1a(action_id.as_bytes()) as usize) % n,
         RoutingMode::Random => {
@@ -703,7 +795,7 @@ fn pick_backend(state: &RouterState, action_id: &str, token: &Option<String>) ->
     };
 
     for offset in 0..n {
-        let backend = &state.backends[(start + offset) % n];
+        let backend = &backends[(start + offset) % n];
         if is_healthy(backend, token).unwrap_or(false) {
             return Ok(backend.clone());
         }
@@ -925,6 +1017,44 @@ mod tests {
     fn extract_body_finds_the_content_after_the_blank_line() {
         let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
         assert_eq!(extract_body(response), "ok");
+    }
+
+    #[test]
+    fn discovery_merges_resolved_owners_and_tolerates_an_empty_fleet() {
+        assert!(initial_backends(vec![], None).is_err());
+        assert!(initial_backends(vec!["https://node:8787".into()], None).is_err());
+        let (urls, discovery) =
+            initial_backends(vec![], Some("celln-node.invalid.test:8787")).unwrap();
+        assert!(urls.is_empty());
+        let discovery = discovery.unwrap();
+        assert!(discovery.current().is_empty());
+        let (urls, discovery) =
+            initial_backends(vec!["http://node-a:8787/".into()], Some("localhost:18787")).unwrap();
+        assert_eq!(urls, vec!["http://node-a:8787".to_string()]);
+        let discovery = discovery.unwrap();
+        let resolved = discovery.current();
+        assert!(
+            resolved.contains(&"http://127.0.0.1:18787".to_string()),
+            "{resolved:?}"
+        );
+        for url in &resolved {
+            backend_to_addr(url).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        state.backends = urls;
+        state.discovery = Some(discovery);
+        let all = state.backends();
+        assert_eq!(all[0], "http://node-a:8787");
+        assert!(all.contains(&"http://127.0.0.1:18787".to_string()));
+        assert_eq!(all.len(), 1 + resolved.len());
+        // A refresh that cannot resolve keeps the last good owners.
+        state.discovery.as_mut().unwrap().address = "celln-node.invalid.test:8787".into();
+        *state.discovery.as_ref().unwrap().refreshed.lock().unwrap() = None;
+        assert_eq!(state.backends().len(), 1 + resolved.len());
+        state.backends = vec![];
+        state.discovery = Some(Discovery::new("celln-node.invalid.test:8787".into()));
+        assert!(pick_backend(&state, "action", &None).is_err());
     }
 
     #[test]
@@ -1399,6 +1529,7 @@ mod tests {
         std::fs::write(&token_file, BACKEND_TOKEN).unwrap();
         RouterState {
             backends: vec![],
+            discovery: None,
             mode: RoutingMode::RoundRobin,
             cursor: AtomicUsize::new(0),
             executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
