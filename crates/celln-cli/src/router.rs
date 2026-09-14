@@ -139,6 +139,7 @@ pub fn serve(
         cursor: AtomicUsize::new(0),
         executions: ownership::Ledger::open(ownership_dir, 100_000)?,
         parents: ownership::Ledger::open(&ownership_dir.join("parents"), 100_000)?,
+        provisions: ownership::Ledger::open(&ownership_dir.join("provisions"), 100_000)?,
         parent_token_file: parent_token_file.map(Path::to_owned),
         token_file: token_file.to_owned(),
         client_token_file: client_token_file.to_owned(),
@@ -174,6 +175,8 @@ struct RouterState {
     /// Shared durable ownership and anti-replay tombstones.
     executions: ownership::Ledger,
     parents: ownership::Ledger,
+    /// Owner chosen at provisioning; creation must follow it, never re-pick.
+    provisions: ownership::Ledger,
     parent_token_file: Option<PathBuf>,
     token_file: PathBuf,
     client_token_file: PathBuf,
@@ -1335,6 +1338,196 @@ mod tests {
     }
 
     #[test]
+    fn provisioning_binds_parent_owner_before_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = state(dir.path());
+        let parent_file = dir.path().join("parent-token");
+        const PARENT: &str = "parent-principal-credential-at-least-24";
+        std::fs::write(&parent_file, PARENT).unwrap();
+        first.parent_token_file = Some(parent_file.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        // The dead backend is skipped by the health probe; the live one must
+        // then serve provisioning and every later parent request.
+        first.backends = vec!["http://127.0.0.1:1".into(), backend.clone()];
+        let id = format!("blake3:{}", "c".repeat(64));
+        let other = format!("blake3:{}", "d".repeat(64));
+        let plan =
+            r#"{"apiVersion":"celln.parent-provision-plan/v1","scope":"cluster","runUid":"run"}"#;
+        let launch = format!("blake3:{}", "e".repeat(64));
+        let create =
+            format!(r#"{{"apiVersion":"celln.parent-create/v1","launchProfile":"{launch}"}}"#);
+        let owner_id = id.clone();
+        let owner_launch = launch.clone();
+        let server = std::thread::spawn(move || {
+            for expected in [
+                "GET /v1/health".to_string(),
+                "POST /v1/parents/provision".to_string(),
+                "POST /v1/parents/provision".to_string(),
+                "POST /v1/parents".to_string(),
+                format!("GET /v1/parents/{owner_id}"),
+                "GET /v1/health".to_string(),
+                "POST /v1/parents/provision".to_string(),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                assert!(line.starts_with(&format!("{expected} HTTP/1.1")), "{line}");
+                let mut credential = String::new();
+                let mut length = 0;
+                loop {
+                    let h = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if h.starts_with("Authorization:") {
+                        credential = h.clone();
+                    }
+                    if h.starts_with("Content-Length:") {
+                        length = h
+                            .split_once(':')
+                            .unwrap()
+                            .1
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                    }
+                }
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                if expected == "GET /v1/health" {
+                    assert_eq!(
+                        credential,
+                        format!("Authorization: Bearer {BACKEND_TOKEN}\r\n")
+                    );
+                    reply(&mut stream, 200, &serde_json::json!({"ok":true,"kvm":true})).unwrap();
+                    continue;
+                }
+                assert_eq!(credential, format!("Authorization: Bearer {PARENT}\r\n"));
+                match expected.as_str() {
+                    "POST /v1/parents/provision" => {
+                        // The last provisioning answer names another identity.
+                        let incarnation = if bytes.ends_with(br#""runUid":"run"}"#) { owner_id.clone() } else { "blake3:".to_string() + &"f".repeat(64) };
+                        reply(&mut stream, 200, &serde_json::json!({"apiVersion":"celln.parent-provisioned/v1","launchProfile":owner_launch,"incarnation":incarnation})).unwrap();
+                    }
+                    "POST /v1/parents" => reply(&mut stream, 202, &serde_json::json!({"incarnation":owner_id,"initializationPending":true,"retryAuthorized":false})).unwrap(),
+                    _ => reply(&mut stream, 200, &serde_json::json!({"incarnation":owner_id,"status":"Ready","retryAuthorized":false})).unwrap(),
+                }
+            }
+        });
+        let headers = |incarnation: &str, body: &str| {
+            format!("Authorization: Bearer {CLIENT_TOKEN}\r\nX-Celln-Parent-Incarnation: {incarnation}\r\nContent-Length: {}\r\n", body.len())
+        };
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, "{}"),
+                "{}"
+            )),
+            400
+        );
+        assert!(first.provisions.lookup(&id).unwrap().is_none());
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, plan),
+                plan
+            )),
+            200
+        );
+        assert_eq!(
+            first.provisions.lookup(&id).unwrap().unwrap().backend,
+            backend
+        );
+        // Retrying the identical plan recovers the same owner without a re-pick.
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, plan),
+                plan
+            )),
+            200
+        );
+        let changed = plan.replace("\"run\"", "\"other-run\"");
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, &changed),
+                &changed
+            )),
+            409
+        );
+        assert!(first.parents.lookup(&id).unwrap().is_none());
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents",
+                &headers(&id, &create),
+                &create
+            )),
+            202
+        );
+        assert_eq!(first.parents.lookup(&id).unwrap().unwrap().backend, backend);
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents",
+                &headers(&id, &create),
+                &create
+            )),
+            409
+        );
+        drop(first);
+        let mut replica = state(dir.path());
+        replica.parent_token_file = Some(parent_file);
+        replica.backends = vec![backend.clone(), "http://127.0.0.1:1".into()];
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "GET",
+                &format!("/v1/parents/{id}"),
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                ""
+            )),
+            200
+        );
+        // An owner answering with another incarnation cannot bind this identity.
+        let stray = plan.replace("\"run\"", "\"stray\"");
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&other, &stray),
+                &stray
+            )),
+            502
+        );
+        server.join().unwrap();
+        replica.backends = vec!["http://127.0.0.1:1".into()];
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, plan),
+                plan
+            )),
+            503
+        );
+    }
+
+    #[test]
     fn parent_routes_refuse_discovery_credentials_and_malformed_identity() {
         let dir = tempfile::tempdir().unwrap();
         let mut owner = state(dir.path());
@@ -1403,6 +1596,7 @@ mod tests {
             cursor: AtomicUsize::new(0),
             executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
             parents: ownership::Ledger::open(&dir.join("ownership/parents"), 100).unwrap(),
+            provisions: ownership::Ledger::open(&dir.join("ownership/provisions"), 100).unwrap(),
             parent_token_file: None,
             token_file,
             client_token_file,

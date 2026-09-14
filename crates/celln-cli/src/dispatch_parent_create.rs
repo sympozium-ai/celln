@@ -175,7 +175,13 @@ pub(crate) fn provision_file(root: &Path, path: &Path, principal: &str) -> anyho
     Ok(0)
 }
 
-fn provision(root: &Path, bytes: &[u8], principal: &str) -> Result<(Hash, Hash), String> {
+/// Shared by the operator CLI and the authenticated dispatcher route: both
+/// bind the plan to the caller's principal and neither creates a parent.
+pub(crate) fn provision(
+    root: &Path,
+    bytes: &[u8],
+    principal: &str,
+) -> Result<(Hash, Hash), String> {
     if bytes.len() > 65536 || !root.is_absolute() {
         return Err("bounded local parent plan and absolute root required".into());
     }
@@ -333,11 +339,11 @@ impl Admission {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod publication_tests {
+pub(crate) mod publication_tests {
     use super::*;
     use serde_json::json;
 
-    fn fixture() -> (tempfile::TempDir, Vec<u8>) {
+    pub(crate) fn fixture() -> (tempfile::TempDir, Vec<u8>) {
         let root = tempfile::tempdir().unwrap();
         let request = super::super::parent_tests::request();
         let mut binding = super::super::parent_tests::binding(&request);

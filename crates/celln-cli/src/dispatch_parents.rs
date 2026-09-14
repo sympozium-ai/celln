@@ -171,6 +171,12 @@ pub(super) fn handle(
         }
         return create(state, stream, reader, length, &principal);
     }
+    if path == "/v1/parents/provision" {
+        if method != "POST" {
+            return reply(stream, 404, &json!({"error":"not found"}));
+        }
+        return provision(state, stream, reader, length, &principal);
+    }
     let mut parts = path.trim_start_matches("/v1/parents/").split('/');
     let id = parts.next().unwrap_or_default();
     let action = parts.next();
@@ -777,9 +783,174 @@ fn create(
     }
 }
 
+/// The owner that will serve a parent issues its permit and launch profile, so
+/// provisioning no longer requires a co-located operator CLI. The plan is the
+/// same trusted contract as `parent-provision`; HTTP adds no authority because
+/// the plan is bound to the authenticated principal and nothing is launched.
+fn provision(
+    state: &State,
+    stream: &mut TcpStream,
+    reader: &mut impl Read,
+    length: usize,
+    principal: &str,
+) -> Result<()> {
+    if length == 0 || length > 65536 {
+        return reply(stream, 413, &json!({"error":"invalid provision plan size"}));
+    }
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut bytes = vec![0; length];
+    reader.read_exact(&mut bytes)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, principal, bytes);
+        reply(
+            stream,
+            503,
+            &json!({"error":"parent provisioning unsupported on this host"}),
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match crate::dispatch::parent_create::provision(&state.root, &bytes, principal) {
+            Ok((launch, incarnation)) => reply(
+                stream,
+                200,
+                &json!({"apiVersion":"celln.parent-provisioned/v1",
+                "launchProfile":launch,"incarnation":incarnation}),
+            ),
+            Err(error)
+                if error.starts_with("invalid parent provision plan")
+                    || error.starts_with("parent provision version") =>
+            {
+                reply(
+                    stream,
+                    400,
+                    &json!({"error":"invalid parent provision plan"}),
+                )
+            }
+            // Expired, changed or corrupt issuance is never renewed by retry.
+            Err(_) => reply(
+                stream,
+                409,
+                &json!({"error":"parent provisioning refused; preserve issuance state",
+                "retryAuthorized":false}),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn provision_route_requires_parent_principal_and_bounded_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let state = super::super::tests::lifecycle_state(root.path());
+        let token = "parent-provision-test-credential-long-enough";
+        policy(root.path(), token, "tenant");
+        assert!(http(&state, "GET", "/v1/parents/provision", token, "").starts_with("HTTP/1.1 404"));
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            "another-credential-at-least-24-bytes",
+            "{}"
+        )
+        .starts_with("HTTP/1.1 401"));
+        assert!(
+            http(&state, "POST", "/v1/parents/provision", token, "").starts_with("HTTP/1.1 413")
+        );
+        // A body at the bound is read and rejected as a plan, not as a size.
+        #[cfg(target_os = "linux")]
+        for body in [
+            "{}".to_string(),
+            json!({"apiVersion":"celln.parent-provision-plan/v0"}).to_string(),
+            "x".repeat(65536),
+        ] {
+            assert!(http(&state, "POST", "/v1/parents/provision", token, &body)
+                .starts_with("HTTP/1.1 400"));
+        }
+        assert!(!root.path().join("parent-issuance").exists());
+        assert!(!root.path().join("parent-journal").exists());
+        assert_eq!(state.parents.reserved_capacity().unwrap().owners, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provision_route_publishes_launch_for_bound_principal_without_creating() {
+        let (root, launch) = crate::dispatch::parent_create::publication_tests::fixture();
+        std::fs::create_dir(root.path().join("parent-issuance")).unwrap();
+        let state = super::super::tests::lifecycle_state(root.path());
+        let profile: serde_json::Value = serde_json::from_slice(&launch).unwrap();
+        let principal = profile["parent"]["workload"]["caller"].as_str().unwrap();
+        let token = "parent-provision-owner-credential-long-enough";
+        policy(root.path(), token, principal);
+        let mut plan = json!({
+            "apiVersion":"celln.parent-provision-plan/v1", "scope":"test-cluster",
+            "runUid":"immutable-run-uid", "intentSHA256":format!("sha256:{}", "a".repeat(64)),
+            "admissionWindowMs":60000, "parent":profile["parent"], "worker":profile["worker"],
+            "template":profile["template"], "modelProfile":profile["modelProfile"],
+            "reservedMemoryBytes":profile["reservedMemoryBytes"], "maxTurns":2,
+            "turnModelRequests":1, "turnOutputTokens":512, "totalModelRequests":2,
+            "totalOutputTokens":1024
+        });
+        let first = http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            token,
+            &plan.to_string(),
+        );
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        let body: serde_json::Value =
+            serde_json::from_str(first.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+        assert_eq!(body["apiVersion"], "celln.parent-provisioned/v1");
+        assert!(hash_valid(body["launchProfile"].as_str().unwrap()));
+        assert_eq!(
+            body["incarnation"].as_str().unwrap(),
+            warden::parent_permit::run_incarnation("test-cluster", "immutable-run-uid")
+                .unwrap()
+                .0
+        );
+        // Identical plans recover the same identity; nothing is launched.
+        assert_eq!(
+            http(
+                &state,
+                "POST",
+                "/v1/parents/provision",
+                token,
+                &serde_json::to_string_pretty(&plan).unwrap()
+            ),
+            first
+        );
+        assert!(crate::dispatch::parent_create::admit(
+            root.path(),
+            &Hash(body["launchProfile"].as_str().unwrap().into()),
+            principal
+        )
+        .is_ok());
+        plan["intentSHA256"] = json!(format!("sha256:{}", "b".repeat(64)));
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            token,
+            &plan.to_string()
+        )
+        .starts_with("HTTP/1.1 409"));
+        policy(root.path(), token, "another-tenant");
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            token,
+            &plan.to_string()
+        )
+        .starts_with("HTTP/1.1 400"));
+        assert!(!root.path().join("parent-journal").exists());
+        assert_eq!(state.parents.reserved_capacity().unwrap().owners, 0);
+    }
+
     #[test]
     fn exact_turn_http_cancel_preserves_parent_and_rejects_stale_requests() {
         let root = tempfile::tempdir().unwrap();

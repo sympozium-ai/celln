@@ -72,7 +72,8 @@ pub(super) fn forward(
         );
     }
     let create = method == "POST" && path == "/v1/parents";
-    let id = if create {
+    let provision = method == "POST" && path == "/v1/parents/provision";
+    let id = if create || provision {
         incarnation.filter(|id| hash_valid(id))
     } else {
         parent_id(method, path)
@@ -89,7 +90,43 @@ pub(super) fn forward(
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
-    let backend = if create {
+    let backend = if provision {
+        // Provisioning binds the owner before any permit exists on a backend.
+        // An identical plan recovers that owner (the dispatcher is idempotent);
+        // a changed plan for a bound identity is refused, never re-placed.
+        let version = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|plan| plan.get("apiVersion")?.as_str().map(str::to_owned));
+        if version.as_deref() != Some("celln.parent-provision-plan/v1") {
+            return reply(
+                stream,
+                400,
+                &json!({"error":"invalid parent provision plan"}),
+            );
+        }
+        match state
+            .provisions
+            .claim(id, &body, || pick_backend(state, id, backend_token))
+        {
+            Ok(ownership::Claim::New(owner)) | Ok(ownership::Claim::Existing(owner)) => {
+                owner.backend
+            }
+            Ok(ownership::Claim::Conflict) => {
+                return reply(
+                    stream,
+                    409,
+                    &json!({"error":"parent identity already provisioned with another plan; reconcile original owner", "retryAuthorized":false}),
+                );
+            }
+            _ => {
+                return reply(
+                    stream,
+                    503,
+                    &json!({"error":"parent ownership unavailable", "retryAuthorized":false}),
+                )
+            }
+        }
+    } else if create {
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Create {
@@ -103,10 +140,13 @@ pub(super) fn forward(
         if parsed.api_version != "celln.parent-create/v1" || !hash_valid(&parsed.launch_profile) {
             return reply(stream, 400, &json!({"error":"invalid parent create"}));
         }
-        match state
-            .parents
-            .claim(id, &body, || pick_backend(state, id, backend_token))
-        {
+        // A provisioned identity's permit and launch profile exist only on the
+        // owner that issued them, so creation follows that binding.
+        let choose = || match state.provisions.lookup(id)? {
+            Some(owner) => Ok(owner.backend),
+            None => pick_backend(state, id, backend_token),
+        };
+        match state.parents.claim(id, &body, choose) {
             Ok(ownership::Claim::New(owner)) => owner.backend,
             Ok(ownership::Claim::Existing(_)) | Ok(ownership::Claim::Conflict) => {
                 return reply(
@@ -163,7 +203,7 @@ pub(super) fn forward(
     })();
     match response {
         Ok(response) => {
-            if create && (200..300).contains(&parse_status(&response)) {
+            if (create || provision) && (200..300).contains(&parse_status(&response)) {
                 let result: serde_json::Value = serde_json::from_str(extract_body(&response))?;
                 if result["incarnation"].as_str() != Some(id) {
                     return reply(
