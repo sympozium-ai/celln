@@ -868,6 +868,10 @@ pub struct LinuxCell {
     next_slot: u32,
     next_tool_gpa: u64,
     cfg: BootConfig,
+    /// The last run parked this VM, so the next run resumes a guest the host
+    /// held stopped for however long the caller waited (a parent waiting out
+    /// a worker turn). See [`LinuxCell::run`].
+    parked: bool,
 }
 
 impl LinuxCell {
@@ -1001,6 +1005,7 @@ impl LinuxCell {
             next_slot: FIRST_TOOL_SLOT,
             next_tool_gpa: TOOL_WINDOW_GPA,
             cfg,
+            parked: false,
         })
     }
 
@@ -1399,6 +1404,7 @@ impl LinuxCell {
                 next_slot,
                 next_tool_gpa: TOOL_WINDOW_GPA,
                 cfg: mote.cfg.clone(),
+                parked: false,
             },
             t,
         ))
@@ -1431,6 +1437,16 @@ impl LinuxCell {
     pub fn run(&mut self) -> Result<BootReport, VmmError> {
         let control = celln_control::current();
         celln_control::check().map_err(|e| VmmError::Backend(e.to_string()))?;
+        if std::mem::take(&mut self.parked) {
+            // A parked guest's clock kept running while the host held its
+            // vCPU. Without KVM_KVMCLOCK_CTRL the guest kernel sees a vCPU
+            // stuck for the whole wait and prints a soft-lockup report on the
+            // shared console, which can land inside a dispatch frame. The
+            // call sets PVCLOCK_GUEST_STOPPED so the guest's watchdogs treat
+            // the gap as a host pause. EINVAL means the guest has no pvclock;
+            // any failure only loses this courtesy, never the run.
+            let _ = self.vcpu.kvmclock_ctrl();
+        }
         install_wake_handler();
         let stop = Arc::new(AtomicBool::new(false));
         // `pthread_t` is opaque and may be pointer-shaped, so it cannot cross
@@ -1630,6 +1646,7 @@ impl LinuxCell {
         };
         stop.store(true, Ordering::Relaxed);
         let _ = watchdog.join();
+        self.parked = end == BootEnd::Parked;
 
         Ok(BootReport {
             console: String::from_utf8_lossy(&self.serial.out).into_owned(),
