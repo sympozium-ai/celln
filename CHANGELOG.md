@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.21](https://github.com/sympozium-ai/celln/compare/v0.5.20...v0.5.21) (2026-09-17)
+
+
+### Bug Fixes
+
+* **parent:** keep parents alive across long worker turns ([daeef20](https://github.com/sympozium-ai/celln/commit/daeef204ba07d578defd2382e4df8447be9d94d2))
+* **parent:** keep parents alive across long worker turns ([cdb82e5](https://github.com/sympozium-ai/celln/commit/cdb82e567e605975908009533cda64a289dcbf63))
+
 ## [0.5.20](https://github.com/sympozium-ai/celln/compare/v0.5.19...v0.5.20) (2026-09-15)
 
 
