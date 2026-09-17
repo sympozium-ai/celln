@@ -118,7 +118,13 @@ impl ParentOwner {
                                 }
                             });
                         let failed = result.is_err();
-                        if failed {
+                        if let Err(error) = &result {
+                            // The reply below usually has no reader (turns are
+                            // submitted asynchronously), so this is the only
+                            // record of why the parent's context was lost.
+                            eprintln!(
+                                "celln parent: turn handler failed; parent context lost: {error}"
+                            );
                             owner_control.cancel();
                         }
                         // Publish readiness before acknowledgement: once the
