@@ -51,6 +51,17 @@ pub struct ReservedCapacity {
     pub egress_slots: u32,
 }
 
+fn observed(entry: &Entry) -> Status {
+    match entry.owner.as_ref().map(ParentOwner::status) {
+        Some(OwnerStatus::Initializing) => Status::Initializing,
+        Some(OwnerStatus::Ready) => Status::Ready,
+        Some(OwnerStatus::TurnActive) => Status::TurnActive,
+        Some(OwnerStatus::Stopping) => Status::Stopping,
+        Some(OwnerStatus::ContextLost) => Status::ContextLost,
+        None => entry.status,
+    }
+}
+
 impl ParentRegistry {
     /// Join only already-finished owners. Never cancel live work or wait for
     /// an active handler. Keep identities and context-loss status after release;
@@ -259,15 +270,23 @@ impl ParentRegistry {
             .state
             .lock()
             .map_err(|_| "parent registry unavailable")?;
-        let entry = scoped(&state, principal, incarnation)?;
-        Ok(match entry.owner.as_ref().map(ParentOwner::status) {
-            Some(OwnerStatus::Initializing) => Status::Initializing,
-            Some(OwnerStatus::Ready) => Status::Ready,
-            Some(OwnerStatus::TurnActive) => Status::TurnActive,
-            Some(OwnerStatus::Stopping) => Status::Stopping,
-            Some(OwnerStatus::ContextLost) => Status::ContextLost,
-            None => entry.status,
-        })
+        Ok(observed(scoped(&state, principal, incarnation)?))
+    }
+
+    /// Node-operator observation of every claimed incarnation, across all
+    /// principals. Identities and statuses only: it grants no access to an
+    /// owner, so it must sit behind node-operator authentication, never a
+    /// tenant credential. Holds the registry lock for a status read per entry.
+    pub fn statuses(&self) -> Result<Vec<(Hash, Status)>, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "parent registry unavailable")?;
+        Ok(state
+            .entries
+            .iter()
+            .map(|(id, entry)| (Hash(id.clone()), observed(entry)))
+            .collect())
     }
 
     /// Request cancellation only. Resources remain charged until stop joins.
@@ -398,6 +417,20 @@ mod tests {
             Ok(|bytes: &[u8]| Ok(bytes.to_vec()))
         })
     }
+    #[test]
+    fn operator_snapshot_lists_every_principals_owner_with_its_observed_status() {
+        let registry = ParentRegistry::new(4, 400).unwrap();
+        assert!(registry.statuses().unwrap().is_empty());
+        let id = Hash::of(b"snapshot");
+        spawn(&registry, &id).unwrap();
+        let live = registry.statuses().unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].0, id);
+        assert_eq!(live[0].1, registry.status("tenant-one", &id).unwrap());
+        registry.stop("tenant-one", &id).unwrap();
+        assert_eq!(registry.statuses().unwrap(), [(id, Status::Stopped)]);
+    }
+
     #[test]
     fn drain_joins_all_owners_and_permanently_closes_admission() {
         let registry = ParentRegistry::new(4, 400).unwrap();

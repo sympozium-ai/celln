@@ -199,6 +199,174 @@ pub fn list(root: &Path) -> Vec<Record> {
     out
 }
 
+/// Wire version of the read-only `GET /v1/cells` report.
+pub const REPORT_VERSION: &str = "celln.cells/v1";
+const DEFAULT_LIMIT: usize = 100;
+/// Parents listed from the journal; owners still live in the registry are
+/// listed in addition, so a busy node never hides a running parent.
+const MAX_PARENTS: usize = 50;
+/// Newest turns per parent. With [`MAX_PARENTS`] and [`KEEP`] this bounds one
+/// node's report well below the router's per-backend response cap.
+const MAX_TURNS: usize = 32;
+const MAX_ERROR_BYTES: usize = 1024;
+
+/// `?all=true&limit=N` — the HTTP spelling of `celln ps [-a]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListQuery {
+    /// Include finished cells, like `ps -a`. Default: live only.
+    pub all: bool,
+    /// Newest cells returned, `1..=500` (the registry keeps no more).
+    pub limit: usize,
+}
+
+impl ListQuery {
+    /// Strict: unknown, repeated or out-of-range parameters are refused rather
+    /// than ignored, so the router can forward the canonical form verbatim.
+    pub fn parse(query: Option<&str>) -> Result<Self, &'static str> {
+        let (mut all, mut limit) = (None, None);
+        for pair in query
+            .unwrap_or_default()
+            .split('&')
+            .filter(|p| !p.is_empty())
+        {
+            match pair.split_once('=') {
+                Some(("all", value)) if all.is_none() => {
+                    all = Some(match value {
+                        "true" => true,
+                        "false" => false,
+                        _ => return Err("all must be true or false"),
+                    });
+                }
+                Some(("limit", value)) if limit.is_none() => {
+                    limit = Some(
+                        value
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|n| (1..=KEEP).contains(n) && !value.starts_with('+'))
+                            .ok_or("limit must be an integer from 1 to 500")?,
+                    );
+                }
+                _ => return Err("unsupported or repeated cells query parameter"),
+            }
+        }
+        Ok(Self {
+            all: all.unwrap_or(false),
+            limit: limit.unwrap_or(DEFAULT_LIMIT),
+        })
+    }
+
+    /// Canonical request target; never echoes caller bytes.
+    pub fn target(&self) -> String {
+        format!("/v1/cells?all={}&limit={}", self.all, self.limit)
+    }
+}
+
+/// Split `/v1/cells[?query]`; `None` when the target is some other route.
+pub fn report_query(target: &str) -> Option<Option<&str>> {
+    match target.split_once('?') {
+        None => (target == "/v1/cells").then_some(None),
+        Some(("/v1/cells", query)) => Some(Some(query)),
+        Some(_) => None,
+    }
+}
+
+fn bounded(text: &str) -> &str {
+    let mut end = text.len().min(MAX_ERROR_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// What an operator dashboard may see of this node: the `ps` registry plus
+/// parent/turn *metadata*.
+///
+/// Privacy boundary: task text, messages and answers stay in the journal. Only
+/// identifiers, stages, timings and outcomes are copied out, through
+/// `warden::parent_journal::TurnSummary`, which has no content field at all.
+/// Host paths (`spec`) and pids are omitted too. Reads files and one brief
+/// registry snapshot; takes no lock a running turn waits on.
+pub fn report(
+    root: &Path,
+    node: &str,
+    live_parents: &[(celln_manifest::Hash, warden::parent_registry::Status)],
+    query: ListQuery,
+) -> serde_json::Value {
+    use warden::parent_registry::Status;
+    let cells: Vec<_> = list(root)
+        .into_iter()
+        .filter(|record| query.all || record.live().is_live())
+        .take(query.limit)
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id, "description": r.description, "status": r.live().label(),
+                "backend": r.backend, "started_ms": r.started_ms,
+                "finished_ms": r.finished_ms, "duration_ms": r.duration_ms(),
+                "error": r.error.as_deref().map(bounded), "tools": r.tools,
+            })
+        })
+        .collect();
+
+    let journal = root.join("parent-journal");
+    let mut summaries = warden::parent_journal::list_parents(&journal, MAX_PARENTS, MAX_TURNS);
+    for (id, status) in live_parents {
+        // Released owners (context lost / stopped) age out with the journal;
+        // anything still holding or possibly holding a VM is always shown.
+        let holds_resources = !matches!(status, Status::ContextLost | Status::Stopped);
+        if holds_resources && !summaries.iter().any(|summary| &summary.parent == id) {
+            summaries.push(
+                warden::parent_journal::summarize_parent(&journal, id, MAX_TURNS).unwrap_or(
+                    warden::parent_journal::ParentSummary {
+                        parent: id.clone(),
+                        updated_ms: 0,
+                        turns: Vec::new(),
+                        turns_total: 0,
+                    },
+                ),
+            );
+        }
+    }
+    let parents: Vec<_> = summaries
+        .into_iter()
+        .map(|summary| {
+            let live = live_parents
+                .iter()
+                .find(|(id, _)| id == &summary.parent)
+                .map(|(_, status)| *status);
+            let turns: Vec<_> = summary
+                .turns
+                .iter()
+                .map(|turn| {
+                    let mut value = serde_json::json!({
+                        "turnId": turn.turn_id, "stage": turn.stage, "child": turn.child,
+                        "timeout_ms": u64::try_from(turn.timeout_nanos / 1_000_000).unwrap_or(u64::MAX),
+                        "reserved_ms": turn.reserved_ms,
+                    });
+                    if let Some(succeeded) = turn.succeeded {
+                        value["succeeded"] = succeeded.into();
+                    }
+                    value
+                })
+                .collect();
+            serde_json::json!({
+                "incarnation": summary.parent,
+                // Same labels as `GET /v1/parents/<id>`. Without a live owner in
+                // this process the context is lost, whatever the journal says.
+                "status": format!("{:?}", live.unwrap_or(Status::ContextLost)),
+                "statusIsLiveOwnerObservation": live.is_some(),
+                // Null only for a live owner whose journal is unreadable.
+                "updated_ms": (summary.updated_ms != 0).then_some(summary.updated_ms),
+                "turns": turns,
+                "turns_total": summary.turns_total,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "apiVersion": REPORT_VERSION, "node": node, "cells": cells, "parents": parents,
+    })
+}
+
 /// Count cells whose owning process is still alive.
 ///
 /// The registry is the source of truth used by `celln ps`; node admission must
@@ -245,6 +413,37 @@ pub fn ago(then_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_query_is_strict_and_forwards_a_canonical_target() {
+        let default = ListQuery::parse(None).unwrap();
+        assert_eq!((default.all, default.limit), (false, 100));
+        assert_eq!(ListQuery::parse(Some("")).unwrap(), default);
+        let query = ListQuery::parse(Some("limit=500&all=true")).unwrap();
+        assert_eq!(query.target(), "/v1/cells?all=true&limit=500");
+        for bad in [
+            "all",
+            "all=TRUE",
+            "limit=-1",
+            "limit=1.5",
+            "all=true&all=true",
+            "a=b",
+        ] {
+            assert!(ListQuery::parse(Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(report_query("/v1/cells"), Some(None));
+        assert_eq!(report_query("/v1/cells?x"), Some(Some("x")));
+        assert_eq!(report_query("/v1/cells/x"), None);
+        assert_eq!(report_query("/v1/cellsx?all=true"), None);
+    }
+
+    #[test]
+    fn long_errors_are_truncated_on_a_character_boundary() {
+        let text = "é".repeat(MAX_ERROR_BYTES);
+        assert_eq!(bounded(&text).len(), MAX_ERROR_BYTES);
+        assert_eq!(bounded(&format!("x{text}")).len(), MAX_ERROR_BYTES - 1);
+        assert_eq!(bounded("short"), "short");
+    }
 
     #[test]
     fn ago_reads_like_english() {

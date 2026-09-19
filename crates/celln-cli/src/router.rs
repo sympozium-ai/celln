@@ -177,6 +177,7 @@ pub fn serve(
         client_token_file: client_token_file.to_owned(),
         capability_token_file: capability_token_file.map(Path::to_owned),
         capability_probe_active: AtomicBool::new(false),
+        cells_probe_active: AtomicBool::new(false),
     });
     credentials(&state).context("router credentials are missing, invalid or not distinct")?;
     let listener = TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
@@ -314,6 +315,9 @@ struct RouterState {
     client_token_file: PathBuf,
     capability_token_file: Option<PathBuf>,
     capability_probe_active: AtomicBool,
+    /// Separate from capability discovery so dashboard polling of `/v1/cells`
+    /// can never starve an admission-time capability probe, or vice versa.
+    cells_probe_active: AtomicBool,
 }
 
 impl RouterState {
@@ -484,10 +488,17 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
         let (scheme, token) = value.split_once(' ')?;
         scheme.eq_ignore_ascii_case("bearer").then_some(token)
     });
-    let is_capability_read = method == "GET" && path == "/v1/capabilities";
+    // The optional capability credential is a read-only *discovery* token. It
+    // opens exactly two GET routes, both aggregate fan-outs that mutate no
+    // ledger and return no tenant content: `/v1/capabilities` and `/v1/cells`
+    // (operator dashboard listing: identifiers, stages, timings, outcomes).
+    // Every other route — including `/v1/node` and all of `/v1/parents` —
+    // still requires the client credential.
+    let is_discovery_read = method == "GET"
+        && (path == "/v1/capabilities" || crate::cells::report_query(&path).is_some());
     let authorized = presented.is_some_and(|token| {
         constant_time_eq(token.as_bytes(), client_token.as_bytes())
-            || (is_capability_read
+            || (is_discovery_read
                 && read_token
                     .as_ref()
                     .is_some_and(|read| constant_time_eq(token.as_bytes(), read.as_bytes())))
@@ -529,6 +540,9 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
             )?;
         }
         ("GET", "/v1/capabilities") => capability_report(state, stream, &backend_token)?,
+        ("GET", target) if crate::cells::report_query(target).is_some() => {
+            cells_report(state, stream, target, &backend_token)?
+        }
         ("POST", "/v1/artifacts/prewarm") => forward_prewarm(
             stream,
             &mut reader,
@@ -631,6 +645,90 @@ fn capability_report(
             "parentRouting":state.parent_token_file.is_some(),
             "nodes":nodes,
         }),
+    )
+}
+
+/// `GET /v1/cells[?all=&limit=]`: every backend's `celln ps`-style listing.
+///
+/// Shaped like [`capability_report`]: bounded parallel fan-out (at most 32
+/// backends, 3 s connect, 2 s whole-response deadline), one in flight per
+/// router, and no request or owner ledger involvement — nothing is recorded,
+/// routed or retried. A backend that fails in any way yields a `reason`, never
+/// a partial or guessed report. The query is parsed here and re-serialized, so
+/// no caller bytes reach a backend request line.
+fn cells_report(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    target: &str,
+    token: &Option<String>,
+) -> Result<()> {
+    let query = crate::cells::report_query(target).flatten();
+    let target = match crate::cells::ListQuery::parse(query) {
+        Ok(query) => query.target(),
+        Err(error) => return reply(stream, 400, &serde_json::json!({"error":error})),
+    };
+    let backends = state.backends();
+    if backends.len() > 32 || state.cells_probe_active.swap(true, Ordering::AcqRel) {
+        return reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"cells probe unavailable"}),
+        );
+    }
+    struct ProbeGuard<'a>(&'a AtomicBool);
+    impl Drop for ProbeGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _guard = ProbeGuard(&state.cells_probe_active);
+    let target = target.as_str();
+    let nodes = std::thread::scope(|scope| {
+        let probes: Vec<_> = backends
+            .iter()
+            .enumerate()
+            .map(|(index, backend)| {
+                scope.spawn(move || {
+                    let report = (|| -> Result<serde_json::Value> {
+                        let addr = backend_to_addr(backend)?;
+                        let mut conn = connect(&addr)?;
+                        let credential = token.as_deref().context("backend credential missing")?;
+                        write!(conn, "GET {target} HTTP/1.1\r\nHost: dispatcher\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n")?;
+                        let response = read_probe_response(&mut conn, MAX_CELLS_RESPONSE)?;
+                        if parse_status(&response) != 200 {
+                            bail!("backend cells request failed");
+                        }
+                        let report: serde_json::Value =
+                            serde_json::from_str(extract_body(&response))?;
+                        if report["apiVersion"] != crate::cells::REPORT_VERSION
+                            || !report["cells"].is_array()
+                            || !report["parents"].is_array()
+                        {
+                            bail!("incompatible backend cells report");
+                        }
+                        Ok(report)
+                    })();
+                    match report {
+                        Ok(report) => serde_json::json!({"index":index,"report":report}),
+                        Err(_) => serde_json::json!({"index":index,"reason":"unreachable_unauthorized_or_incompatible"}),
+                    }
+                })
+            })
+            .collect();
+        probes
+            .into_iter()
+            .enumerate()
+            .map(|(index, probe)| {
+                probe
+                    .join()
+                    .unwrap_or_else(|_| serde_json::json!({"index":index,"reason":"probe_failed"}))
+            })
+            .collect::<Vec<_>>()
+    });
+    reply(
+        stream,
+        200,
+        &serde_json::json!({"apiVersion":crate::cells::REPORT_VERSION,"nodes":nodes}),
     )
 }
 
@@ -949,6 +1047,16 @@ fn read_response(stream: &mut TcpStream) -> Result<String> {
 }
 
 fn read_capability_response(stream: &mut TcpStream) -> Result<String> {
+    read_probe_response(stream, 65536)
+}
+
+/// One node's `/v1/cells` report is bounded by the dispatcher (500 cells, 50
+/// journal parents plus live owners, 32 turns each); this is a generous ceiling
+/// on that, times at most 32 backends per aggregate.
+const MAX_CELLS_RESPONSE: usize = 2 * 1024 * 1024;
+
+/// Discovery fan-out read: a 2 s deadline for the whole response, not per read.
+fn read_probe_response(stream: &mut TcpStream, max_response: usize) -> Result<String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut bytes = Vec::new();
     let mut buf = [0u8; 4096];
@@ -962,7 +1070,7 @@ fn read_capability_response(stream: &mut TcpStream) -> Result<String> {
             break;
         }
         bytes.extend_from_slice(&buf[..n]);
-        if bytes.len() > 65536 {
+        if bytes.len() > max_response {
             bail!("oversized capability response");
         }
     }
@@ -1208,6 +1316,169 @@ mod tests {
                 &headers(second),
                 ""
             )),
+            503
+        );
+    }
+
+    #[test]
+    fn cells_listing_accepts_the_discovery_token_which_still_opens_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        let path = dir.path().join("capability");
+        let discovery = "readonly-test-credential-at-least-24";
+        std::fs::write(&path, discovery).unwrap();
+        state.capability_token_file = Some(path);
+        let headers = |token| format!("Authorization: Bearer {token}\r\n");
+        // Read-only discovery, like /v1/capabilities: either credential works.
+        for token in [discovery, CLIENT_TOKEN] {
+            for target in ["/v1/cells", "/v1/cells?all=true&limit=5"] {
+                let response = request(&state, "GET", target, &headers(token), "");
+                assert_eq!(parse_status(&response), 200, "{target}");
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(extract_body(&response)).unwrap(),
+                    serde_json::json!({"apiVersion":"celln.cells/v1","nodes":[]})
+                );
+            }
+        }
+        // The discovery token is not widened beyond the two aggregate GETs.
+        for (method, target) in [
+            ("GET", "/v1/node"),
+            ("POST", "/v1/cells"),
+            ("GET", "/v1/cells/x"),
+            ("GET", "/v1/cellsx"),
+            ("GET", "/v1/parents"),
+            ("GET", "/v1/executions/x"),
+            ("POST", "/v1/executions"),
+        ] {
+            assert_eq!(
+                parse_status(&request(&state, method, target, &headers(discovery), "")),
+                401,
+                "{method} {target}"
+            );
+        }
+        for token in ["", BACKEND_TOKEN, "wrong"] {
+            assert_eq!(
+                parse_status(&request(&state, "GET", "/v1/cells", &headers(token), "")),
+                401
+            );
+        }
+        // Without a configured discovery credential only the client token works.
+        state.capability_token_file = None;
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "GET",
+                "/v1/cells",
+                &headers(discovery),
+                ""
+            )),
+            401
+        );
+        for target in ["/v1/cells?limit=0", "/v1/cells?all=1", "/v1/cells?x=y"] {
+            assert_eq!(
+                parse_status(&request(&state, "GET", target, &headers(CLIENT_TOKEN), "")),
+                400,
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn cells_fanout_reports_each_backend_or_a_reason_and_touches_no_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        let good = serde_json::json!({
+            "apiVersion":"celln.cells/v1","node":"node-a",
+            "cells":[{"id":"abc","status":"running"}],"parents":[],
+        });
+        let fixtures = [
+            (200, good.clone()),
+            (500, serde_json::json!({"error":"boom"})),
+            (
+                200,
+                serde_json::json!({"apiVersion":"future/unknown","cells":[],"parents":[]}),
+            ),
+        ];
+        std::thread::scope(|scope| {
+            for (status, body) in fixtures {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                state
+                    .backends
+                    .push(format!("http://{}", listener.local_addr().unwrap()));
+                scope.spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                    // Canonical re-serialization of the caller's query.
+                    assert_eq!(line, "GET /v1/cells?all=true&limit=7 HTTP/1.1\r\n");
+                    let mut seen_backend = false;
+                    loop {
+                        let line = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        if line.starts_with("Authorization:") {
+                            assert_eq!(line, format!("Authorization: Bearer {BACKEND_TOKEN}\r\n"));
+                            seen_backend = true;
+                        }
+                    }
+                    assert!(seen_backend);
+                    reply(&mut stream, status, &body).unwrap();
+                });
+            }
+            // An unreachable backend is a reason too, not a failed aggregate.
+            let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+            state
+                .backends
+                .push(format!("http://{}", closed.local_addr().unwrap()));
+            drop(closed);
+            let response = request(
+                &state,
+                "GET",
+                "/v1/cells?limit=7&all=true",
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                "",
+            );
+            assert_eq!(parse_status(&response), 200);
+            assert!(!response.contains(BACKEND_TOKEN));
+            let report: serde_json::Value = serde_json::from_str(extract_body(&response)).unwrap();
+            let reason = "unreachable_unauthorized_or_incompatible";
+            assert_eq!(
+                report,
+                serde_json::json!({"apiVersion":"celln.cells/v1","nodes":[
+                    {"index":0,"report":good},
+                    {"index":1,"reason":reason},
+                    {"index":2,"reason":reason},
+                    {"index":3,"reason":reason},
+                ]})
+            );
+        });
+        // Discovery records nothing: no execution, parent or provision owner.
+        for ledger in ["ownership", "ownership/parents", "ownership/provisions"] {
+            let entries = std::fs::read_dir(dir.path().join(ledger))
+                .unwrap()
+                .filter(|entry| entry.as_ref().unwrap().path().is_file())
+                .count();
+            assert_eq!(entries, 0, "{ledger}");
+        }
+        // One aggregate in flight per router, independent of capability probes.
+        assert!(!state.cells_probe_active.load(Ordering::Acquire));
+        state.capability_probe_active.store(true, Ordering::Release);
+        state.backends.clear();
+        let auth = format!("Authorization: Bearer {CLIENT_TOKEN}\r\n");
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/cells", &auth, "")),
+            200
+        );
+        state.cells_probe_active.store(true, Ordering::Release);
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/cells", &auth, "")),
+            503
+        );
+        state.cells_probe_active.store(false, Ordering::Release);
+        state.backends = vec!["http://127.0.0.1:1".into(); 33];
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/cells", &auth, "")),
             503
         );
     }
@@ -1881,6 +2152,7 @@ mod tests {
             client_token_file,
             capability_token_file: None,
             capability_probe_active: AtomicBool::new(false),
+            cells_probe_active: AtomicBool::new(false),
         }
     }
 

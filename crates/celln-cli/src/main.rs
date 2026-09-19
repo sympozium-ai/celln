@@ -193,7 +193,8 @@ enum Cmd {
         /// Both files are reread per request so rotation does not need a restart.
         #[arg(long)]
         client_token_file: PathBuf,
-        /// Optional read-only bearer credential for GET /v1/capabilities only.
+        /// Optional read-only discovery credential: GET /v1/capabilities and
+        /// GET /v1/cells only.
         #[arg(long)]
         capability_token_file: Option<PathBuf>,
         /// Optional operator parent principal credential for enduring routes.
