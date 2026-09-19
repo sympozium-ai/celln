@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.24](https://github.com/sympozium-ai/celln/compare/v0.5.23...v0.5.24) (2026-09-19)
+
+
+### Features
+
+* **starter:** configurable per-request output cap for a model backend ([ed40f9b](https://github.com/sympozium-ai/celln/commit/ed40f9b9bc75a492bb1712f56b0e25fb9d7d2c4c))
+* **starter:** configurable per-request output cap for a model backend ([66dfa61](https://github.com/sympozium-ai/celln/commit/66dfa6110447fdcb79b97a9770fa624641e31302))
+
 ## [0.5.23](https://github.com/sympozium-ai/celln/compare/v0.5.22...v0.5.23) (2026-09-19)
 
 
