@@ -11,6 +11,7 @@ use std::time::Duration;
 mod post;
 pub use post::{
     model_endpoint_host, model_endpoint_target, JsonPostGrant, ModelEndpoint, ModelProtocol,
+    DEFAULT_REQUEST_OUTPUT_TOKENS, REQUEST_OUTPUT_TOKENS,
 };
 
 /// Independent credential-free GET authority for native starter tools.

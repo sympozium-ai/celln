@@ -83,6 +83,7 @@ fn config(names: &[&str]) -> Config {
         max_calls: 6,
         require_tool_call: false,
         allow_insecure: false,
+        max_tokens: DEFAULT_MAX_TOKENS,
         tools: names
             .iter()
             .map(|name| Tool {
@@ -594,7 +595,7 @@ fn an_answer_starved_by_reasoning_is_diagnosed_as_such() {
         ))
         .unwrap_err()
         .to_string();
-        assert_eq!(error, EMPTY_AT_LENGTH);
+        assert_eq!(error, empty_at_length(512));
         assert!(error.starts_with("final answer is empty"));
         assert!(error.contains("512 tokens") && error.contains("disable thinking"));
         // The reasoning text is never quoted into the error.
@@ -606,8 +607,20 @@ fn an_answer_starved_by_reasoning_is_diagnosed_as_such() {
         outcome(finished(json!({"role":"assistant"}), "length"))
             .unwrap_err()
             .to_string(),
-        EMPTY_AT_LENGTH
+        empty_at_length(512)
     );
+    // The diagnosis names the budget this worker was actually given.
+    let mut roomy = config(&[]);
+    roomy.max_tokens = 2048;
+    let error = run(
+        &roomy,
+        |_| Ok(finished(json!({"role":"assistant","content":""}), "length")),
+        |_, _| panic!("no tools requested"),
+        |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("(2048 tokens)") && error.contains("maxOutputTokens"));
     // An empty answer that did not hit the ceiling keeps the plain message.
     assert_eq!(
         outcome(finished(json!({"role":"assistant","content":""}), "stop"))
@@ -650,4 +663,106 @@ fn llama_server_shaped_responses_with_extra_fields_parse_as_before() {
     assert!(!serde_json::to_string(&events)
         .unwrap()
         .contains("capital of France"));
+}
+
+fn requested_max_tokens(cfg: &Config) -> Vec<Value> {
+    let tool_call = serde_json::to_vec(
+        &json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{
+        "role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function",
+            "function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]}}]}),
+    )
+    .unwrap();
+    let mut seen = Vec::new();
+    run(
+        cfg,
+        |wire| {
+            let request: Value = serde_json::from_slice(wire).unwrap();
+            seen.push(request["body"]["max_tokens"].clone());
+            Ok(if seen.len() == 1 {
+                tool_call.clone()
+            } else {
+                finished(json!({"role":"assistant","content":"done"}), "stop")
+            })
+        },
+        |_, _| Ok(br#"{"text":"ok"}"#.to_vec()),
+        |_| {},
+    )
+    .unwrap();
+    seen
+}
+
+#[test]
+fn every_model_request_asks_for_the_configured_cap_and_512_when_none_is_given() {
+    // A template written before the field existed: no `max_tokens`.
+    let mut raw = serde_json::to_value(config(&["echo"])).unwrap();
+    assert!(raw.get("max_tokens").is_none());
+    let absent: Config = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(absent.max_tokens, 512);
+    assert_eq!(requested_max_tokens(&absent), [json!(512), json!(512)]);
+    // The host-delivered cap is sent in every request of the loop.
+    for cap in [256u64, 2048, 4096] {
+        raw["max_tokens"] = json!(cap);
+        let cfg: Config = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(requested_max_tokens(&cfg), [json!(cap), json!(cap)]);
+        assert_eq!(serde_json::to_value(&cfg).unwrap()["max_tokens"], cap);
+    }
+    // Outside the contract the worker refuses before any model request.
+    for cap in [json!(0), json!(255), json!(4097), json!(-1), json!("512")] {
+        raw["max_tokens"] = cap;
+        let refused = serde_json::from_value::<Config>(raw.clone())
+            .map_err(anyhow::Error::from)
+            .and_then(|cfg| {
+                run(
+                    &cfg,
+                    |_| panic!("no model request"),
+                    |_, _| panic!("no tool"),
+                    |_| {},
+                )
+            });
+        assert!(refused.is_err());
+    }
+}
+
+#[test]
+fn the_default_cap_keeps_the_serialized_template_existing_fleets_hashed() {
+    let mut cfg = config(&[]);
+    cfg.task.clear();
+    // Literal output of the struct as it was before `max_tokens` existed.
+    let before = r#"{"contract":"celln.json-tools/v1","task":"","system":"Bounded agent","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","tools":[],"max_turns":6,"max_calls":6}"#;
+    assert_eq!(serde_json::to_string(&cfg).unwrap(), before);
+    // Stating the default explicitly is the same template.
+    let mut explicit: Value = serde_json::from_str(before).unwrap();
+    explicit["max_tokens"] = json!(512);
+    let explicit: Config = serde_json::from_value(explicit).unwrap();
+    assert_eq!(serde_json::to_string(&explicit).unwrap(), before);
+    cfg.max_tokens = 4096;
+    assert_eq!(
+        serde_json::to_string(&cfg).unwrap(),
+        format!(r#"{},"max_tokens":4096}}"#, &before[..before.len() - 1])
+    );
+}
+
+#[test]
+fn an_answer_longer_than_the_parent_accepts_fails_the_turn_with_the_remedy() {
+    // 4096 tokens can be well over 8192 bytes.
+    let mut cfg = config(&[]);
+    cfg.max_tokens = 4096;
+    let answer = |bytes: usize| {
+        run(
+            &cfg,
+            |_| {
+                Ok(finished(
+                    json!({"role":"assistant","content":"a".repeat(bytes)}),
+                    "length",
+                ))
+            },
+            |_, _| panic!("no tools requested"),
+            |_| {},
+        )
+    };
+    assert_eq!(answer(MAX_ANSWER_BYTES).unwrap().len(), 8192);
+    assert_eq!(
+        answer(MAX_ANSWER_BYTES + 1).unwrap_err().to_string(),
+        "final answer exceeds 8192 bytes: ask for a shorter answer or lower the backend's maxOutputTokens"
+    );
 }

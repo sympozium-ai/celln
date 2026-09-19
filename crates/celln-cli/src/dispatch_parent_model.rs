@@ -122,6 +122,7 @@ pub(super) struct ChildBrokers {
     url: String,
     model: String,
     requests: u64,
+    max_tokens: u64,
     claimed: BTreeSet<String>,
     workspace: Option<warden::workspace_broker::Owner>,
 }
@@ -150,6 +151,7 @@ impl ChildBrokers {
             url: template.policy().url.clone(),
             model: template.policy().model.clone(),
             requests: template.policy().max_turns as u64,
+            max_tokens: template.policy().max_tokens,
             claimed: BTreeSet::new(),
             workspace: None,
         };
@@ -215,11 +217,14 @@ impl ChildBrokers {
             || profile.model != self.model
             || warden::egress::model_endpoint_target(&profile.url, profile.allow_insecure).is_err()
             || !profile.credential_file.is_absolute()
-            || profile.max_output_tokens != 512
+            // The operator's per-request cap, and the one the admitted
+            // template tells the worker to request: they must be the same.
+            || !warden::egress::REQUEST_OUTPUT_TOKENS.contains(&profile.max_output_tokens)
+            || profile.max_output_tokens != self.max_tokens
             || profile.max_requests != self.requests
             || !(1..=6).contains(&profile.max_requests)
             || profile.max_requests > self.binding.turn_model_requests
-            || profile.max_total_output_tokens < profile.max_requests * 512
+            || profile.max_total_output_tokens < profile.max_requests * profile.max_output_tokens
             || profile.max_total_output_tokens > self.binding.turn_output_tokens
         {
             return Err("parent model profile policy mismatch".into());
@@ -320,7 +325,7 @@ impl ChildBrokers {
             url: profile.url,
             model: profile.model,
             bearer_token_file: profile.credential_file,
-            max_output_tokens: 512,
+            max_output_tokens: profile.max_output_tokens,
             max_total_output_tokens: profile.max_total_output_tokens,
             parameters: profile.parameters,
         });
@@ -368,18 +373,30 @@ mod tests {
         fixture_with(serde_json::json!({})).unwrap()
     }
     fn fixture_with(parameters: serde_json::Value) -> Result<Fixture, String> {
+        fixture_at(parameters, 512, 512, 512, 512)
+    }
+    /// One request per turn: `template_cap` is what the worker is told to
+    /// request, `profile_cap` and `profile_total` what the profile grants,
+    /// `turn_tokens` what the parent permit reserves for a turn.
+    fn fixture_at(
+        parameters: serde_json::Value,
+        template_cap: u64,
+        profile_cap: u64,
+        profile_total: u64,
+        turn_tokens: u64,
+    ) -> Result<Fixture, String> {
         let root = tempfile::tempdir().unwrap();
         let request = super::super::parent_tests::request();
         let mut binding = super::super::parent_tests::binding(&request);
         binding.turn_model_requests = 1;
-        binding.turn_output_tokens = 512;
+        binding.turn_output_tokens = turn_tokens;
         binding.total_model_requests = 2;
-        binding.total_output_tokens = 1024;
+        binding.total_output_tokens = 2 * turn_tokens;
         let template = Template::new(
             serde_json::from_value(serde_json::json!({
                 "contract":"celln.json-tools/v1","task":"","system":"host persona",
                 "url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat",
-                "tools":[],"max_turns":1,"max_calls":0
+                "tools":[],"max_turns":1,"max_calls":0,"max_tokens":template_cap
             }))
             .unwrap(),
         )
@@ -396,8 +413,8 @@ mod tests {
             url: template.policy().url.clone(),
             model: template.policy().model.clone(),
             max_requests: 1,
-            max_output_tokens: 512,
-            max_total_output_tokens: 512,
+            max_output_tokens: profile_cap,
+            max_total_output_tokens: profile_total,
             allow_insecure: false,
             workspace: None,
             fetch: None,
@@ -431,14 +448,49 @@ mod tests {
                 memory_bytes: binding.child_memory_bytes,
                 timeout: std::time::Duration::from_millis(binding.turn_timeout_ms),
                 model_requests: 1,
-                output_tokens: 512,
+                output_tokens: turn_tokens,
             },
             2,
             2,
-            1024,
+            2 * turn_tokens,
         )
         .unwrap();
         Ok((root, issuer, lease, path))
+    }
+    #[test]
+    fn the_profile_cap_is_bounded_matches_the_template_and_reaches_the_grant() {
+        let none = || serde_json::json!({});
+        for cap in [256, 512, 4096] {
+            let (_root, mut issuer, mut lease, _path) =
+                fixture_at(none(), cap, cap, cap, cap).unwrap();
+            let policy = issuer.for_turn(&reserve(&mut lease, "one")).unwrap();
+            let grant = &policy.json_posts[0];
+            assert_eq!(
+                (grant.max_output_tokens, grant.max_total_output_tokens),
+                (cap, cap)
+            );
+            // Every relation holds with the cap in place of the old literal:
+            // the total must afford each request at the cap and may not
+            // exceed what the permit reserves for a turn.
+            assert!(fixture_at(none(), cap, cap, cap - 1, cap).is_err());
+            assert!(fixture_at(none(), cap, cap, cap + 1, cap).is_err());
+            assert!(fixture_at(none(), cap, cap, cap + 1, cap + 1).is_ok());
+        }
+        // Outside 256..=4096 no profile is accepted. The worker template
+        // refuses such a cap itself, so it stays at a legal one here.
+        for cap in [0u64, 255, 4097, 1 << 40] {
+            assert_eq!(
+                fixture_at(none(), 512, cap, cap.max(512), cap.max(512))
+                    .err()
+                    .unwrap(),
+                "parent model profile policy mismatch"
+            );
+        }
+        // A profile may not grant another cap than the worker will request:
+        // below, every model request would be refused; above, the operator's
+        // pinned template and profile disagree about the backend.
+        assert!(fixture_at(none(), 4096, 512, 4096, 4096).is_err());
+        assert!(fixture_at(none(), 512, 4096, 4096, 4096).is_err());
     }
     #[test]
     fn a_profile_without_parameters_keeps_the_bytes_existing_fleets_pinned() {
@@ -467,6 +519,20 @@ mod tests {
             "a".repeat(64),
             "b".repeat(64)
         );
+        assert_eq!(serde_json::to_string(&profile).unwrap(), before);
+        // A configurable cap added no field: only a non-default value moves
+        // the two numbers, and with them the hash.
+        profile.max_output_tokens = 4096;
+        profile.max_total_output_tokens = 6 * 4096;
+        assert_eq!(
+            serde_json::to_string(&profile).unwrap(),
+            before.replace(
+                r#""maxOutputTokens":512,"maxTotalOutputTokens":3072"#,
+                r#""maxOutputTokens":4096,"maxTotalOutputTokens":24576"#
+            )
+        );
+        profile.max_output_tokens = 512;
+        profile.max_total_output_tokens = 3072;
         assert_eq!(serde_json::to_string(&profile).unwrap(), before);
         // A profile written before this field existed still reads, as none.
         let old: Profile = serde_json::from_str(&before).unwrap();

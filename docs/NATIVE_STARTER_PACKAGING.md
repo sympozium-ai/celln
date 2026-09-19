@@ -92,7 +92,11 @@ tokens. Per-turn limits are six model requests and 3072 output tokens, which
 affords the worker template's loop of up to four tool calls (`max_calls: 4`,
 `max_turns: 6`). Every turn reserves its whole per-turn allowance from the
 parent totals, so `hostLimits` must afford `maxTurns` × 6 requests and
-`maxTurns` × 3072 tokens for every turn to be usable. Files
+`maxTurns` × 3072 tokens for every turn to be usable. Those token figures are
+for the default per-request cap of 512; `modelConnection.maxOutputTokens`
+(below) scales them. `hostLimits` ranges: `leaseSeconds` 60..=86400, `maxTurns`
+1..=1024, `maxModelRequests` 6..=6144, `maxOutputTokens` from one turn's
+allowance up to 25165824 (1024 turns × 6 requests × 4096 tokens). Files
 are bounded to eight, 4096 bytes each, 16384 bytes total. Read/write and HTTPS
 effects each have four-operation limits. This is not arbitrary tool or model
 configuration. The credential path must be outside controller-mounted state;
@@ -111,7 +115,8 @@ strict (unknown fields refuse):
   "model": "qwen3",
   "credentialProfile": "fleet-local",
   "allowInsecure": true,
-  "parameters": {"chat_template_kwargs": {"enable_thinking": false}}
+  "parameters": {"chat_template_kwargs": {"enable_thinking": false}},
+  "maxOutputTokens": 2048
 }
 ```
 
@@ -150,24 +155,81 @@ byte-for-byte what they were before this field existed. When present:
   coincide with a field already in the outgoing body, the request is refused
   rather than the field overwritten.
 
-Why it exists: every model request is capped at 512 output tokens. A reasoning
-model served by llama-server (Qwen, for one) can spend all 512 on reasoning and
+#### `maxOutputTokens`: the per-request output cap
+
+`maxOutputTokens` is an optional integer, **256..=4096**; absent means 512. It
+is the most output tokens one model request of this backend may produce. A
+value outside the range refuses from the plan alone, before the package, the
+store or the output directory are touched. A plan without the field, or with
+exactly 512, produces byte-for-byte the profile, native template, catalogue
+and `configured.json` it produced before the field existed, so existing
+fleets' hashes do not change. With another value C:
+
+- **The pinned model profile** carries it: `maxOutputTokens: C`,
+  `maxRequests: 6`, `maxTotalOutputTokens: 6 × C`. The host grants each
+  worker's broker exactly that, and the broker refuses a request asking for
+  more than C. The profile is accepted only if its cap is in range, equals the
+  cap in the worker template, its total affords every request at the cap and
+  fits the turn allowance of the parent permit.
+- **A turn reserves 6 × C output tokens** (six model requests, as before).
+  `native-template.json` states it as `turnModelRequests: 6` and
+  `turnOutputTokens: 6 × C`; an installer reads the per-turn allowance there.
+- **Lifetime totals must cover it.** Every turn reserves its whole allowance,
+  so `hostLimits.maxOutputTokens` must be at least 6 × C (one turn) and should
+  be `maxTurns` × 6 × C for every turn to be usable. Below one turn the plan is
+  refused naming both numbers, for example `hostLimits.maxOutputTokens 3072 is
+  below one turn's allowance of 24576 output tokens (6 model requests of
+  4096)`. When the plan states no `hostLimits.maxOutputTokens`, the default
+  scales the same way: 12 turns × 6 × C (36864 at 512, 294912 at 4096).
+  `maxModelRequests` does not depend on the cap.
+- **The worker learns its cap from the host.** The worker template gains
+  `"max_tokens": C` (only when C is not 512), the worker sends it as
+  `max_tokens` in every model request, and refuses a value outside
+  256..=4096. `configured.json` repeats it as `model.maxOutputTokens` (again
+  only when not 512).
+- **It needs a starter package built with this Celln.** A worker built earlier
+  always requests 512 and refuses a template that names `max_tokens`. New
+  packages say `"harness": {"maxTokensConfigurable": true}` in `package.json`;
+  for a package without it, a non-default `maxOutputTokens` is refused with
+  `this starter package's worker always requests 512 output tokens; rebuild
+  the package with this Celln to configure maxOutputTokens`. Everything else
+  (profile checks, grants, scaled totals, the raised lifetime maximum) is host
+  code. An existing package keeps working unchanged at the default.
+
+Choosing a value: 512 suits non-reasoning chat and tool use. A reasoning model
+left thinking needs 2048–4096, at the cost of four to eight times the token
+budget per turn and longer turns. The worker's turn timeout is 60 s for the
+whole turn, tool calls included: a 4096-token request at 11 tokens/s takes
+over six minutes and cannot finish, so a slow local model needs a lower cap
+or thinking disabled through `parameters`. An answer is still at most 8192
+bytes. With a large cap a model can exceed that; the turn then fails with
+`final answer exceeds 8192 bytes: ask for a shorter answer or lower the
+backend's maxOutputTokens`, and the parent and its conversation stay.
+
+The one-shot Harness grants (`celln.dev/harness-grant-v1`/`v2`) are not
+affected: they keep requiring exactly 512 per request.
+
+Why parameters exist: by default every model request is capped at 512 output
+tokens. A reasoning model served by llama-server (Qwen, for one) can spend all
+512 on reasoning and
 return `finish_reason: "length"` with empty content; the server flag
 `--reasoning-budget 0` did not change that, while
 `"chat_template_kwargs": {"enable_thinking": false}` in the request did. A
 worker built from this revision on reports that case as `final answer is
 empty: the model used its whole output budget (512 tokens) without answering;
-for a reasoning model, disable thinking in the backend's model parameters`
-(guest code: it needs a new starter package; older packages say only `final
+for a reasoning model, disable thinking in the backend's model parameters or
+raise the backend's maxOutputTokens` (the number is the configured cap; guest
+code: it needs a new starter package; older packages say only `final
 answer is empty`). Parameter injection itself is host-only and works with
 existing packages.
 
 **Warning.** Parameters are sent verbatim and Celln does not know what they
 mean to a provider. One that changes the response shape or the request
 semantics can make every turn fail: Anthropic `thinking` requires a larger
-`max_tokens` than the fixed 512 and is refused by the provider; `logprobs`,
+`max_tokens` than the default 512 (raise `maxOutputTokens` with it); `logprobs`,
 `response_format` or a provider-side tool switch may produce responses the
-worker does not accept. Output ceilings are not adjustable here. Prefer the
+worker does not accept. The output ceiling is not a parameter: `max_tokens`
+stays reserved and is set only through `maxOutputTokens`. Prefer the
 smallest set that fixes an observed problem, and run a turn after changing it.
 
 Conversation bounds of an enduring parent: a user message is at most 2048

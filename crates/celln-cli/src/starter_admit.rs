@@ -260,6 +260,44 @@ mod tests {
         let receipt: Value =
             serde_json::from_slice(&fs::read(long_lived.join("configured.json")).unwrap()).unwrap();
         assert_eq!(receipt["hostLimits"]["leaseSeconds"], 86400);
+        // A backend cap scales the turn allowance and the default totals,
+        // reaches the worker template and the pinned profile, and is stated
+        // in the receipt; the default plan above named none of it.
+        assert!(receipt["model"].get("maxOutputTokens").is_none());
+        assert!(native["template"].get("max_tokens").is_none());
+        let roomy = dir.path().join("configured-roomy");
+        let roomy_plan = dir.path().join("config-plan-roomy.json");
+        let mut capped: Value = serde_json::from_slice(&fs::read(&config_plan).unwrap()).unwrap();
+        capped["output"] = json!(roomy);
+        capped["modelConnection"] = json!({"provider":"llama-server","protocol":"openai-chat",
+            "endpoint":"http://10.0.0.5:8080/v1/chat/completions","model":"qwen",
+            "credentialProfile":"local","allowInsecure":true,"maxOutputTokens":2048});
+        fs::write(&roomy_plan, serde_json::to_vec(&capped).unwrap()).unwrap();
+        assert_eq!(
+            crate::starter_configure::run(&roomy_plan, &root).unwrap(),
+            0
+        );
+        let native: Value =
+            serde_json::from_slice(&fs::read(roomy.join("native-template.json")).unwrap()).unwrap();
+        assert_eq!(native["template"]["max_tokens"], 2048);
+        assert_eq!(native["turnModelRequests"], 6);
+        assert_eq!(native["turnOutputTokens"], 12288);
+        assert_eq!(native["totalOutputTokens"], 147_456);
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(roomy.join("configured.json")).unwrap()).unwrap();
+        assert_eq!(receipt["model"]["maxOutputTokens"], 2048);
+        assert_eq!(receipt["hostLimits"]["maxOutputTokens"], 147_456);
+        let pinned = native["modelProfile"].as_str().unwrap();
+        let profile: Value = serde_json::from_slice(
+            &fs::read(
+                root.join("trusted-parent-models")
+                    .join(format!("{}.json", &pinned[7..])),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(profile["maxOutputTokens"], 2048);
+        assert_eq!(profile["maxTotalOutputTokens"], 12288);
         let bad = dir.path().join("configured-bad");
         let bad_plan = dir.path().join("config-plan-bad.json");
         plan["output"] = json!(bad);
