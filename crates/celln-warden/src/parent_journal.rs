@@ -231,6 +231,12 @@ fn parent_directory(root: &Path, parent: &Hash) -> PathBuf {
 /// context loss even when this returns ParentCommitted. Reads concurrent with
 /// the owner can lag publication, so this is not a linearizable serving status.
 pub fn inspect_turn(root: &Path, parent: &Hash, turn: &str) -> io::Result<TurnStatus> {
+    open_historical(root, parent)?.turn_status(turn)
+}
+
+/// Read-only view of an existing incarnation. Never published through and never
+/// returned to callers, so it cannot become a second writer for the tombstone.
+fn open_historical(root: &Path, parent: &Hash) -> io::Result<ParentJournal> {
     let journal = ParentJournal {
         directory: parent_directory(root, parent),
         parent: parent.clone(),
@@ -243,33 +249,136 @@ pub fn inspect_turn(root: &Path, parent: &Hash, turn: &str) -> io::Result<TurnSt
     {
         return Err(invalid());
     }
-    let reservation = journal.reservation(turn)?;
-    let committed = match read_record::<CommittedRecord>(
-        &journal
-            .directory
-            .join(ParentJournal::filename(turn, "committed")),
-    ) {
-        Ok(record) => {
-            if record.version != 1
-                || record.parent != *parent
-                || record.child != reservation.child
-                || record.turn_id != turn
-            {
-                return Err(invalid());
+    Ok(journal)
+}
+
+/// Operator-facing turn observation: identifiers, stage, outcome and limits.
+/// Deliberately has no field that could carry task, message or answer text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnSummary {
+    pub turn_id: String,
+    /// `reserved` | `child-destroyed` | `parent-committed`, as [`TurnStatus`].
+    pub stage: &'static str,
+    pub child: Hash,
+    /// Known only once the owner recorded the child's destruction.
+    pub succeeded: Option<bool>,
+    pub timeout_nanos: u128,
+    /// Reservation file mtime, Unix milliseconds. Advisory ordering only.
+    pub reserved_ms: u64,
+}
+
+/// Durable observations of one incarnation. Like [`inspect_turn`], this proves
+/// nothing about a live owner and authorizes no replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParentSummary {
+    pub parent: Hash,
+    /// Journal directory mtime, Unix milliseconds.
+    pub updated_ms: u64,
+    /// Newest first, at most the requested bound.
+    pub turns: Vec<TurnSummary>,
+    /// Reservation files present, including ones omitted or skipped above.
+    pub turns_total: usize,
+}
+
+fn modified_ms(metadata: &fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Summarize one incarnation without reading it for execution. Turns whose
+/// records are unreadable, inconsistent or mid-publication are skipped rather
+/// than failing the listing; a missing or foreign `parent.json` is an error.
+pub fn summarize_parent(root: &Path, parent: &Hash, max_turns: usize) -> io::Result<ParentSummary> {
+    let journal = open_historical(root, parent)?;
+    let updated_ms = modified_ms(&fs::metadata(&journal.directory)?);
+    let mut reserved: Vec<(u64, PathBuf)> = fs::read_dir(&journal.directory)?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.ends_with(".reserved.json"))
+        })
+        .filter_map(|entry| Some((modified_ms(&entry.metadata().ok()?), entry.path())))
+        .collect();
+    let turns_total = reserved.len();
+    reserved.sort_by(|a, b| b.cmp(a));
+    let turns = reserved
+        .into_iter()
+        .take(max_turns)
+        .filter_map(|(reserved_ms, path)| {
+            // The file name is a hash of the turn id; recover the id from the
+            // record, then let the ordinary validated path re-derive the name.
+            let record: Reservation = read_record(&path).ok()?;
+            let (turn_id, timeout_nanos) = (record.request.turn_id, record.timeout_nanos);
+            if path.file_name()?.to_str()? != ParentJournal::filename(&turn_id, "reserved") {
+                return None; // Filed under another turn's name: never listed twice.
             }
-            true
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error),
+            let (stage, child, succeeded) = match journal.turn_status(&turn_id).ok()? {
+                TurnStatus::Reserved(reserved) => ("reserved", reserved.child, None),
+                TurnStatus::ChildDestroyed(destroyed) => (
+                    "child-destroyed",
+                    destroyed.child,
+                    Some(destroyed.succeeded),
+                ),
+                TurnStatus::ParentCommitted(destroyed) => (
+                    "parent-committed",
+                    destroyed.child,
+                    Some(destroyed.succeeded),
+                ),
+            };
+            Some(TurnSummary {
+                turn_id,
+                stage,
+                child,
+                succeeded,
+                timeout_nanos,
+                reserved_ms,
+            })
+        })
+        .collect();
+    Ok(ParentSummary {
+        parent: parent.clone(),
+        updated_ms,
+        turns,
+        turns_total,
+    })
+}
+
+/// Newest `max_parents` incarnations by journal directory mtime. Read-only and
+/// lock-free: a listing concurrent with an owner may lag its publications.
+/// Unreadable, malformed or foreign directories are skipped, not reported.
+pub fn list_parents(root: &Path, max_parents: usize, max_turns: usize) -> Vec<ParentSummary> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
     };
-    match journal.destroyed(turn, &reservation.child) {
-        Ok(record) if committed => Ok(TurnStatus::ParentCommitted(record)),
-        Ok(record) => Ok(TurnStatus::ChildDestroyed(record)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound && !committed => {
-            Ok(TurnStatus::Reserved(reservation))
-        }
-        Err(error) => Err(error),
-    }
+    let mut directories: Vec<(u64, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let metadata = entry.metadata().ok()?;
+            metadata
+                .is_dir()
+                .then(|| (modified_ms(&metadata), entry.path()))
+        })
+        .collect();
+    directories.sort_by(|a, b| b.cmp(a));
+    directories
+        .into_iter()
+        .filter_map(|(_, directory)| {
+            // The directory name is a hash of the identity; the identity itself
+            // is only in the record, and must hash back to this directory.
+            let identity: ParentRecord = read_record(&directory.join("parent.json")).ok()?;
+            (parent_directory(root, &identity.parent) == directory)
+                .then(|| summarize_parent(root, &identity.parent, max_turns).ok())
+                .flatten()
+        })
+        .take(max_parents)
+        .collect()
 }
 
 fn invalid() -> io::Error {
@@ -395,6 +504,34 @@ impl ParentJournal {
                 output_tokens: turn.limits.output_tokens,
             },
         )
+    }
+
+    fn turn_status(&self, turn: &str) -> io::Result<TurnStatus> {
+        let reservation = self.reservation(turn)?;
+        let committed = match read_record::<CommittedRecord>(
+            &self.directory.join(Self::filename(turn, "committed")),
+        ) {
+            Ok(record) => {
+                if record.version != 1
+                    || record.parent != self.parent
+                    || record.child != reservation.child
+                    || record.turn_id != turn
+                {
+                    return Err(invalid());
+                }
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error),
+        };
+        match self.destroyed(turn, &reservation.child) {
+            Ok(record) if committed => Ok(TurnStatus::ParentCommitted(record)),
+            Ok(record) => Ok(TurnStatus::ChildDestroyed(record)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound && !committed => {
+                Ok(TurnStatus::Reserved(reservation))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn reservation(&self, turn: &str) -> io::Result<Reservation> {
@@ -667,5 +804,118 @@ mod tests {
         publish(&journal.directory, &ParentJournal::filename("one", "committed"),
             &serde_json::json!({"version":1,"parent":turn.parent,"child":turn.child,"turnId":"one"})).unwrap();
         assert!(inspect_turn(root.path(), &turn.parent, "one").is_err());
+    }
+
+    fn reserved_turn(parent: &Hash, turn_id: &str, task: &str) -> ReservedTurn {
+        ParentLease::new(
+            parent.clone(),
+            Duration::from_secs(60),
+            TurnLimits {
+                memory_bytes: 4096,
+                timeout: Duration::from_millis(1500),
+                model_requests: 0,
+                output_tokens: 0,
+            },
+            1,
+            0,
+            0,
+        )
+        .unwrap()
+        .reserve(
+            serde_json::json!({"apiVersion":"celln.parent-turn/v1","turnId":turn_id,"task":task})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn listing_maps_every_stage_without_any_content_field() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = Hash::of(b"listed");
+        let mut journal = ParentJournal::create(root.path(), parent.clone()).unwrap();
+        for id in ["pending", "failed", "done"] {
+            let turn = reserved_turn(&parent, id, "PLANTED-TASK");
+            journal.reserve(&turn).unwrap();
+            if id != "pending" {
+                journal
+                    .child_destroyed(id, &turn.child, id == "done", "PLANTED-ANSWER")
+                    .unwrap();
+            }
+            if id == "done" {
+                journal.parent_committed(id, &turn.child).unwrap();
+            }
+        }
+        let listed = list_parents(root.path(), 50, 32);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].parent, parent);
+        assert!(listed[0].updated_ms > 0);
+        assert_eq!(listed[0].turns_total, 3);
+        let stage = |id: &str| {
+            let turn = listed[0].turns.iter().find(|t| t.turn_id == id).unwrap();
+            assert_eq!(turn.timeout_nanos, 1_500_000_000);
+            (turn.stage, turn.succeeded)
+        };
+        assert_eq!(stage("pending"), ("reserved", None));
+        assert_eq!(stage("failed"), ("child-destroyed", Some(false)));
+        assert_eq!(stage("done"), ("parent-committed", Some(true)));
+        assert!(!format!("{listed:?}").contains("PLANTED"));
+        // The bound keeps the total honest about what was omitted.
+        let bounded = summarize_parent(root.path(), &parent, 2).unwrap();
+        assert_eq!((bounded.turns.len(), bounded.turns_total), (2, 3));
+    }
+
+    #[test]
+    fn listing_skips_malformed_parents_and_turns_and_bounds_parents() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(list_parents(&root.path().join("absent"), 50, 32).is_empty());
+        let parent = Hash::of(b"intact");
+        let mut journal = ParentJournal::create(root.path(), parent.clone()).unwrap();
+        let good = reserved_turn(&parent, "good", "task");
+        journal.reserve(&good).unwrap();
+        let bad = reserved_turn(&parent, "bad", "task");
+        journal.reserve(&bad).unwrap();
+        journal
+            .child_destroyed("bad", &bad.child, true, "answer")
+            .unwrap();
+        fs::write(
+            journal
+                .directory
+                .join(ParentJournal::filename("bad", "destroyed")),
+            b"{not json",
+        )
+        .unwrap();
+        // A reservation filed under another turn's name is not trusted either.
+        fs::copy(
+            journal
+                .directory
+                .join(ParentJournal::filename("good", "reserved")),
+            journal
+                .directory
+                .join(ParentJournal::filename("moved", "reserved")),
+        )
+        .unwrap();
+        // Garbage, an empty tombstone, and an identity filed in a foreign directory.
+        fs::write(root.path().join("stray-file"), b"x").unwrap();
+        fs::create_dir(root.path().join("empty")).unwrap();
+        fs::create_dir(root.path().join("corrupt")).unwrap();
+        fs::write(root.path().join("corrupt/parent.json"), b"{").unwrap();
+        fs::create_dir(root.path().join("foreign")).unwrap();
+        fs::copy(
+            journal.directory.join("parent.json"),
+            root.path().join("foreign/parent.json"),
+        )
+        .unwrap();
+        let listed = list_parents(root.path(), 50, 32);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].parent, parent);
+        assert_eq!(listed[0].turns_total, 3);
+        assert_eq!(listed[0].turns.len(), 1);
+        assert_eq!(listed[0].turns[0].turn_id, "good");
+
+        ParentJournal::create(root.path(), Hash::of(b"second")).unwrap();
+        assert_eq!(list_parents(root.path(), 50, 32).len(), 2);
+        assert_eq!(list_parents(root.path(), 1, 32).len(), 1);
+        assert!(summarize_parent(root.path(), &Hash::of(b"unknown"), 32).is_err());
     }
 }

@@ -533,6 +533,31 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 crate::capabilities::DispatcherCapabilities::new(current_node(state, &registry));
             reply(&mut stream, 200, &serde_json::to_value(report)?)
         }
+        // Operator dashboard listing (`celln ps` over HTTP, plus parent/turn
+        // metadata). Node-operator credential only: it spans every principal's
+        // parents, so it is never reachable with a parent (tenant) credential,
+        // and it carries no task, message or answer text. Deliberately avoids
+        // the execution registry lock and holds the parent registry lock only
+        // for a status snapshot, so polling cannot stall admission or a turn.
+        ("GET", target) if crate::cells::report_query(target).is_some() => {
+            let query = crate::cells::report_query(target).flatten();
+            let query = match crate::cells::ListQuery::parse(query) {
+                Ok(query) => query,
+                Err(error) => return reply(&mut stream, 400, &serde_json::json!({"error":error})),
+            };
+            let Ok(live_parents) = state.parents.statuses() else {
+                return reply(
+                    &mut stream,
+                    503,
+                    &serde_json::json!({"error":"parent registry unavailable"}),
+                );
+            };
+            reply(
+                &mut stream,
+                200,
+                &crate::cells::report(&state.root, &state.probe.node_name, &live_parents, query),
+            )
+        }
         ("GET", "/v1/node") => {
             let registry = state
                 .executions
@@ -1421,6 +1446,275 @@ mod tests {
                 assert!(body.get("warm").is_none());
             }
         }
+    }
+
+    fn get(state: &State, target: &str, token: &str) -> (u16, serde_json::Value, String) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        write!(
+            client,
+            "GET {target} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\r\n"
+        )
+        .unwrap();
+        handle(server, state).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        let status = response.split(' ').nth(1).unwrap().parse().unwrap();
+        let body = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        (status, body, response)
+    }
+
+    #[test]
+    fn cells_listing_requires_the_node_credential_and_a_strict_query() {
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        for token in ["", "wrong-credential-at-least-24-bytes"] {
+            for target in ["/v1/cells", "/v1/cells?all=true"] {
+                assert_eq!(get(&state, target, token).0, 401);
+            }
+        }
+        for target in [
+            "/v1/cells?all=yes",
+            "/v1/cells?limit=0",
+            "/v1/cells?limit=501",
+            "/v1/cells?limit=+5",
+            "/v1/cells?limit=1&limit=2",
+            "/v1/cells?verbose=true",
+        ] {
+            assert_eq!(get(&state, target, &state.token).0, 400, "{target}");
+        }
+        assert_eq!(get(&state, "/v1/cellsx", &state.token).0, 404);
+        let (status, body, _) = get(&state, "/v1/cells", &state.token);
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            serde_json::json!({"apiVersion":"celln.cells/v1","node":"test","cells":[],"parents":[]})
+        );
+        // A read-only listing creates no state of its own.
+        assert!(!work.path().join("cells").exists());
+        assert!(!work.path().join("parent-journal").exists());
+        assert!(!work.path().join("execution-journal").exists());
+    }
+
+    #[test]
+    fn cells_listing_is_live_only_by_default_and_bounded_by_limit() {
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        let spec = Path::new("/PLANTED-SPEC-PATH/cell.toml");
+        let tools = vec!["/bin/ls".to_string()];
+        let mut old = crate::cells::begin(work.path(), "oldest", spec, tools.clone()).unwrap();
+        old.started_ms -= 20_000;
+        crate::cells::finish(work.path(), &mut old, "kvm", None);
+        let mut failed = crate::cells::begin(work.path(), "broken", spec, vec![]).unwrap();
+        failed.started_ms -= 10_000;
+        crate::cells::finish(work.path(), &mut failed, "kvm", Some("boom".into()));
+        // Owned by this test process, so it reads as running.
+        let live = crate::cells::begin(work.path(), "live", spec, tools).unwrap();
+
+        let (_, body, _) = get(&state, "/v1/cells", &state.token);
+        let cells = body["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0]["id"], live.id);
+        assert_eq!(cells[0]["status"], "running");
+        assert_eq!(cells[0]["finished_ms"], serde_json::Value::Null);
+        assert_eq!(cells[0]["duration_ms"], serde_json::Value::Null);
+        assert_eq!(get(&state, "/v1/cells?all=false", &state.token).1, body);
+
+        let (_, body, raw) = get(&state, "/v1/cells?all=true", &state.token);
+        let cells = body["cells"].as_array().unwrap();
+        let names: Vec<_> = cells
+            .iter()
+            .map(|c| c["description"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["live", "broken", "oldest"], "newest first");
+        assert_eq!(cells[1]["status"], "failed");
+        assert_eq!(cells[1]["error"], "boom");
+        assert_eq!(cells[1]["backend"], "kvm");
+        assert_eq!(cells[2]["status"], "dissolved");
+        assert_eq!(cells[2]["tools"], serde_json::json!(["/bin/ls"]));
+        assert!(cells[2]["duration_ms"].is_u64() && cells[2]["started_ms"].is_u64());
+        // Host paths and pids are not dashboard material.
+        assert!(!raw.contains("PLANTED-SPEC-PATH"));
+        for cell in cells {
+            let mut keys: Vec<_> = cell.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                [
+                    "backend",
+                    "description",
+                    "duration_ms",
+                    "error",
+                    "finished_ms",
+                    "id",
+                    "started_ms",
+                    "status",
+                    "tools"
+                ]
+            );
+        }
+
+        let (_, body, _) = get(&state, "/v1/cells?all=true&limit=2", &state.token);
+        let cells = body["cells"].as_array().unwrap();
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[1]["description"], "broken");
+    }
+
+    fn journal_turn(
+        journal: &mut warden::parent_journal::ParentJournal,
+        parent: &celln_manifest::Hash,
+        turn_id: &str,
+        task: &str,
+    ) -> celln_manifest::Hash {
+        let turn = warden::parent_lease::ParentLease::new(
+            parent.clone(),
+            Duration::from_secs(60),
+            warden::parent_lease::TurnLimits {
+                memory_bytes: 4096,
+                timeout: Duration::from_millis(2500),
+                model_requests: 0,
+                output_tokens: 0,
+            },
+            1,
+            0,
+            0,
+        )
+        .unwrap()
+        .reserve(
+            serde_json::json!({"apiVersion":"celln.parent-turn/v1","turnId":turn_id,"task":task})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        journal.reserve(&turn).unwrap();
+        turn.child
+    }
+
+    #[test]
+    fn cells_listing_reports_parent_turn_metadata_but_never_journal_content() {
+        use celln_manifest::Hash;
+        use warden::parent_journal::ParentJournal;
+        let work = tempfile::tempdir().unwrap();
+        let state = lifecycle_state(work.path());
+        let root = work.path().join("parent-journal");
+
+        // Journal only: the owner is gone, whatever stage its turns reached.
+        let lost = Hash::of(b"journal-only");
+        let mut journal = ParentJournal::create(&root, lost.clone()).unwrap();
+        journal.bind_owner("PLANTED-PRINCIPAL").unwrap();
+        journal_turn(&mut journal, &lost, "pending", "PLANTED-TASK-ONE");
+        let failed = journal_turn(&mut journal, &lost, "failed", "PLANTED-TASK-TWO");
+        journal
+            .child_destroyed("failed", &failed, false, "PLANTED-ANSWER-FAILED")
+            .unwrap();
+        let done = journal_turn(&mut journal, &lost, "done", "PLANTED-TASK-THREE");
+        journal
+            .child_destroyed("done", &done, true, "PLANTED-ANSWER-DONE")
+            .unwrap();
+        journal.parent_committed("done", &done).unwrap();
+        // Malformed entries are skipped, never fatal and never echoed.
+        let corrupt = journal_turn(&mut journal, &lost, "corrupt", "PLANTED-TASK-FOUR");
+        journal
+            .child_destroyed("corrupt", &corrupt, true, "PLANTED-ANSWER-CORRUPT")
+            .unwrap();
+        let directory = std::fs::read_dir(&root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        let destroyed = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.to_str().unwrap().ends_with(".destroyed.json")
+                    && std::fs::read_to_string(path)
+                        .unwrap()
+                        .contains("PLANTED-ANSWER-CORRUPT")
+            })
+            .unwrap();
+        std::fs::write(destroyed, b"{\"answer\":\"PLANTED-GARBAGE\"").unwrap();
+        std::fs::create_dir(root.join("not-a-parent")).unwrap();
+        std::fs::write(root.join("not-a-parent/parent.json"), b"PLANTED-GARBAGE").unwrap();
+        std::fs::write(root.join("stray"), b"PLANTED-GARBAGE").unwrap();
+
+        // Live owners: one journaled, one whose journal is missing entirely.
+        let journaled = Hash::of(b"live-journaled");
+        ParentJournal::create(&root, journaled.clone()).unwrap();
+        let bare = Hash::of(b"live-bare");
+        for id in [&journaled, &bare] {
+            state
+                .parents
+                .spawn_admitted(
+                    "PLANTED-PRINCIPAL",
+                    id,
+                    Duration::from_secs(60),
+                    4096,
+                    0,
+                    || Ok(|_: &[u8]| Ok(Vec::new())),
+                )
+                .unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while [&journaled, &bare].iter().any(|id| {
+            state.parents.status("PLANTED-PRINCIPAL", id).unwrap()
+                != warden::parent_registry::Status::Ready
+        }) {
+            assert!(Instant::now() < deadline, "owners never became ready");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let (status, body, raw) = get(&state, "/v1/cells", &state.token);
+        assert_eq!(status, 200);
+        assert!(!raw.contains("PLANTED"), "{raw}");
+        for key in ["task", "answer", "request", "principal", "message"] {
+            assert!(!raw.contains(&format!("\"{key}\"")), "{key} leaked: {raw}");
+        }
+        let parents = body["parents"].as_array().unwrap();
+        assert_eq!(parents.len(), 3);
+        let parent = |id: &Hash| parents.iter().find(|p| p["incarnation"] == id.0).unwrap();
+
+        let entry = parent(&lost);
+        assert_eq!(entry["status"], "ContextLost");
+        assert_eq!(entry["statusIsLiveOwnerObservation"], false);
+        assert!(entry["updated_ms"].as_u64().unwrap() > 0);
+        assert_eq!(entry["turns_total"], 4);
+        let turns = entry["turns"].as_array().unwrap();
+        assert_eq!(turns.len(), 3, "corrupt turn skipped");
+        let turn = |id: &str| turns.iter().find(|t| t["turnId"] == id).unwrap();
+        assert_eq!(turn("pending")["stage"], "reserved");
+        assert!(turn("pending").get("succeeded").is_none());
+        assert_eq!(turn("failed")["stage"], "child-destroyed");
+        assert_eq!(turn("failed")["succeeded"], false);
+        assert_eq!(turn("failed")["child"], failed.0);
+        assert_eq!(turn("done")["stage"], "parent-committed");
+        assert_eq!(turn("done")["succeeded"], true);
+        assert_eq!(turn("done")["timeout_ms"], 2500);
+
+        let entry = parent(&journaled);
+        assert_eq!(entry["status"], "Ready");
+        assert_eq!(entry["statusIsLiveOwnerObservation"], true);
+        assert!(entry["updated_ms"].is_u64());
+        let entry = parent(&bare);
+        assert_eq!(entry["status"], "Ready");
+        assert_eq!(entry["updated_ms"], serde_json::Value::Null);
+        assert_eq!(entry["turns"], serde_json::json!([]));
+
+        // A released owner keeps its registry label while the journal lists it;
+        // one with no journal at all simply ages out.
+        for id in [&journaled, &bare] {
+            state.parents.stop("PLANTED-PRINCIPAL", id).unwrap();
+        }
+        let (_, body, _) = get(&state, "/v1/cells", &state.token);
+        let parents = body["parents"].as_array().unwrap();
+        assert_eq!(parents.len(), 2);
+        let stopped = parents
+            .iter()
+            .find(|p| p["incarnation"] == journaled.0)
+            .unwrap();
+        assert_eq!(stopped["status"], "Stopped");
+        assert_eq!(stopped["statusIsLiveOwnerObservation"], true);
     }
 
     #[test]
