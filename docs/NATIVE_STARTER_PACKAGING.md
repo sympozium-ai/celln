@@ -87,12 +87,26 @@ requires all five motes already admitted. The strict plan is:
 
 This explicitly approves the fixed first profile: DeepSeek `deepseek-chat`,
 three borrowed tools (run-owned read/write and bounded `example.com` HTTPS),
-one-hour parent lease, twelve turns, at most 36 model requests and 18432 output
-tokens. Per-turn limits are three model requests and 1536 output tokens; files
+one-hour parent lease, twelve turns, at most 72 model requests and 36864 output
+tokens. Per-turn limits are six model requests and 3072 output tokens, which
+affords the worker template's loop of up to four tool calls (`max_calls: 4`,
+`max_turns: 6`). Every turn reserves its whole per-turn allowance from the
+parent totals, so `hostLimits` must afford `maxTurns` × 6 requests and
+`maxTurns` × 3072 tokens for every turn to be usable. Files
 are bounded to eight, 4096 bytes each, 16384 bytes total. Read/write and HTTPS
 effects each have four-operation limits. This is not arbitrary tool or model
 configuration. The credential path must be outside controller-mounted state;
 the command never reads the credential itself.
+
+Conversation bounds of an enduring parent: a user message is at most 2048
+bytes, a committed answer at most 8192 bytes, and the worker task (history plus
+message) at most 16384 bytes and sixteen exchanges. A parent never stops because
+its conversation grew: it keeps the newest exchanges that fit and leaves the
+oldest out of the task, and the worker leaves out more when its tools need the
+model request's room. A message over the bound fails that turn only. These
+bounds are compiled into the guest binaries, so they apply to packages built
+from this revision on; with an older package the host holds answers to the
+2048 bytes that package's parent accepts.
 
 Output `catalogue.json`, `native-template.json` and `configured.json` pins exact
 package/configuration hashes. A hash-addressed model profile is installed in

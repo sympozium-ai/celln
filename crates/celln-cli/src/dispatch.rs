@@ -591,7 +591,7 @@ fn run_cell_with_broker(
     if let Some(grant) = &outcome.execution {
         let workspace = serde_json::to_value(request.capabilities.workspace).unwrap();
         if grant.workspace.as_deref() != workspace.as_str()
-            || grant.fetch != !request.capabilities.egress.is_empty()
+            || grant.fetch == request.capabilities.egress.is_empty()
             || !matches!(grant.lane.as_str(), "agent" | "tool")
             || (request.execution.lane == RequestedLane::Agent && grant.lane != "agent")
         {

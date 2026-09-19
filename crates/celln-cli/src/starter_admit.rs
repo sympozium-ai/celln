@@ -241,7 +241,7 @@ mod tests {
         let long_plan = dir.path().join("config-plan-long.json");
         let mut plan: Value = serde_json::from_slice(&fs::read(&config_plan).unwrap()).unwrap();
         plan["output"] = json!(long_lived);
-        plan["hostLimits"] = json!({"leaseSeconds": 86400, "maxTurns": 256, "maxModelRequests": 768, "maxOutputTokens": 393216});
+        plan["hostLimits"] = json!({"leaseSeconds": 86400, "maxTurns": 256, "maxModelRequests": 1536, "maxOutputTokens": 786432});
         fs::write(&long_plan, serde_json::to_vec(&plan).unwrap()).unwrap();
         assert_eq!(crate::starter_configure::run(&long_plan, &root).unwrap(), 0);
         let native: Value =
@@ -249,9 +249,14 @@ mod tests {
                 .unwrap();
         assert_eq!(native["parent"]["capabilities"]["timeoutMs"], 86_400_000);
         assert_eq!(native["maxTurns"], 256);
-        assert_eq!(native["totalModelRequests"], 768);
-        assert_eq!(native["totalOutputTokens"], 393216);
-        assert_eq!(native["turnOutputTokens"], 1536);
+        assert_eq!(native["totalModelRequests"], 1536);
+        assert_eq!(native["totalOutputTokens"], 786432);
+        // Each turn affords the template's whole model loop: six requests
+        // of 512 tokens, enough for four tool calls one at a time.
+        assert_eq!(native["turnModelRequests"], 6);
+        assert_eq!(native["turnOutputTokens"], 3072);
+        assert_eq!(native["template"]["max_turns"], 6);
+        assert_eq!(native["template"]["max_calls"], 4);
         let receipt: Value =
             serde_json::from_slice(&fs::read(long_lived.join("configured.json")).unwrap()).unwrap();
         assert_eq!(receipt["hostLimits"]["leaseSeconds"], 86400);

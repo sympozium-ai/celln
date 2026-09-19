@@ -323,12 +323,18 @@ pub(super) fn handle(
             ),
         },
         ("POST", Some("turns")) => {
-            if length == 0 || length > warden::parent_mailbox::MAX_FRAME_BYTES {
+            if length == 0 || length > warden::parent_protocol::MAX_TURN_INPUT_BYTES {
                 return reply(stream, 413, &json!({"error":"invalid turn size"}));
             }
             let mut bytes = vec![0; length];
             stream.set_read_timeout(Some(Duration::from_secs(5)))?;
             reader.read_exact(&mut bytes)?;
+            // Refuse what no parent can carry before it reaches the owner:
+            // nothing is reserved or journalled, and the conversation's
+            // context is not put at risk by one bad submission.
+            if let Some(error) = refuse_turn(&bytes) {
+                return reply(stream, 413, &json!({"error":error,"retryAuthorized":false}));
+            }
             let pending = match state.parents.submit(&principal, &id, &bytes) {
                 Ok(pending) => pending,
                 Err(_) => {
@@ -368,6 +374,32 @@ pub(super) fn handle(
         }
         _ => reply(stream, 404, &json!({"error":"not found"})),
     }
+}
+
+/// Why a well-formed turn cannot be submitted, if it cannot. Anything that is
+/// not a turn is left to the owner's own refusal.
+fn refuse_turn(bytes: &[u8]) -> Option<&'static str> {
+    match serde_json::from_slice(bytes) {
+        Ok(pilot::parent_harness::HostMessage::Turn { message, .. })
+            if message.len() > warden::parent_protocol::MAX_MESSAGE_BYTES =>
+        {
+            Some("turn message exceeds 2048 bytes")
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn only_an_oversized_turn_message_is_refused_before_the_owner() {
+    let turn = |message: &str| {
+        serde_json::to_vec(&json!({"kind":"turn","apiVersion":pilot::parent_harness::VERSION,"turnId":"one","message":message})).unwrap()
+    };
+    assert_eq!(refuse_turn(&turn(&"x".repeat(2048))), None);
+    assert_eq!(
+        refuse_turn(&turn(&"x".repeat(2049))),
+        Some("turn message exceeds 2048 bytes")
+    );
+    assert_eq!(refuse_turn(b"not a turn"), None);
 }
 
 #[derive(Deserialize)]

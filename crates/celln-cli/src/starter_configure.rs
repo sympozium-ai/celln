@@ -67,8 +67,19 @@ struct HostLimits {
 
 /// Per-turn allowance of the starter model profile; parent totals must afford
 /// at least one such turn.
-const TURN_MODEL_REQUESTS: u64 = 3;
-const TURN_OUTPUT_TOKENS: u64 = 1536;
+/// The worker template's model loop: `max_turns` model requests, of which all
+/// but the last may carry tool calls, `max_calls` tool calls in total. Four
+/// calls one at a time need five requests; six leaves one to recover.
+const TEMPLATE_MAX_TURNS: u64 = 6;
+const TEMPLATE_MAX_CALLS: u64 = 4;
+/// Each model request may produce this many tokens (the broker's fixed cap).
+const REQUEST_OUTPUT_TOKENS: u64 = 512;
+// Every call needs a later request to hand its result to the model.
+const _: () = assert!(TEMPLATE_MAX_CALLS < TEMPLATE_MAX_TURNS);
+const TURN_MODEL_REQUESTS: u64 = TEMPLATE_MAX_TURNS;
+const TURN_OUTPUT_TOKENS: u64 = TEMPLATE_MAX_TURNS * REQUEST_OUTPUT_TOKENS;
+/// Turns a parent may take when the operator states no ceilings.
+const DEFAULT_MAX_TURNS: u64 = 12;
 
 struct ResolvedLimits {
     lease_seconds: u64,
@@ -81,16 +92,20 @@ fn resolve_limits(limits: Option<&HostLimits>) -> Result<ResolvedLimits> {
     let limits = limits.cloned().unwrap_or_default();
     let resolved = ResolvedLimits {
         lease_seconds: limits.lease_seconds.unwrap_or(3600),
-        max_turns: limits.max_turns.unwrap_or(12),
-        max_model_requests: limits.max_model_requests.unwrap_or(36),
-        max_output_tokens: limits.max_output_tokens.unwrap_or(18432),
+        max_turns: limits.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+        max_model_requests: limits
+            .max_model_requests
+            .unwrap_or(DEFAULT_MAX_TURNS * TURN_MODEL_REQUESTS),
+        max_output_tokens: limits
+            .max_output_tokens
+            .unwrap_or(DEFAULT_MAX_TURNS * TURN_OUTPUT_TOKENS),
     };
     ensure!(
         (60..=86_400).contains(&resolved.lease_seconds)
             && (1..=1024).contains(&resolved.max_turns)
             && (TURN_MODEL_REQUESTS..=6144).contains(&resolved.max_model_requests)
             && (TURN_OUTPUT_TOKENS..=3_145_728).contains(&resolved.max_output_tokens),
-        "host limits out of range: leaseSeconds 60..=86400, maxTurns 1..=1024, maxModelRequests 3..=6144, maxOutputTokens 1536..=3145728"
+        "host limits out of range: leaseSeconds 60..=86400, maxTurns 1..=1024, maxModelRequests 6..=6144, maxOutputTokens 3072..=3145728"
     );
     Ok(resolved)
 }
@@ -284,13 +299,13 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         tools.push(json!({"name":packaged.command.name,"path":packaged.alias,"hash":hash,"description":description,"input_schema":schema(input),"output_schema":schema(output),"input_bytes":8192,"output_bytes":8192,"timeout_ms":30000,"argv":{"args":packaged.command.args,"stdin":packaged.command.stdin}}));
     }
     ensure!(tools.len() <= 24, "at most 24 borrowed tools per worker");
-    let mut template_json = json!({"contract":"celln.json-tools/v1","task":"","system":"Use the borrowed tools when requested. Read files with workspace-read rather than relying on remembered content. Keep replies brief.","url":endpoint,"model":model,"tools":tools,"max_turns":3,"max_calls":1,"require_tool_call":false});
+    let mut template_json = json!({"contract":"celln.json-tools/v1","task":"","system":"Use the borrowed tools when requested. Read files with workspace-read rather than relying on remembered content. Keep replies brief.","url":endpoint,"model":model,"tools":tools,"max_turns":TEMPLATE_MAX_TURNS,"max_calls":TEMPLATE_MAX_CALLS,"require_tool_call":false});
     if connection.is_some_and(|c| c.allow_insecure) {
         template_json["allow_insecure"] = json!(true);
     }
     let template = pilot::turn_worker::Template::new(serde_json::from_value(template_json)?)?;
     let profile = serde_json::to_vec(
-        &json!({"apiVersion":"celln.parent-model-profile/v1","protocol":connection.map(|c| c.protocol).unwrap_or_default(),"allowInsecure":connection.is_some_and(|c| c.allow_insecure),"principal":plan.principal,"requestBinding":worker.configuration_binding(ConfigurationRole::Worker).map_err(anyhow::Error::msg)?,"templateBinding":template.binding(),"credentialFile":plan.credential_file,"url":template.policy().url,"model":template.policy().model,"maxRequests":3,"maxOutputTokens":512,"maxTotalOutputTokens":1536,"workspace":{"read":true,"write":true,"maxOperations":8,"maxFiles":8,"maxFileBytes":4096,"maxTotalBytes":16384},"fetch":{"allowHosts":hosts,"maxRequests":4,"maxResponseBytes":4096,"timeoutMs":10000},"post":{"allowHosts":hosts,"maxRequests":4,"maxBodyBytes":4096,"maxResponseBytes":4096,"timeoutMs":10000}}),
+        &json!({"apiVersion":"celln.parent-model-profile/v1","protocol":connection.map(|c| c.protocol).unwrap_or_default(),"allowInsecure":connection.is_some_and(|c| c.allow_insecure),"principal":plan.principal,"requestBinding":worker.configuration_binding(ConfigurationRole::Worker).map_err(anyhow::Error::msg)?,"templateBinding":template.binding(),"credentialFile":plan.credential_file,"url":template.policy().url,"model":template.policy().model,"maxRequests":TURN_MODEL_REQUESTS,"maxOutputTokens":REQUEST_OUTPUT_TOKENS,"maxTotalOutputTokens":TURN_OUTPUT_TOKENS,"workspace":{"read":true,"write":true,"maxOperations":8,"maxFiles":8,"maxFileBytes":4096,"maxTotalBytes":16384},"fetch":{"allowHosts":hosts,"maxRequests":4,"maxResponseBytes":4096,"timeoutMs":10000},"post":{"allowHosts":hosts,"maxRequests":4,"maxBodyBytes":4096,"maxResponseBytes":4096,"timeoutMs":10000}}),
     )?;
     let profile_hash = Hash::of(&profile);
     let mut catalogue_tools = Vec::new();
@@ -319,7 +334,7 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         catalogue_tools.push(json!({"name":tool.name,"spec":{"revision":"v1","description":tool.description,"supportOwner":"native-starter-operator","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"entryPoint":tool.path,"invocationABI":"celln.json-stdio/v1","argumentsSchema":{"hash":tool.input_schema.hash},"resultSchema":{"hash":tool.output_schema.hash},"platform":"linux/amd64","lane":"tool","limits":limits}}));
     }
     let bundle = entry("worker");
-    let catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":{"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":3,"maxCalls":1},"limits":{"timeoutMillis":60000,"memoryBytes":268435456u64,"taskBytes":2048,"outputBytes":65536,"workspace":"none"}}});
+    let catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":{"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":TEMPLATE_MAX_TURNS,"maxCalls":TEMPLATE_MAX_CALLS},"limits":{"timeoutMillis":60000,"memoryBytes":268435456u64,"taskBytes":warden::parent_protocol::MAX_TASK_BYTES,"outputBytes":65536,"workspace":"none"}}});
     let native = json!({"admissionWindowMs":120000,"parent":parent,"worker":worker,"template":template.policy(),"modelProfile":profile_hash,"reservedMemoryBytes":1342177280u64,"maxTurns":limits.max_turns,"turnModelRequests":TURN_MODEL_REQUESTS,"turnOutputTokens":TURN_OUTPUT_TOKENS,"totalModelRequests":limits.max_model_requests,"totalOutputTokens":limits.max_output_tokens});
     let catalogue_bytes = serde_json::to_vec_pretty(&catalogue)?;
     let native_bytes = serde_json::to_vec_pretty(&native)?;
@@ -349,4 +364,35 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     fs::File::open(&plan.output)?.sync_all()?;
     println!("{}", complete);
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_turn_affords_the_template_loop_and_totals_afford_every_turn() {
+        // Four tool calls made one at a time take five model requests.
+        assert_eq!((TEMPLATE_MAX_TURNS, TEMPLATE_MAX_CALLS), (6, 4));
+        assert_eq!((TURN_MODEL_REQUESTS, TURN_OUTPUT_TOKENS), (6, 3072));
+        let defaults = resolve_limits(None).unwrap();
+        assert_eq!(
+            (
+                defaults.max_turns,
+                defaults.max_model_requests,
+                defaults.max_output_tokens
+            ),
+            (12, 72, 36864)
+        );
+        // Totals that cannot pay for one turn are refused, not starved later.
+        let limits = |requests, tokens| HostLimits {
+            max_model_requests: Some(requests),
+            max_output_tokens: Some(tokens),
+            ..Default::default()
+        };
+        assert!(resolve_limits(Some(&limits(6, 3072))).is_ok());
+        assert!(resolve_limits(Some(&limits(5, 3072))).is_err());
+        assert!(resolve_limits(Some(&limits(6, 3071))).is_err());
+        assert!(resolve_limits(Some(&limits(6144, 3_145_728))).is_ok());
+    }
 }

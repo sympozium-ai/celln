@@ -490,8 +490,8 @@ pub(crate) mod publication_tests {
         assert_eq!(stored.history[0].user, "remember the word saffron");
         plan.run_uid = "oversized-run-uid".into();
         plan.history = vec![pilot::json_harness::Exchange {
-            user: "u".repeat(1200),
-            assistant: "a".repeat(1200),
+            user: "u".repeat(warden::parent_protocol::MAX_TASK_BYTES / 2),
+            assistant: "a".repeat(warden::parent_protocol::MAX_TASK_BYTES / 2),
         }];
         assert!(provision(root.path(), &encode(&plan), "test:parent")
             .unwrap_err()
