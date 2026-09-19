@@ -27,6 +27,7 @@ pub fn validate(config: &Config) -> Result<()> {
 
 pub fn validate_with_history(config: &Config, history: &[Exchange]) -> Result<()> {
     let tools = compile(config)?;
+    let history = fit_history(config, &tools, history)?;
     model_request(config, &tools, &contextual_messages(config, history)?, 0).map(|_| ())
 }
 
@@ -79,6 +80,15 @@ pub const ARGV_OUTPUT_CHARS: usize = 4096;
 /// two dozen tools and a long conversation needs more than the 8 KiB the
 /// workspace and fetch tools are held to.
 pub const MODEL_WIRE_BYTES: usize = 32768;
+
+/// Wire room a turn's first model request leaves for what follows it: each
+/// tool round adds the model's call and the tool's result to the same
+/// conversation. History is what gives way, oldest exchange first, so a long
+/// conversation with tools keeps working instead of failing every turn.
+pub const TOOL_ROUND_WIRE_RESERVE: usize = MODEL_WIRE_BYTES / 2;
+
+/// Largest final answer a worker commits, and the most the parent accepts.
+pub const MAX_ANSWER_BYTES: usize = warden::parent_protocol::MAX_ANSWER_BYTES;
 
 /// Result shape every argv tool returns to the model; the packager declares
 /// it as such a tool's output schema.
@@ -282,6 +292,13 @@ pub fn run_with_history(
     mut event: impl FnMut(Value),
 ) -> Result<String> {
     let tools = compile(config)?;
+    let offered = history.len();
+    let history = fit_history(config, &tools, history)?;
+    if history.len() < offered {
+        event(
+            json!({"type":"context","historyKept":history.len(),"historyDropped":offered - history.len()}),
+        );
+    }
     let mut messages = contextual_messages(config, history)?;
     let mut ids = BTreeSet::new();
     let mut calls = 0usize;
@@ -314,11 +331,16 @@ pub fn run_with_history(
             let answer = message["content"]
                 .as_str()
                 .context("missing final answer")?;
+            ensure!(!answer.trim().is_empty(), "final answer is empty");
             ensure!(
-                !answer.trim().is_empty() && answer.len() <= 4096,
-                "final answer is empty or exceeds limit"
+                answer.len() <= MAX_ANSWER_BYTES,
+                "final answer exceeds {MAX_ANSWER_BYTES} bytes"
             );
-            event(json!({"type":"completed","answer":answer,"calls":calls}));
+            // `answerLimit` tells the host which answer contract this guest
+            // package was built with; a package without it predates 8 KiB.
+            event(
+                json!({"type":"completed","answer":answer,"calls":calls,"answerLimit":MAX_ANSWER_BYTES}),
+            );
             return Ok(answer.into());
         }
         // Do not start side effects when the configured turn budget already
@@ -403,7 +425,10 @@ fn contextual_messages(config: &Config, history: &[Exchange]) -> Result<Vec<Valu
             bytes = bytes
                 .checked_add(text.len())
                 .context("parent history overflow")?;
-            ensure!(bytes <= 4096, "parent history exceeds byte limit");
+            ensure!(
+                bytes <= warden::parent_protocol::MAX_TASK_BYTES,
+                "parent history exceeds byte limit"
+            );
         }
     }
     let mut messages = initial_messages(config);
@@ -416,7 +441,46 @@ fn contextual_messages(config: &Config, history: &[Exchange]) -> Result<Vec<Valu
     Ok(messages)
 }
 
+/// The newest exchanges whose first model request leaves
+/// `TOOL_ROUND_WIRE_RESERVE` free. Host validation and the guest loop both
+/// use this, so they agree on the request. With no history left the ordinary
+/// wire bound alone decides.
+fn fit_history<'a>(
+    config: &Config,
+    tools: &[CheckedTool<'_>],
+    history: &'a [Exchange],
+) -> Result<&'a [Exchange]> {
+    // A worker that can make no tool call has no later rounds to reserve for.
+    let reserve = if tools.is_empty() || config.max_calls == 0 {
+        0
+    } else {
+        TOOL_ROUND_WIRE_RESERVE
+    };
+    for start in 0..history.len() {
+        let kept = &history[start..];
+        let wire = model_wire(config, tools, &contextual_messages(config, kept)?, 0)?;
+        if wire.len() <= MODEL_WIRE_BYTES - reserve {
+            return Ok(kept);
+        }
+    }
+    Ok(&[])
+}
+
 fn model_request(
+    config: &Config,
+    tools: &[CheckedTool<'_>],
+    messages: &[Value],
+    calls: usize,
+) -> Result<Vec<u8>> {
+    let wire = model_wire(config, tools, messages, calls)?;
+    ensure!(
+        wire.len() <= MODEL_WIRE_BYTES,
+        "conversation/schema envelope exceeds broker byte limit"
+    );
+    Ok(wire)
+}
+
+fn model_wire(
     config: &Config,
     tools: &[CheckedTool<'_>],
     messages: &[Value],
@@ -435,12 +499,7 @@ fn model_request(
             "auto"
         });
     }
-    let wire = serde_json::to_vec(
+    Ok(serde_json::to_vec(
         &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":config.url,"body":body}),
-    )?;
-    ensure!(
-        wire.len() <= MODEL_WIRE_BYTES,
-        "conversation/schema envelope exceeds broker byte limit"
-    );
-    Ok(wire)
+    )?)
 }

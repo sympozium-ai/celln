@@ -131,7 +131,19 @@ impl PreparedWorker {
         {
             return Err("worker reservation does not match pinned memory or parent".into());
         }
-        let args = self.template.arguments(turn).map_err(|e| e.to_string())?;
+        // A turn whose context the admitted template refuses never starts a
+        // child: no cell exists for it, and the parent's context is intact.
+        // It is a failed turn the caller can read, not a lost parent.
+        let args = match self.template.arguments(turn) {
+            Ok(args) => args,
+            Err(error) => {
+                return Ok(pilot::parent_session::DestroyedChild {
+                    child: turn.child.clone(),
+                    succeeded: false,
+                    answer: bounded_failure(format!("Turn failed; no worker started: {error:#}")),
+                })
+            }
+        };
         authorize(&self.request, &self.root)?;
         let closure =
             super::super::closure::resolve(&self.request, &self.declared.resolved, &self.root)?
@@ -192,15 +204,16 @@ impl PreparedWorker {
         } else if let Some(reason) = failure_reason(&outcome) {
             (false, reason)
         } else {
-            (
-                true,
-                answer(
-                    outcome
-                        .output
-                        .as_deref()
-                        .ok_or("missing native worker output")?,
-                )?,
-            )
+            // The child is gone either way. An answer outside the contract
+            // (missing, duplicated, oversized) fails this turn; it is never a
+            // reason to lose the parent's context.
+            match answer(outcome.output.as_deref().unwrap_or_default()) {
+                Ok(answer) => (true, answer),
+                Err(reason) => (
+                    false,
+                    bounded_failure(format!("Turn failed; no result committed: {reason}")),
+                ),
+            }
         };
         // Explicit host opt-in only: contains sensitive conversation/tool data,
         // never authority to replay. Default production operation retains none.
@@ -257,6 +270,10 @@ fn failure_reason(outcome: &super::super::LaunchOutcome) -> Option<String> {
         reason.push_str(": ");
         reason.push_str(&printed);
     }
+    Some(bounded_failure(reason))
+}
+
+fn bounded_failure(mut reason: String) -> String {
     if reason.len() > FAILURE_ANSWER_BYTES {
         let mut end = FAILURE_ANSWER_BYTES;
         while !reason.is_char_boundary(end) {
@@ -264,7 +281,7 @@ fn failure_reason(outcome: &super::super::LaunchOutcome) -> Option<String> {
         }
         reason.truncate(end);
     }
-    Some(reason)
+    reason
 }
 
 // Only called on the successful, VM-destroyed return path of the executor.
@@ -351,6 +368,14 @@ fn parent_audit_requires_private_opt_in_and_never_overwrites() {
     assert!(parent_audit_directory(other.path()).is_err());
 }
 
+/// Answer bound of a guest package built before the worker declared one. Its
+/// parent refuses anything longer, so the host must not deliver more.
+const LEGACY_ANSWER_BYTES: usize = 2048;
+
+/// The worker's one completion. The bound is the host's 8 KiB contract, or
+/// the smaller one the guest package was built with: a current worker states
+/// `answerLimit` in its completion, an older one states nothing and is held
+/// to the 2 KiB its parent accepts. The statement can only narrow the bound.
 fn answer(output: &[u8]) -> Result<String, String> {
     let output = std::str::from_utf8(output).map_err(|_| "invalid native worker output")?;
     let mut answer = None;
@@ -365,8 +390,22 @@ fn answer(output: &[u8]) -> Result<String, String> {
                 return Err("duplicate worker completion".into());
             }
             let text = event["answer"].as_str().ok_or("missing worker answer")?;
-            if text.trim().is_empty() || text.len() > 2048 || text.contains('\0') {
-                return Err("worker answer exceeds parent contract".into());
+            let limit = match event.get("answerLimit") {
+                None => LEGACY_ANSWER_BYTES,
+                Some(declared) => {
+                    usize::try_from(declared.as_u64().ok_or("invalid worker answer limit")?)
+                        .unwrap_or(usize::MAX)
+                        .min(warden::parent_protocol::MAX_ANSWER_BYTES)
+                }
+            };
+            if text.trim().is_empty() || text.contains('\0') {
+                return Err("worker answer is empty or contains NUL".into());
+            }
+            if text.len() > limit {
+                return Err(format!(
+                    "worker answer of {} bytes exceeds the {limit}-byte parent contract",
+                    text.len()
+                ));
             }
             answer = Some(text.to_owned());
         }
@@ -501,5 +540,33 @@ mod tests {
         }
         let event = "CELLN_HARNESS_EVENT {\"type\":\"completed\",\"answer\":\"hello\"}\n";
         assert!(answer(event.repeat(2).as_bytes()).is_err());
+    }
+    #[test]
+    fn answer_bound_is_eight_kibibytes_for_a_current_guest_and_two_for_an_old_one() {
+        let completed = |bytes: usize, limit: Option<serde_json::Value>| {
+            let mut event =
+                serde_json::json!({"type":"completed","answer":"a".repeat(bytes),"calls":0});
+            if let Some(limit) = limit {
+                event["answerLimit"] = limit;
+            }
+            answer(format!("CELLN_HARNESS_EVENT {event}\n").as_bytes())
+        };
+        let current = || Some(serde_json::json!(8192));
+        assert_eq!(completed(8192, current()).unwrap().len(), 8192);
+        assert_eq!(
+            completed(8193, current()).unwrap_err(),
+            "worker answer of 8193 bytes exceeds the 8192-byte parent contract"
+        );
+        // A package built before the limit was stated has a 2 KiB parent.
+        assert_eq!(completed(2048, None).unwrap().len(), 2048);
+        assert!(completed(2049, None).unwrap_err().contains("2048-byte"));
+        // The statement narrows the host bound and never widens it.
+        assert!(completed(4097, Some(serde_json::json!(4096))).is_err());
+        assert!(completed(8193, Some(serde_json::json!(1u64 << 40))).is_err());
+        assert!(completed(8192, Some(serde_json::json!(1u64 << 40))).is_ok());
+        assert!(completed(1, Some(serde_json::json!("8192"))).is_err());
+        // Whatever the reason, it is a bounded failed-turn text.
+        let reason = bounded_failure(format!("Turn failed: {}", "é".repeat(4000)));
+        assert!(reason.len() <= FAILURE_ANSWER_BYTES && reason.is_char_boundary(reason.len()));
     }
 }

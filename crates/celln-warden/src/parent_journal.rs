@@ -1,7 +1,10 @@
 //! Durable parent incarnation tombstone and immutable turn stages. This is
 //! audit/replay prevention, NOT a guest checkpoint. Creation refuses an existing
 //! incarnation; after owner loss callers must report context loss, not resume.
-use crate::{parent_lease::ReservedTurn, parent_protocol::TurnRequest};
+use crate::{
+    parent_lease::ReservedTurn,
+    parent_protocol::{TurnRequest, MAX_ANSWER_BYTES},
+};
 use celln_manifest::Hash;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -195,10 +198,21 @@ pub enum TurnStatus {
     ParentCommitted(DestroyedRecord),
 }
 
+/// One journal record. The widest are a reservation, which holds the encoded
+/// turn request, and a destroyed record, which holds an answer whose JSON
+/// escaping is at most sixfold.
+const MAX_RECORD_BYTES: usize = 65536;
+const _: () = assert!(
+    MAX_RECORD_BYTES >= crate::parent_protocol::MAX_REQUEST_BYTES + 2048
+        && MAX_RECORD_BYTES >= 6 * MAX_ANSWER_BYTES + 2048
+);
+
 fn read_record<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
     let mut bytes = Vec::new();
-    fs::File::open(path)?.take(16385).read_to_end(&mut bytes)?;
-    if bytes.len() > 16384 {
+    fs::File::open(path)?
+        .take(MAX_RECORD_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_RECORD_BYTES {
         return Err(invalid());
     }
     serde_json::from_slice(&bytes).map_err(|_| invalid())
@@ -266,7 +280,7 @@ fn invalid() -> io::Error {
 }
 fn publish(directory: &Path, name: &str, value: &impl Serialize) -> io::Result<()> {
     let bytes = serde_json::to_vec(value).map_err(|_| invalid())?;
-    if bytes.len() > 16384 {
+    if bytes.len() > MAX_RECORD_BYTES {
         return Err(invalid());
     }
     let mut file = tempfile::NamedTempFile::new_in(directory)?;
@@ -406,7 +420,7 @@ impl ParentJournal {
             || record.parent != self.parent
             || &record.child != child
             || record.turn_id != turn
-            || record.answer.len() > 8192
+            || record.answer.len() > MAX_ANSWER_BYTES
         {
             return Err(invalid());
         }
@@ -423,7 +437,7 @@ impl ParentJournal {
         answer: &str,
     ) -> io::Result<()> {
         let record = self.reservation(turn)?;
-        if &record.child != child || answer.len() > 8192 {
+        if &record.child != child || answer.len() > MAX_ANSWER_BYTES {
             return Err(invalid());
         }
         publish(

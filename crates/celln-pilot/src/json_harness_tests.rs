@@ -35,7 +35,7 @@ fn invalid_or_oversized_context_never_reaches_model() {
     let cfg = config(&[]);
     for history in [
         vec![Exchange {
-            user: "x".repeat(4096),
+            user: "x".repeat(warden::parent_protocol::MAX_TASK_BYTES),
             assistant: "y".into(),
         }],
         vec![Exchange {
@@ -482,4 +482,90 @@ fn argv_binding_maps_validated_arguments_and_reports_exit_status() {
         validate(&cfg).is_err(),
         "argv tools return the argv result shape"
     );
+}
+
+fn reply(content: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({"choices":[{"message":{"role":"assistant","content":content}}]}))
+        .unwrap()
+}
+
+#[test]
+fn final_answers_are_bounded_at_eight_kibibytes_and_state_their_limit() {
+    assert_eq!(MAX_ANSWER_BYTES, 8192);
+    let cfg = config(&[]);
+    let mut events = Vec::new();
+    let full = "a".repeat(MAX_ANSWER_BYTES);
+    assert_eq!(
+        run(
+            &cfg,
+            |_| Ok(reply(&full)),
+            |_, _| panic!(),
+            |e| events.push(e)
+        )
+        .unwrap(),
+        full
+    );
+    let completed = events.iter().find(|e| e["type"] == "completed").unwrap();
+    assert_eq!(completed["answerLimit"], 8192);
+    // One byte more, or nothing at all, fails the turn with its own reason.
+    let over = "a".repeat(MAX_ANSWER_BYTES + 1);
+    let error = run(&cfg, |_| Ok(reply(&over)), |_, _| panic!(), |_| {}).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("final answer exceeds 8192 bytes"));
+    let error = run(&cfg, |_| Ok(reply(" ")), |_, _| panic!(), |_| {}).unwrap_err();
+    assert_eq!(error.to_string(), "final answer is empty");
+}
+
+#[test]
+fn a_long_history_gives_way_to_tool_rounds_oldest_exchange_first() {
+    let history: Vec<_> = (0..8)
+        .map(|i| Exchange {
+            user: format!("question {i}"),
+            assistant: "a".repeat(2000),
+        })
+        .collect();
+    let sent = |cfg: &Config| {
+        let (mut users, mut events, mut length) = (Vec::new(), Vec::new(), 0usize);
+        run_with_history(
+            cfg,
+            &history,
+            |wire| {
+                let value: Value = serde_json::from_slice(wire)?;
+                users = value["body"]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m["role"] == "user")
+                    .map(|m| m["content"].as_str().unwrap().to_owned())
+                    .collect();
+                length = wire.len();
+                Ok(answer())
+            },
+            |_, _| panic!("no tool requested"),
+            |event| events.push(event),
+        )
+        .unwrap();
+        (users, events, length)
+    };
+    // Without tools there are no later rounds: the whole history is sent.
+    let (users, events, _) = sent(&config(&[]));
+    assert_eq!(users.len(), history.len() + 1);
+    assert!(events.iter().all(|e| e["type"] != "context"));
+    // With tools the first request leaves the reserve free: the oldest
+    // exchanges are left out, the newest and the task stay, and it is said.
+    let cfg = config(&["echo"]);
+    let (users, events, wire) = sent(&cfg);
+    assert!(users.len() > 2 && users.len() < history.len() + 1);
+    assert_eq!(users[users.len() - 1], cfg.task);
+    assert_eq!(users[users.len() - 2], "question 7");
+    assert!(wire <= MODEL_WIRE_BYTES - TOOL_ROUND_WIRE_RESERVE);
+    let context = events.iter().find(|e| e["type"] == "context").unwrap();
+    assert_eq!(context["historyKept"], users.len() as u64 - 1);
+    assert_eq!(
+        context["historyDropped"],
+        (history.len() + 1 - users.len()) as u64
+    );
+    // Host validation of the same turn agrees instead of refusing it.
+    assert!(validate_with_history(&cfg, &history).is_ok());
 }

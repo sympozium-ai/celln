@@ -144,7 +144,7 @@ where
     fn turn(&mut self, input: &[u8]) -> Result<Vec<u8>> {
         ensure!(!self.lease.expired(), "parent lease closed");
         ensure!(
-            !input.is_empty() && input.len() <= warden::parent_mailbox::MAX_FRAME_BYTES,
+            !input.is_empty() && input.len() <= warden::parent_protocol::MAX_TURN_INPUT_BYTES,
             "invalid input bound"
         );
         let HostMessage::Turn {
@@ -159,13 +159,34 @@ where
             api_version == VERSION && !message.trim().is_empty(),
             "invalid user turn"
         );
+        // An oversized message is refused here, before the parent sees it: a
+        // parent built against the first contract would stop on it. Nothing
+        // was reserved or started, so the turn identity stays unused.
+        if message.len() > warden::parent_protocol::MAX_MESSAGE_BYTES {
+            return Ok(serde_json::to_vec(&ParentReply::Completed {
+                api_version: VERSION.into(),
+                turn_id,
+                succeeded: false,
+                answer: "Turn refused; no worker started: the message exceeds 2048 bytes".into(),
+            })?);
+        }
         let response = (self.parent)(input)?;
         ensure!(
             response.len() <= warden::parent_mailbox::MAX_FRAME_BYTES,
             "parent response overflow"
         );
-        let ParentReply::Spawn { request } = serde_json::from_slice(&response)? else {
-            anyhow::bail!("parent did not request a worker");
+        let request = match serde_json::from_slice(&response)? {
+            ParentReply::Spawn { request } => request,
+            // The parent refused this turn and kept its context: no worker,
+            // no reservation, no journal record. Only a refusal is accepted
+            // here; success is never taken from a parent without a child.
+            ParentReply::Completed {
+                api_version,
+                turn_id: refused,
+                succeeded: false,
+                ..
+            } if api_version == VERSION && refused == turn_id => return Ok(response),
+            _ => anyhow::bail!("parent did not request a worker"),
         };
         ensure!(request.turn_id == turn_id, "parent changed turn identity");
         let reservation = self.lease.reserve(&serde_json::to_vec(&request)?)?;
@@ -354,6 +375,82 @@ mod tests {
         session.submit(&input("two")).unwrap();
         assert!(session.submit(&input("one")).is_err());
         assert_eq!(calls.get(), 2);
+    }
+    #[test]
+    fn a_refused_turn_keeps_the_session_open_and_spends_nothing() {
+        let (lease, journal, root) = setup();
+        let mut context = crate::parent_harness::ParentContext::default();
+        let (reached, calls) = (Cell::new(0), Cell::new(0));
+        let mut session = ParentSession::new(
+            |bytes: &[u8]| {
+                reached.set(reached.get() + 1);
+                Ok(serde_json::to_vec(
+                    &context.exchange(bytes).map_err(anyhow::Error::msg)?,
+                )?)
+            },
+            |turn: &ReservedTurn| {
+                calls.set(calls.get() + 1);
+                Ok(DestroyedChild {
+                    child: turn.child.clone(),
+                    succeeded: true,
+                    answer: "answer".into(),
+                })
+            },
+            lease,
+            journal,
+        );
+        let turn = |id: &str, message: &str| {
+            serde_json::to_vec(&serde_json::json!({"kind":"turn","apiVersion":VERSION,"turnId":id,"message":message})).unwrap()
+        };
+        let refused = |reply: Vec<u8>| {
+            let ParentReply::Completed {
+                succeeded, answer, ..
+            } = serde_json::from_slice(&reply).unwrap()
+            else {
+                panic!("a refused turn completes as failed")
+            };
+            assert!(!succeeded && answer.starts_with("Turn refused; no worker started"));
+        };
+        // Too long for any parent: the host answers without delivering it.
+        let long = "x".repeat(warden::parent_protocol::MAX_MESSAGE_BYTES + 1);
+        refused(session.submit(&turn("one", &long)).unwrap());
+        assert_eq!(reached.get(), 0);
+        // Refused by the parent itself: accepted as a failed turn.
+        refused(session.submit(&turn("one", "nul\0")).unwrap());
+        assert_eq!((reached.get(), calls.get()), (1, 0));
+        assert!(!session.closed);
+        // Neither spent a turn of the two-turn lease or wrote a record.
+        session.submit(&turn("one", "hello")).unwrap();
+        session.submit(&turn("two", "again")).unwrap();
+        assert_eq!(calls.get(), 2);
+        let records = std::fs::read_dir(root.path())
+            .unwrap()
+            .flat_map(|parent| std::fs::read_dir(parent.unwrap().path()).unwrap())
+            .filter(|record| {
+                let name = record.as_ref().unwrap().file_name();
+                name.to_string_lossy().contains("reserved")
+            })
+            .count();
+        assert_eq!(records, 2);
+    }
+    #[test]
+    fn a_parent_cannot_complete_a_turn_successfully_without_a_child() {
+        let (lease, journal, _root) = setup();
+        let mut session = ParentSession::new(
+            |_: &[u8]| {
+                Ok(serde_json::to_vec(&ParentReply::Completed {
+                    api_version: VERSION.into(),
+                    turn_id: "one".into(),
+                    succeeded: true,
+                    answer: "invented".into(),
+                })?)
+            },
+            |_: &ReservedTurn| -> Result<DestroyedChild> { panic!("must not reach worker") },
+            lease,
+            journal,
+        );
+        assert!(session.submit(&input("one")).is_err());
+        assert!(session.closed);
     }
     #[test]
     fn caller_cannot_inject_result_or_invoke_worker() {

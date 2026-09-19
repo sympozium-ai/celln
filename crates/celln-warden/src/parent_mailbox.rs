@@ -9,7 +9,18 @@ use std::collections::VecDeque;
 pub const RX: u16 = 0x520;
 pub const TX: u16 = 0x521;
 pub const COMMIT: u16 = 0x522;
-pub const MAX_FRAME_BYTES: usize = 8192;
+/// Largest frame in either direction. Sized for the widest legitimate frames
+/// with margin: a spawn reply wraps an encoded turn request (at most
+/// `parent_protocol::MAX_REQUEST_BYTES`), and a result carries an answer of
+/// `MAX_ANSWER_BYTES` whose JSON escaping is at most sixfold (`\u00XX`).
+/// It must stay below 0xffff: the guest polls the low length word and reads
+/// 0xffff as "no frame yet".
+pub const MAX_FRAME_BYTES: usize = 61440;
+const _: () = assert!(
+    MAX_FRAME_BYTES < 0xffff
+        && MAX_FRAME_BYTES >= crate::parent_protocol::MAX_REQUEST_BYTES + 1024
+        && MAX_FRAME_BYTES >= 6 * crate::parent_protocol::MAX_ANSWER_BYTES + 1024
+);
 
 #[derive(Debug, Default)]
 pub struct ParentMailbox {
