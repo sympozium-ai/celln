@@ -95,9 +95,12 @@ fn profile(root: &Path, name: &str) -> Result<(Profile, String), String> {
         || p.model.len() > 128
         || p.max_requests == 0
         || p.max_requests > 6
-        || p.max_output_tokens != 512
-        || p.max_total_output_tokens < 512
-        || p.max_total_output_tokens > 3072
+        // One-shot Harness workers are never handed a configured cap: they
+        // request the default, so this path keeps requiring exactly it. Only
+        // a native parent's pinned model profile carries another value.
+        || p.max_output_tokens != ONE_SHOT_OUTPUT_TOKENS
+        || p.max_total_output_tokens < ONE_SHOT_OUTPUT_TOKENS
+        || p.max_total_output_tokens > 6 * ONE_SHOT_OUTPUT_TOKENS
     {
         return Err("unsupported operator model profile".into());
     }
@@ -150,7 +153,7 @@ fn candidate(request: &ExecutionRequest, name: &str, root: &Path) -> Result<Vec<
     }
     let options = h.json.as_ref().ok_or("missing JSON Harness options")?;
     if p.max_requests < options.max_turns
-        || p.max_total_output_tokens < options.max_turns as u64 * 512
+        || p.max_total_output_tokens < options.max_turns as u64 * ONE_SHOT_OUTPUT_TOKENS
     {
         return Err("issuer profile cannot fund the configured turn ceiling".into());
     }

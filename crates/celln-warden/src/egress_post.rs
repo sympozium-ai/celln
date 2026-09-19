@@ -101,6 +101,14 @@ pub fn model_endpoint_host(url: &str) -> Result<String, String> {
     model_endpoint_target(url, false).map(|target| target.host)
 }
 
+/// Output tokens one model request may ask for when the operator states no
+/// cap: what every starter worker requested before the cap was configurable.
+pub const DEFAULT_REQUEST_OUTPUT_TOKENS: u64 = 512;
+/// The per-request caps an operator may configure for a model backend
+/// (`modelConnection.maxOutputTokens`). The pinned profile carries the chosen
+/// value, the grant enforces it and the worker template tells the guest.
+pub const REQUEST_OUTPUT_TOKENS: std::ops::RangeInclusive<u64> = 256..=4096;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsonPostGrant {
     pub protocol: ModelProtocol,
@@ -1076,6 +1084,31 @@ mod tests {
             broker.fetch("https://fetch.invalid/file"),
             Err(FetchDenied::Budget)
         );
+    }
+
+    #[test]
+    fn a_request_may_ask_for_the_granted_cap_and_not_one_token_more() {
+        for cap in [256u64, 512, 4096] {
+            let mut grant = model_policy().json_posts.remove(0);
+            grant.max_output_tokens = cap;
+            grant.max_total_output_tokens = 6 * cap;
+            let mut body = chat_body();
+            body["max_tokens"] = serde_json::json!(cap);
+            assert_eq!(validate_chat(&body, &grant), Ok(cap));
+            body["max_tokens"] = serde_json::json!(cap + 1);
+            assert_eq!(
+                validate_chat(&body, &grant),
+                Err(refused("model output token limit exceeded"))
+            );
+            // A worker built before the cap was configurable asks for 512:
+            // accepted by any grant of at least that, refused below it.
+            body["max_tokens"] = serde_json::json!(512);
+            assert_eq!(validate_chat(&body, &grant).is_ok(), cap >= 512);
+            // The turn total still bounds a single request.
+            grant.max_total_output_tokens = cap - 1;
+            body["max_tokens"] = serde_json::json!(cap);
+            assert!(validate_chat(&body, &grant).is_err());
+        }
     }
 
     #[test]

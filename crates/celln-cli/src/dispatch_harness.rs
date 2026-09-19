@@ -15,6 +15,11 @@ pub(crate) use issuer::issue;
 #[cfg(test)]
 pub(crate) use issuer::prove_issuance;
 
+/// Output tokens each one-shot Harness model request may ask for. Fixed: a
+/// backend's configurable cap (`modelConnection.maxOutputTokens`) reaches
+/// only a native parent's workers, through its pinned model profile.
+const ONE_SHOT_OUTPUT_TOKENS: u64 = warden::egress::DEFAULT_REQUEST_OUTPUT_TOKENS;
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Grant {
@@ -121,9 +126,12 @@ fn resolve_bytes(
         || !grant.credential_file.is_absolute()
         || grant.max_requests == 0
         || grant.max_requests > 6
-        || grant.max_output_tokens != 512
-        || grant.max_total_output_tokens < 512
-        || grant.max_total_output_tokens > 3072
+        // One-shot Harness workers are never handed a configured cap: they
+        // request the default, so this path keeps requiring exactly it. Only
+        // a native parent's pinned model profile carries another value.
+        || grant.max_output_tokens != ONE_SHOT_OUTPUT_TOKENS
+        || grant.max_total_output_tokens < ONE_SHOT_OUTPUT_TOKENS
+        || grant.max_total_output_tokens > 6 * ONE_SHOT_OUTPUT_TOKENS
     {
         return Err("unsupported Harness model policy".into());
     }
@@ -210,7 +218,7 @@ fn json_config(request: &ExecutionRequest, grant: &Grant, root: &Path) -> Result
         .as_ref()
         .ok_or("missing JSON Harness options")?;
     if grant.max_requests < options.max_turns
-        || grant.max_total_output_tokens < (options.max_turns as u64) * 512
+        || grant.max_total_output_tokens < (options.max_turns as u64) * ONE_SHOT_OUTPUT_TOKENS
     {
         return Err("model grant cannot fund the configured JSON Harness turn ceiling".into());
     }

@@ -372,6 +372,9 @@ fn parent_audit_requires_private_opt_in_and_never_overwrites() {
 /// parent refuses anything longer, so the host must not deliver more.
 const LEGACY_ANSWER_BYTES: usize = 2048;
 
+/// What a caller can do about an answer longer than the parent accepts.
+const ANSWER_REMEDY: &str = "ask for a shorter answer or lower the backend's maxOutputTokens";
+
 /// The worker's one completion. The bound is the host's 8 KiB contract, or
 /// the smaller one the guest package was built with: a current worker states
 /// `answerLimit` in its completion, an older one states nothing and is held
@@ -403,7 +406,7 @@ fn answer(output: &[u8]) -> Result<String, String> {
             }
             if text.len() > limit {
                 return Err(format!(
-                    "worker answer of {} bytes exceeds the {limit}-byte parent contract",
+                    "worker answer of {} bytes exceeds the {limit}-byte parent contract; {ANSWER_REMEDY}",
                     text.len()
                 ));
             }
@@ -555,7 +558,18 @@ mod tests {
         assert_eq!(completed(8192, current()).unwrap().len(), 8192);
         assert_eq!(
             completed(8193, current()).unwrap_err(),
-            "worker answer of 8193 bytes exceeds the 8192-byte parent contract"
+            "worker answer of 8193 bytes exceeds the 8192-byte parent contract; ask for a shorter answer or lower the backend's maxOutputTokens"
+        );
+        // The worker refuses first, by exiting: also a failed turn, with the
+        // remedy in its text, and never a lost parent.
+        let refused = failure_reason(&outcome(
+            Some(1),
+            &format!("Error: {}", pilot::json_harness::answer_too_long()),
+        ))
+        .unwrap();
+        assert_eq!(
+            refused,
+            "Turn failed; no result committed: child exited with status 1: Error: final answer exceeds 8192 bytes: ask for a shorter answer or lower the backend's maxOutputTokens"
         );
         // A package built before the limit was stated has a 2 KiB parent.
         assert_eq!(completed(2048, None).unwrap().len(), 2048);

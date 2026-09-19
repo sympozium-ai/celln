@@ -21,8 +21,19 @@ pub struct Exchange {
 #[path = "json_harness_tests.rs"]
 mod tests;
 
+/// Output tokens a worker requests when its template names no `max_tokens`.
+pub const DEFAULT_MAX_TOKENS: u64 = warden::egress::DEFAULT_REQUEST_OUTPUT_TOKENS;
+
 /// Diagnosis for an empty answer that stopped at the output ceiling.
-pub const EMPTY_AT_LENGTH: &str = "final answer is empty: the model used its whole output budget (512 tokens) without answering; for a reasoning model, disable thinking in the backend's model parameters";
+pub fn empty_at_length(max_tokens: u64) -> String {
+    format!("final answer is empty: the model used its whole output budget ({max_tokens} tokens) without answering; for a reasoning model, disable thinking in the backend's model parameters or raise the backend's maxOutputTokens")
+}
+
+/// Diagnosis for an answer longer than the parent accepts. The turn fails;
+/// the parent and its conversation stay.
+pub fn answer_too_long() -> String {
+    format!("final answer exceeds {MAX_ANSWER_BYTES} bytes: ask for a shorter answer or lower the backend's maxOutputTokens")
+}
 
 pub fn validate(config: &Config) -> Result<()> {
     validate_with_history(config, &[])
@@ -198,10 +209,28 @@ pub struct Config {
     /// Omission preserves the original serialized template hash.
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_insecure: bool,
+    /// Output tokens every model request of this worker asks for: the
+    /// operator's per-request cap for the backend, delivered by the host.
+    /// Omitted at the default, which preserves the original serialized
+    /// template hash; a worker built before this field refuses a template
+    /// that carries it, so the host only sends it to a package that knows it.
+    #[serde(
+        default = "default_max_tokens",
+        skip_serializing_if = "is_default_max_tokens"
+    )]
+    pub max_tokens: u64,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn default_max_tokens() -> u64 {
+    DEFAULT_MAX_TOKENS
+}
+
+fn is_default_max_tokens(value: &u64) -> bool {
+    *value == DEFAULT_MAX_TOKENS
 }
 
 struct CheckedTool<'a> {
@@ -228,6 +257,12 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
     ensure!(
         (1..=6).contains(&config.max_turns) && config.max_calls <= 16 && config.tools.len() <= 24,
         "turn/call/tool limit exceeds contract"
+    );
+    ensure!(
+        warden::egress::REQUEST_OUTPUT_TOKENS.contains(&config.max_tokens),
+        "max_tokens must be {}..={}",
+        warden::egress::REQUEST_OUTPUT_TOKENS.start(),
+        warden::egress::REQUEST_OUTPUT_TOKENS.end()
     );
     let mut names = BTreeSet::new();
     ensure!(
@@ -339,15 +374,12 @@ pub fn run_with_history(
                     message["content"].is_null() || message.get("content").is_none(),
                     |text| text.trim().is_empty(),
                 );
-            ensure!(!starved, "{}", EMPTY_AT_LENGTH);
+            ensure!(!starved, "{}", empty_at_length(config.max_tokens));
             let answer = message["content"]
                 .as_str()
                 .context("missing final answer")?;
             ensure!(!answer.trim().is_empty(), "final answer is empty");
-            ensure!(
-                answer.len() <= MAX_ANSWER_BYTES,
-                "final answer exceeds {MAX_ANSWER_BYTES} bytes"
-            );
+            ensure!(answer.len() <= MAX_ANSWER_BYTES, "{}", answer_too_long());
             // `answerLimit` tells the host which answer contract this guest
             // package was built with; a package without it predates 8 KiB.
             event(
@@ -498,8 +530,7 @@ fn model_wire(
     messages: &[Value],
     calls: usize,
 ) -> Result<Vec<u8>> {
-    let mut body =
-        json!({"model":config.model,"stream":false,"max_tokens":512,"messages":messages});
+    let mut body = json!({"model":config.model,"stream":false,"max_tokens":config.max_tokens,"messages":messages});
     if !tools.is_empty() {
         body["tools"] = json!(tools.iter().map(|t| &t.definition).collect::<Vec<_>>());
         // Provider request is advisory; completion is independently checked

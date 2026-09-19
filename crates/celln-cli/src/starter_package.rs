@@ -337,6 +337,11 @@ pub(crate) fn prepare(
         "kernel":Hash::of(&kernel_bytes), "pilot":Hash::of(&pilot),
         "initSource":Hash::of(&init), "initramfsScript":Hash::of(&script),
         "programs":inputs, "bundles":bundles,
+        // What this package's worker understands beyond the first contract.
+        // `starter-configure` refuses a non-default
+        // `modelConnection.maxOutputTokens` for a package that does not say
+        // its worker reads `max_tokens` from the template.
+        "harness":{"maxTokensConfigurable":true},
         "admitted":false, "executionAuthorized":false,
         "hardwareConformance":"not_checked", "readiness":"not_established"
     });
@@ -505,6 +510,7 @@ mod tests {
         .unwrap();
         assert_eq!(report["admitted"], false);
         assert_eq!(report["executionAuthorized"], false);
+        assert_eq!(report["harness"]["maxTokensConfigurable"], true);
         assert_eq!(report["bundles"].as_array().unwrap().len(), 10);
         for entry in report["bundles"].as_array().unwrap() {
             let bundle = output.join(entry["name"].as_str().unwrap());
