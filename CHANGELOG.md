@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.22](https://github.com/sympozium-ai/celln/compare/v0.5.21...v0.5.22) (2026-09-19)
+
+
+### Features
+
+* **dispatch:** read-only GET /v1/cells listing on dispatcher and router ([aef410e](https://github.com/sympozium-ai/celln/commit/aef410eb4af05494b610e61f2f4db860489d940a))
+* **dispatch:** read-only GET /v1/cells listing on dispatcher and router ([30ddfad](https://github.com/sympozium-ai/celln/commit/30ddfadeae4a5300ac74333a110bbdbe6cce2676))
+* **parent:** keep long conversations alive and widen the turn bounds ([504dfa2](https://github.com/sympozium-ai/celln/commit/504dfa2d0395b3a1c5e6afcf0f5532d753ab3ed2))
+* **parent:** keep long conversations alive and widen the turn bounds ([7d61d37](https://github.com/sympozium-ai/celln/commit/7d61d3774a5ee50da70738a9720009180e2392f0))
+
 ## [0.5.21](https://github.com/sympozium-ai/celln/compare/v0.5.20...v0.5.21) (2026-09-17)
 
 
