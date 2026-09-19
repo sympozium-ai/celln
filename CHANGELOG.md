@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.23](https://github.com/sympozium-ai/celln/compare/v0.5.22...v0.5.23) (2026-09-19)
+
+
+### Features
+
+* **model:** operator-pinned provider request parameters for a model backend ([be3554a](https://github.com/sympozium-ai/celln/commit/be3554a92427cdf72284303edcb609c7cdb5a688))
+* **model:** operator-pinned provider request parameters for a model backend ([5fd2fdf](https://github.com/sympozium-ai/celln/commit/5fd2fdf6d093137a3133e4afefd20c954fc7a991))
+
 ## [0.5.22](https://github.com/sympozium-ai/celln/compare/v0.5.21...v0.5.22) (2026-09-19)
 
 
