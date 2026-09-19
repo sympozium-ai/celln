@@ -194,6 +194,8 @@ fn resolve_bytes(
         model: grant.model.clone(),
         max_output_tokens: grant.max_output_tokens,
         max_total_output_tokens: grant.max_total_output_tokens,
+        // One-shot Harness grants carry no provider parameters.
+        parameters: Default::default(),
     });
     Ok(Resolved {
         policy,

@@ -113,6 +113,10 @@ pub struct JsonPostGrant {
     /// Sum of requested output ceilings, reserved before network I/O. Failed
     /// or interrupted requests are not refunded because they may be billed.
     pub max_total_output_tokens: u64,
+    /// Operator-pinned provider fields (see `model_parameters`). The host adds
+    /// them to the outgoing body after the guest request passed validation;
+    /// they are never part of the guest contract nor delivered to the guest.
+    pub parameters: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -341,6 +345,21 @@ fn provider_request(
     Ok(out)
 }
 
+/// The exact JSON sent to the provider: the validated guest request in the
+/// provider's protocol, plus the operator's pinned parameters. A parameter
+/// never replaces a field the contract set; such a request is refused.
+fn outgoing_body(
+    body: &serde_json::Value,
+    grant: &JsonPostGrant,
+) -> Result<serde_json::Value, FetchDenied> {
+    let mut out = provider_request(body, grant.protocol)?;
+    // The refusal reaches the guest, so it names no parameter.
+    crate::model_parameters::merge(&mut out, &grant.parameters).map_err(|_| {
+        refused("operator model parameters collide with the provider request; nothing sent")
+    })?;
+    Ok(out)
+}
+
 fn provider_response(raw: Vec<u8>, protocol: ModelProtocol) -> Result<Vec<u8>, FetchDenied> {
     use serde_json::{json, Value};
     if protocol == ModelProtocol::OpenaiChat {
@@ -409,6 +428,11 @@ impl HttpBroker {
             return self.post_plain(request);
         };
         let output_tokens = validate_chat(&request.body, &grant)?;
+        // Defence in depth: configure and the profile reader already hold
+        // these rules; a grant built any other way is refused before I/O.
+        // The refusal reaches the guest, so it names no parameter.
+        crate::model_parameters::validate(&grant.parameters)
+            .map_err(|_| refused("operator model parameters violate host policy"))?;
         let used = if self.policy.get.is_some() {
             self.used - self.get_used
         } else {
@@ -432,7 +456,7 @@ impl HttpBroker {
         let credential = credential_header(&grant.bearer_token_file, grant.protocol)?;
         let mut body =
             tempfile::NamedTempFile::new().map_err(|_| refused("request staging failed"))?;
-        let provider_body = provider_request(&request.body, grant.protocol)?;
+        let provider_body = outgoing_body(&request.body, &grant)?;
         serde_json::to_writer(&mut body, &provider_body)
             .map_err(|_| refused("request staging failed"))?;
         let response_headers =
@@ -779,6 +803,7 @@ mod tests {
             model: "local".into(),
             max_output_tokens: 512,
             max_total_output_tokens: 1024,
+            parameters: Default::default(),
         });
         let mut broker = HttpBroker::new(policy);
         let request = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
@@ -790,6 +815,211 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(value["choices"][0]["message"]["content"], "LOCAL-OK");
         server.join().unwrap();
+    }
+
+    /// One-request local provider: answers `reply` and hands back the exact
+    /// request (headers and body) the broker sent.
+    fn capture(reply: String) -> (u16, std::thread::JoinHandle<(String, serde_json::Value)>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 4096];
+            let (head, body) = loop {
+                let n = stream.read(&mut buf).unwrap();
+                assert!(n > 0, "request ended early");
+                seen.extend_from_slice(&buf[..n]);
+                let Some(split) = seen.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8(seen[..split].to_vec()).unwrap();
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if seen.len() >= split + 4 + length {
+                    break (head, seen[split + 4..split + 4 + length].to_vec());
+                }
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            (head, serde_json::from_slice(&body).unwrap())
+        });
+        (port, server)
+    }
+
+    fn local_broker(
+        port: u16,
+        protocol: ModelProtocol,
+        token: &std::path::Path,
+        parameters: serde_json::Value,
+    ) -> (HttpBroker, String) {
+        let url = format!("http://127.0.0.1:{port}/v1/model");
+        let mut policy = HttpPolicy::new(vec!["127.0.0.1".into()]);
+        policy.allow_insecure = true;
+        policy.json_posts.push(JsonPostGrant {
+            protocol,
+            url: url.clone(),
+            bearer_token_file: token.to_path_buf(),
+            model: "local".into(),
+            max_output_tokens: 512,
+            max_total_output_tokens: 1024,
+            parameters: parameters.as_object().unwrap().clone(),
+        });
+        (HttpBroker::new(policy), url)
+    }
+
+    #[test]
+    fn operator_parameters_join_the_openai_body_and_never_reach_the_guest() {
+        use serde_json::json;
+        // llama-server shape: reasoning_content and timings ride along.
+        let reply = json!({"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"qwen",
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant",
+                "content":"LOCAL-OK","reasoning_content":""}}],
+            "usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12},
+            "timings":{"prompt_n":9,"predicted_n":3,"predicted_per_second":41.5}});
+        let (port, server) = capture(reply.to_string());
+        let mut token = tempfile::NamedTempFile::new().unwrap();
+        writeln!(token, "{}", "a".repeat(32)).unwrap();
+        let (mut broker, url) = local_broker(
+            port,
+            ModelProtocol::OpenaiChat,
+            token.path(),
+            json!({"chat_template_kwargs":{"enable_thinking":false},"top_k":20}),
+        );
+        let guest_body = json!({"model":"local","stream":false,"max_tokens":512,
+            "messages":[{"role":"user","content":"hi"}],
+            "tools":[{"type":"function","function":{"name":"read","description":"Read","parameters":{"type":"object"}}}],
+            "tool_choice":"auto"});
+        let request =
+            json!({"apiVersion":"celln.fetch/v1","method":"POST","url":url,"body":guest_body})
+                .to_string();
+        let delivered = broker.post_json(&request).unwrap();
+        let (head, sent) = server.join().unwrap();
+        // Exactly the guest's validated body plus the two pinned fields.
+        let mut expected = guest_body.clone();
+        expected["chat_template_kwargs"] = json!({"enable_thinking":false});
+        expected["top_k"] = json!(20);
+        assert_eq!(sent, expected);
+        assert!(head.contains("Authorization: Bearer "));
+        // The response is delivered as the provider sent it; nothing of the
+        // operator's parameters is echoed into the cell.
+        let value: serde_json::Value = serde_json::from_slice(&delivered).unwrap();
+        assert_eq!(value, reply);
+        let text = String::from_utf8(delivered).unwrap();
+        assert!(!text.contains("chat_template_kwargs") && !text.contains("enable_thinking"));
+        assert!(!text.contains("top_k"));
+    }
+
+    #[test]
+    fn operator_parameters_join_the_anthropic_body_after_translation() {
+        use serde_json::json;
+        let reply = json!({"id":"msg_1","type":"message","role":"assistant","model":"local",
+            "content":[{"type":"text","text":"REMOTE-OK"}],"stop_reason":"end_turn",
+            "usage":{"input_tokens":4,"output_tokens":2}});
+        let (port, server) = capture(reply.to_string());
+        let mut token = tempfile::NamedTempFile::new().unwrap();
+        writeln!(token, "{}", "a".repeat(32)).unwrap();
+        let (mut broker, url) = local_broker(
+            port,
+            ModelProtocol::AnthropicMessages,
+            token.path(),
+            json!({"temperature":0.2,"metadata":{"user_id":"fleet-7"},"stop_sequences":["END"]}),
+        );
+        let request = json!({"apiVersion":"celln.fetch/v1","method":"POST","url":url,
+            "body":{"model":"local","stream":false,"max_tokens":256,"messages":[
+                {"role":"system","content":"Be brief."},{"role":"user","content":"hi"}]}})
+        .to_string();
+        let delivered = broker.post_json(&request).unwrap();
+        let (head, sent) = server.join().unwrap();
+        assert_eq!(
+            sent,
+            json!({"model":"local","max_tokens":256,"stream":false,"system":"Be brief.",
+                "messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],
+                "temperature":0.2,"metadata":{"user_id":"fleet-7"},"stop_sequences":["END"]})
+        );
+        assert!(head.contains("x-api-key: ") && head.contains("anthropic-version: 2023-06-01"));
+        let value: serde_json::Value = serde_json::from_slice(&delivered).unwrap();
+        assert_eq!(
+            value,
+            json!({"choices":[{"index":0,"message":{"role":"assistant","content":"REMOTE-OK"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}})
+        );
+    }
+
+    #[test]
+    fn parameters_never_widen_the_guest_contract_or_replace_contract_fields() {
+        use serde_json::json;
+        let pinned = json!({"chat_template_kwargs":{"enable_thinking":false}});
+        let mut policy = model_policy();
+        policy.json_posts[0].parameters = pinned.as_object().unwrap().clone();
+        let wire = |body: &serde_json::Value| {
+            json!({"apiVersion":"celln.fetch/v1","method":"POST","url":"https://provider.invalid/chat","body":body}).to_string()
+        };
+        // The guest still may not send the field the operator pinned, nor any
+        // other unknown field: deny_unknown_fields is untouched.
+        for (key, value) in [
+            ("chat_template_kwargs", json!({"enable_thinking":true})),
+            ("temperature", json!(2)),
+            ("parameters", pinned.clone()),
+        ] {
+            let mut body = chat_body();
+            body[key] = value;
+            let mut broker = HttpBroker::new(policy.clone());
+            assert_eq!(
+                broker.post_json(&wire(&body)).unwrap_err(),
+                refused("unsupported model request parameters")
+            );
+            assert_eq!(broker.used, 0);
+        }
+        // A grant that did not come through configure is refused before the
+        // credential, DNS or any budget is touched, without naming the key.
+        for bad in [
+            json!({"max_tokens":4096}),
+            json!({"model":"other"}),
+            json!({"Bad-Key":1}),
+            json!({"a":{"b":{"c":{"d":1}}}}),
+        ] {
+            let mut policy = model_policy();
+            policy.json_posts[0].parameters = bad.as_object().unwrap().clone();
+            let mut broker = HttpBroker::new(policy);
+            assert_eq!(
+                broker.post_json(&wire(&chat_body())).unwrap_err(),
+                refused("operator model parameters violate host policy")
+            );
+            assert_eq!(broker.used, 0);
+            assert!(broker.post_output_reserved.is_empty());
+        }
+        // At merge time a parameter never overwrites what the contract set,
+        // in either protocol.
+        for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::AnthropicMessages] {
+            let mut grant = model_policy().json_posts.remove(0);
+            grant.protocol = protocol;
+            grant.parameters = pinned.as_object().unwrap().clone();
+            let out = outgoing_body(&chat_body(), &grant).unwrap();
+            assert_eq!(out["max_tokens"], 512);
+            assert_eq!(out["chat_template_kwargs"]["enable_thinking"], false);
+            grant.parameters = json!({"max_tokens":4096}).as_object().unwrap().clone();
+            assert_eq!(
+                outgoing_body(&chat_body(), &grant).unwrap_err(),
+                refused(
+                    "operator model parameters collide with the provider request; nothing sent"
+                )
+            );
+        }
+        // Without parameters the outgoing body is the guest body, unchanged.
+        let grant = model_policy().json_posts.remove(0);
+        assert_eq!(outgoing_body(&chat_body(), &grant).unwrap(), chat_body());
     }
 
     fn wire() -> String {
@@ -807,6 +1037,7 @@ mod tests {
             model: "approved".into(),
             max_output_tokens: 512,
             max_total_output_tokens: 1024,
+            parameters: Default::default(),
         });
         policy
     }
@@ -992,6 +1223,7 @@ mod tests {
             model: "approved-model".into(),
             max_output_tokens: 512,
             max_total_output_tokens: 1536,
+            parameters: Default::default(),
         });
         let broker = HttpBroker::new(policy);
         assert!(broker.grant_for(&parse(&wire()).unwrap()).is_ok());

@@ -21,6 +21,9 @@ pub struct Exchange {
 #[path = "json_harness_tests.rs"]
 mod tests;
 
+/// Diagnosis for an empty answer that stopped at the output ceiling.
+pub const EMPTY_AT_LENGTH: &str = "final answer is empty: the model used its whole output budget (512 tokens) without answering; for a reasoning model, disable thinking in the backend's model parameters";
+
 pub fn validate(config: &Config) -> Result<()> {
     validate_with_history(config, &[])
 }
@@ -328,6 +331,15 @@ pub fn run_with_history(
                 !config.require_tool_call || calls > 0,
                 "model completed without required tool execution"
             );
+            // A reasoning model can spend its whole output budget thinking
+            // and return no content (null or empty). Say so: the fix is in
+            // the backend's model parameters, not in the task.
+            let starved = choices[0]["finish_reason"] == "length"
+                && message["content"].as_str().map_or(
+                    message["content"].is_null() || message.get("content").is_none(),
+                    |text| text.trim().is_empty(),
+                );
+            ensure!(!starved, "{}", EMPTY_AT_LENGTH);
             let answer = message["content"]
                 .as_str()
                 .context("missing final answer")?;
