@@ -98,6 +98,78 @@ effects each have four-operation limits. This is not arbitrary tool or model
 configuration. The credential path must be outside controller-mounted state;
 the command never reads the credential itself.
 
+### Model connection and backend parameters
+
+The optional `modelConnection` replaces the default DeepSeek route. It is
+strict (unknown fields refuse):
+
+```json
+"modelConnection": {
+  "provider": "llama-server",
+  "protocol": "openai-chat",
+  "endpoint": "http://10.0.0.5:8080/v1/chat/completions",
+  "model": "qwen3",
+  "credentialProfile": "fleet-local",
+  "allowInsecure": true,
+  "parameters": {"chat_template_kwargs": {"enable_thinking": false}}
+}
+```
+
+`provider` and `credentialProfile` are identifiers (`[A-Za-z0-9_-]`, at most
+64 bytes) recorded in the receipt; `protocol` is `openai-chat` or
+`anthropic-messages`; `allowInsecure` is the operator opt-in for an HTTP or
+self-signed private endpoint.
+
+`parameters` is an optional JSON object of provider request fields. Absent or
+`{}` means none, and the profile, its hash and `configured.json` are then
+byte-for-byte what they were before this field existed. When present:
+
+- The guest contract does not change. The worker still sends only `model`,
+  `max_tokens`, `stream`, `messages`, `tools` and `tool_choice`, and a guest
+  request carrying any other field still refuses. After that validation, and
+  after the Anthropic translation where it applies, the **host** adds the
+  parameters to the outgoing provider body as top-level fields. They are never
+  delivered into a cell, a console frame or the journal; broker refusals that
+  reach the guest do not name them.
+- They are part of the hash-addressed model profile, so they are pinned to the
+  parent permit like the endpoint and the model. Changing them is a new
+  configuration. `configured.json` repeats them under `model.parameters` so an
+  installer can show what a backend sends.
+- Bounds, checked when the plan is configured, again whenever the profile is
+  read, and again by the broker before any I/O: at most 16 top-level keys;
+  every key at any depth matches `^[a-z][a-z0-9_]{0,63}$`; a value is a bool, a
+  finite number, a string of at most 256 bytes without NUL, an object under the
+  same rules, or an array of at most 8 bools/numbers/strings; no `null`;
+  nesting depth at most 3 counting the `parameters` object itself as 1;
+  at most 2048 bytes serialized.
+- Reserved top-level keys refuse, because Celln's own contract owns them and
+  this must not become a way to change what the guest was granted: `model`,
+  `messages`, `system`, `stream`, `stream_options`, `max_tokens`,
+  `max_completion_tokens`, `n`, `tools`, `tool_choice`, `functions`,
+  `function_call`, `parallel_tool_calls`, `user`. Should a parameter ever
+  coincide with a field already in the outgoing body, the request is refused
+  rather than the field overwritten.
+
+Why it exists: every model request is capped at 512 output tokens. A reasoning
+model served by llama-server (Qwen, for one) can spend all 512 on reasoning and
+return `finish_reason: "length"` with empty content; the server flag
+`--reasoning-budget 0` did not change that, while
+`"chat_template_kwargs": {"enable_thinking": false}` in the request did. A
+worker built from this revision on reports that case as `final answer is
+empty: the model used its whole output budget (512 tokens) without answering;
+for a reasoning model, disable thinking in the backend's model parameters`
+(guest code: it needs a new starter package; older packages say only `final
+answer is empty`). Parameter injection itself is host-only and works with
+existing packages.
+
+**Warning.** Parameters are sent verbatim and Celln does not know what they
+mean to a provider. One that changes the response shape or the request
+semantics can make every turn fail: Anthropic `thinking` requires a larger
+`max_tokens` than the fixed 512 and is refused by the provider; `logprobs`,
+`response_format` or a provider-side tool switch may produce responses the
+worker does not accept. Output ceilings are not adjustable here. Prefer the
+smallest set that fixes an observed problem, and run a turn after changing it.
+
 Conversation bounds of an enduring parent: a user message is at most 2048
 bytes, a committed answer at most 8192 bytes, and the worker task (history plus
 message) at most 16384 bytes and sixteen exchanges. A parent never stops because

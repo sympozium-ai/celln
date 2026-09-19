@@ -173,6 +173,7 @@ pub fn run(
                 model: "deepseek-chat".into(),
                 max_output_tokens: 512,
                 max_total_output_tokens: reservation.limits.output_tokens,
+                parameters: Default::default(),
             });
             child.enable_http_fetch(policy);
         }

@@ -115,6 +115,7 @@ fn main() -> Result<()> {
             model: "deepseek-chat".into(),
             max_output_tokens: 64,
             max_total_output_tokens: 64,
+            parameters: Default::default(),
         });
         policy.timeout = std::time::Duration::from_secs(45);
         cell.set_timeout(std::time::Duration::from_secs(90));

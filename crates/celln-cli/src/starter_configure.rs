@@ -120,6 +120,20 @@ struct ModelConnection {
     credential_profile: String,
     #[serde(default)]
     allow_insecure: bool,
+    /// Provider request fields the host adds to every model request of this
+    /// backend (`warden::model_parameters`). Absent or `{}` means none.
+    #[serde(default)]
+    parameters: serde_json::Map<String, Value>,
+}
+
+/// Parameters appear in the pinned profile and in the receipt only when the
+/// operator stated some, so a plan without them produces the bytes (and the
+/// profile hash) it always did.
+fn with_parameters(mut section: Value, parameters: &serde_json::Map<String, Value>) -> Value {
+    if !parameters.is_empty() {
+        section["parameters"] = Value::Object(parameters.clone());
+    }
+    section
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -136,6 +150,11 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     let plan: Plan = serde_json::from_slice(&crate::starter_package::regular(plan, 16384)?)?;
     let connection = plan.model_connection.as_ref();
+    let no_parameters = serde_json::Map::new();
+    let parameters = connection.map_or(&no_parameters, |c| &c.parameters);
+    // Refused before the package, the store or the output are touched.
+    warden::model_parameters::validate(parameters)
+        .map_err(|reason| anyhow::anyhow!("modelConnection.parameters refused: {reason}"))?;
     let endpoint = connection.map_or("https://api.deepseek.com/chat/completions", |c| {
         c.endpoint.as_str()
     });
@@ -304,9 +323,10 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         template_json["allow_insecure"] = json!(true);
     }
     let template = pilot::turn_worker::Template::new(serde_json::from_value(template_json)?)?;
-    let profile = serde_json::to_vec(
-        &json!({"apiVersion":"celln.parent-model-profile/v1","protocol":connection.map(|c| c.protocol).unwrap_or_default(),"allowInsecure":connection.is_some_and(|c| c.allow_insecure),"principal":plan.principal,"requestBinding":worker.configuration_binding(ConfigurationRole::Worker).map_err(anyhow::Error::msg)?,"templateBinding":template.binding(),"credentialFile":plan.credential_file,"url":template.policy().url,"model":template.policy().model,"maxRequests":TURN_MODEL_REQUESTS,"maxOutputTokens":REQUEST_OUTPUT_TOKENS,"maxTotalOutputTokens":TURN_OUTPUT_TOKENS,"workspace":{"read":true,"write":true,"maxOperations":8,"maxFiles":8,"maxFileBytes":4096,"maxTotalBytes":16384},"fetch":{"allowHosts":hosts,"maxRequests":4,"maxResponseBytes":4096,"timeoutMs":10000},"post":{"allowHosts":hosts,"maxRequests":4,"maxBodyBytes":4096,"maxResponseBytes":4096,"timeoutMs":10000}}),
-    )?;
+    let profile = serde_json::to_vec(&with_parameters(
+        json!({"apiVersion":"celln.parent-model-profile/v1","protocol":connection.map(|c| c.protocol).unwrap_or_default(),"allowInsecure":connection.is_some_and(|c| c.allow_insecure),"principal":plan.principal,"requestBinding":worker.configuration_binding(ConfigurationRole::Worker).map_err(anyhow::Error::msg)?,"templateBinding":template.binding(),"credentialFile":plan.credential_file,"url":template.policy().url,"model":template.policy().model,"maxRequests":TURN_MODEL_REQUESTS,"maxOutputTokens":REQUEST_OUTPUT_TOKENS,"maxTotalOutputTokens":TURN_OUTPUT_TOKENS,"workspace":{"read":true,"write":true,"maxOperations":8,"maxFiles":8,"maxFileBytes":4096,"maxTotalBytes":16384},"fetch":{"allowHosts":hosts,"maxRequests":4,"maxResponseBytes":4096,"timeoutMs":10000},"post":{"allowHosts":hosts,"maxRequests":4,"maxBodyBytes":4096,"maxResponseBytes":4096,"timeoutMs":10000}}),
+        parameters,
+    ))?;
     let profile_hash = Hash::of(&profile);
     let mut catalogue_tools = Vec::new();
     for tool in &template.policy().tools {
@@ -355,7 +375,10 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     fs::File::open(profiles)?.sync_all()?;
     let mut complete = json!({"apiVersion":"celln.native-starter-configured/v1","packageHash":plan.package_hash,"catalogueHash":Hash::of(&catalogue_bytes),"nativeTemplateHash":Hash::of(&native_bytes),"principal":plan.principal,"modelProfile":profile_hash,"model":{"provider":"deepseek","model":"deepseek-chat"},"hostLimits":{"leaseSeconds":limits.lease_seconds,"maxTurns":limits.max_turns,"maxModelRequests":limits.max_model_requests,"maxOutputTokens":limits.max_output_tokens},"httpsHosts":hosts,"executionAuthorized":false,"readiness":"not_established"});
     if let Some(c) = connection {
-        complete["model"] = json!({"provider":c.provider,"protocol":c.protocol,"model":c.model,"baseURL":c.endpoint,"credentialProfile":c.credential_profile,"allowInsecure":c.allow_insecure});
+        complete["model"] = with_parameters(
+            json!({"provider":c.provider,"protocol":c.protocol,"model":c.model,"baseURL":c.endpoint,"credentialProfile":c.credential_profile,"allowInsecure":c.allow_insecure}),
+            parameters,
+        );
     }
     write_new(
         &plan.output.join("configured.json"),
@@ -394,5 +417,59 @@ mod tests {
         assert!(resolve_limits(Some(&limits(5, 3072))).is_err());
         assert!(resolve_limits(Some(&limits(6, 3071))).is_err());
         assert!(resolve_limits(Some(&limits(6144, 3_145_728))).is_ok());
+    }
+
+    #[test]
+    fn refused_parameters_stop_configuration_before_anything_is_touched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("authority");
+        fs::create_dir(&root).unwrap();
+        let attempt = |parameters: Value| {
+            let output = dir.path().join("configured");
+            let plan = dir.path().join("plan.json");
+            // The package does not exist: a refusal naming parameters proves
+            // they are judged first, from the plan alone.
+            fs::write(&plan, serde_json::to_vec(&json!({
+                "apiVersion":"celln.native-starter-config/v1","package":dir.path().join("absent"),
+                "packageHash":format!("blake3:{}", "a".repeat(64)),"principal":"operator:test",
+                "credentialFile":"/etc/celln-native/token","output":output,
+                "modelConnection":{"provider":"llama-server","protocol":"openai-chat",
+                    "endpoint":"http://10.0.0.5:8080/v1/chat/completions","model":"qwen",
+                    "credentialProfile":"local","allowInsecure":true,"parameters":parameters}
+            })).unwrap()).unwrap();
+            let error = run(&plan, &root).unwrap_err().to_string();
+            assert!(!output.exists());
+            assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+            error
+        };
+        for key in warden::model_parameters::RESERVED {
+            let mut parameters = serde_json::Map::new();
+            parameters.insert(key.into(), json!(1));
+            assert_eq!(
+                attempt(Value::Object(parameters)),
+                format!("modelConnection.parameters refused: model parameter {key} is reserved by the Celln model contract")
+            );
+        }
+        assert!(attempt(json!({"a":{"b":{"c":{"d":1}}}})).contains("nests deeper than 3"));
+        assert!(attempt(json!({"Thinking":true})).contains("must match"));
+        // Valid parameters pass this gate: the refusal is about the package.
+        let error = attempt(json!({"chat_template_kwargs":{"enable_thinking":false}}));
+        assert!(!error.contains("parameters"), "{error}");
+        // Not an object: the strict plan itself does not parse.
+        assert!(!attempt(json!([1])).contains("refused"));
+    }
+
+    #[test]
+    fn sections_without_parameters_are_byte_identical() {
+        let section = json!({"provider":"deepseek","model":"deepseek-chat","allowInsecure":false});
+        let none = serde_json::Map::new();
+        assert_eq!(
+            serde_json::to_vec(&with_parameters(section.clone(), &none)).unwrap(),
+            serde_json::to_vec(&section).unwrap()
+        );
+        let some = json!({"chat_template_kwargs":{"enable_thinking":false}});
+        let with = with_parameters(section, some.as_object().unwrap());
+        assert_eq!(with["parameters"], some);
+        assert_eq!(with["provider"], "deepseek");
     }
 }

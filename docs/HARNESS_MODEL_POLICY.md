@@ -23,6 +23,12 @@ The broker validates the guest body before DNS, credential access or curl:
 - Existing 8,192-byte request, bounded response, request-count and timeout
   controls still apply. Invalid policy/requests fail closed.
 
+A grant may carry operator-pinned provider `parameters` (native starter
+`modelConnection.parameters`, see `NATIVE_STARTER_PACKAGING.md`). They do not
+widen the guest body above: the host merges them into the outgoing provider
+request after validation, reserved contract fields refuse, and the guest never
+sees them. One-shot Harness grants carry none.
+
 For each authorized outgoing attempt, the broker reserves the requested
 `max_tokens`, not the provider-reported actual usage, against the endpoint's
 cumulative allowance. Reservations use checked arithmetic. Failed requests

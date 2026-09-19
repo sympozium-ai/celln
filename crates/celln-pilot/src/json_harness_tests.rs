@@ -569,3 +569,85 @@ fn a_long_history_gives_way_to_tool_rounds_oldest_exchange_first() {
     // Host validation of the same turn agrees instead of refusing it.
     assert!(validate_with_history(&cfg, &history).is_ok());
 }
+
+fn finished(message: Value, finish: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({"choices":[{"index":0,"message":message,"finish_reason":finish}]}))
+        .unwrap()
+}
+
+fn outcome(response: Vec<u8>) -> Result<String> {
+    run(
+        &config(&[]),
+        |_| Ok(response.clone()),
+        |_, _| panic!("no tools requested"),
+        |_| {},
+    )
+}
+
+#[test]
+fn an_answer_starved_by_reasoning_is_diagnosed_as_such() {
+    // llama-server with a thinking model: every token went to reasoning.
+    for content in [json!(""), json!("  \n"), Value::Null] {
+        let error = outcome(finished(
+            json!({"role":"assistant","content":content,"reasoning_content":"Let me think..."}),
+            "length",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, EMPTY_AT_LENGTH);
+        assert!(error.starts_with("final answer is empty"));
+        assert!(error.contains("512 tokens") && error.contains("disable thinking"));
+        // The reasoning text is never quoted into the error.
+        assert!(!error.contains("Let me think"));
+    }
+    // No content field at all, as the Anthropic normalisation cannot produce
+    // but an OpenAI-compatible server may.
+    assert_eq!(
+        outcome(finished(json!({"role":"assistant"}), "length"))
+            .unwrap_err()
+            .to_string(),
+        EMPTY_AT_LENGTH
+    );
+    // An empty answer that did not hit the ceiling keeps the plain message.
+    assert_eq!(
+        outcome(finished(json!({"role":"assistant","content":""}), "stop"))
+            .unwrap_err()
+            .to_string(),
+        "final answer is empty"
+    );
+    // A truncated but present answer is still an answer.
+    assert_eq!(
+        outcome(finished(
+            json!({"role":"assistant","content":"partial"}),
+            "length"
+        ))
+        .unwrap(),
+        "partial"
+    );
+}
+
+#[test]
+fn llama_server_shaped_responses_with_extra_fields_parse_as_before() {
+    let response = serde_json::to_vec(&json!({
+        "id":"chatcmpl-x","object":"chat.completion","created":1,"model":"qwen",
+        "system_fingerprint":"b1-x",
+        "choices":[{"index":0,"finish_reason":"stop","message":{
+            "role":"assistant","content":"Paris.","reasoning_content":"The capital of France"}}],
+        "usage":{"prompt_tokens":20,"completion_tokens":115,"total_tokens":135},
+        "timings":{"prompt_n":20,"prompt_ms":31.5,"predicted_n":115,"predicted_per_second":48.2}
+    }))
+    .unwrap();
+    let mut events = Vec::new();
+    let answer = run(
+        &config(&[]),
+        |_| Ok(response.clone()),
+        |_, _| panic!("no tools requested"),
+        |event| events.push(event),
+    )
+    .unwrap();
+    assert_eq!(answer, "Paris.");
+    // Reasoning is not part of the answer or of any event.
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("capital of France"));
+}

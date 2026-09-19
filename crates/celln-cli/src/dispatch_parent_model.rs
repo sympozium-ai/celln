@@ -36,6 +36,11 @@ struct Profile {
     fetch: Option<FetchProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     post: Option<PostProfile>,
+    /// Operator-chosen provider request fields (`modelConnection.parameters`).
+    /// Absent when empty, so a profile without them keeps the bytes, and
+    /// therefore the pinned hash, it had before parameters existed.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    parameters: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -219,6 +224,10 @@ impl ChildBrokers {
         {
             return Err("parent model profile policy mismatch".into());
         }
+        // The hash already pins these bytes; the rules are held here as well
+        // so a profile installed by any other means cannot widen them.
+        warden::model_parameters::validate(&profile.parameters)
+            .map_err(|reason| format!("invalid parent model profile: {reason}"))?;
         if let Some(fetch) = &profile.fetch {
             if !(1..=16).contains(&fetch.max_requests)
                 || !(1..=65536).contains(&fetch.max_response_bytes)
@@ -313,6 +322,7 @@ impl ChildBrokers {
             bearer_token_file: profile.credential_file,
             max_output_tokens: 512,
             max_total_output_tokens: profile.max_total_output_tokens,
+            parameters: profile.parameters,
         });
         Ok(policy)
     }
@@ -348,12 +358,16 @@ impl ChildBrokers {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    fn fixture() -> (
+    type Fixture = (
         tempfile::TempDir,
         ChildBrokers,
         warden::parent_lease::ParentLease,
         PathBuf,
-    ) {
+    );
+    fn fixture() -> Fixture {
+        fixture_with(serde_json::json!({})).unwrap()
+    }
+    fn fixture_with(parameters: serde_json::Value) -> Result<Fixture, String> {
         let root = tempfile::tempdir().unwrap();
         let request = super::super::parent_tests::request();
         let mut binding = super::super::parent_tests::binding(&request);
@@ -388,6 +402,7 @@ mod tests {
             workspace: None,
             fetch: None,
             post: None,
+            parameters: parameters.as_object().unwrap().clone(),
         };
         let bytes = serde_json::to_vec(&profile).unwrap();
         let hash = Hash::of(&bytes);
@@ -398,8 +413,7 @@ mod tests {
             .join("trusted-parent-models")
             .join(format!("{}.json", &hash.0[7..]));
         std::fs::write(&path, &bytes).unwrap();
-        let issuer =
-            ChildBrokers::new(root.path(), hash, binding.clone(), &request, &template).unwrap();
+        let issuer = ChildBrokers::new(root.path(), hash, binding.clone(), &request, &template)?;
         let mut wrong = binding.clone();
         wrong.worker_configuration = Hash::of(b"wrong");
         assert!(ChildBrokers::new(
@@ -424,7 +438,103 @@ mod tests {
             1024,
         )
         .unwrap();
-        (root, issuer, lease, path)
+        Ok((root, issuer, lease, path))
+    }
+    #[test]
+    fn a_profile_without_parameters_keeps_the_bytes_existing_fleets_pinned() {
+        let hash = |c: &str| Hash(format!("blake3:{}", c.repeat(64)));
+        let mut profile = Profile {
+            protocol: Default::default(),
+            api_version: "celln.parent-model-profile/v1".into(),
+            principal: "sympozium:celln-agents".into(),
+            request_binding: hash("a"),
+            template_binding: hash("b"),
+            credential_file: "/etc/celln-native/model-token".into(),
+            url: "https://api.deepseek.com/chat/completions".into(),
+            model: "deepseek-chat".into(),
+            max_requests: 6,
+            max_output_tokens: 512,
+            max_total_output_tokens: 3072,
+            allow_insecure: false,
+            workspace: None,
+            fetch: None,
+            post: None,
+            parameters: Default::default(),
+        };
+        // Literal output of the struct as it was before `parameters` existed.
+        let before = format!(
+            r#"{{"protocol":"openai-chat","apiVersion":"celln.parent-model-profile/v1","principal":"sympozium:celln-agents","requestBinding":"blake3:{}","templateBinding":"blake3:{}","credentialFile":"/etc/celln-native/model-token","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","maxRequests":6,"maxOutputTokens":512,"maxTotalOutputTokens":3072,"allowInsecure":false}}"#,
+            "a".repeat(64),
+            "b".repeat(64)
+        );
+        assert_eq!(serde_json::to_string(&profile).unwrap(), before);
+        // A profile written before this field existed still reads, as none.
+        let old: Profile = serde_json::from_str(&before).unwrap();
+        assert!(old.parameters.is_empty());
+        // With parameters they are part of the hashed bytes and round-trip.
+        profile.parameters = serde_json::json!({"chat_template_kwargs":{"enable_thinking":false}})
+            .as_object()
+            .unwrap()
+            .clone();
+        let with = serde_json::to_vec(&profile).unwrap();
+        assert_eq!(
+            String::from_utf8(with.clone()).unwrap(),
+            format!(
+                r#"{},"parameters":{{"chat_template_kwargs":{{"enable_thinking":false}}}}}}"#,
+                &before[..before.len() - 1]
+            )
+        );
+        assert_ne!(Hash::of(&with), Hash::of(before.as_bytes()));
+        let back: Profile = serde_json::from_slice(&with).unwrap();
+        assert_eq!(back.parameters, profile.parameters);
+        assert_eq!(serde_json::to_vec(&back).unwrap(), with);
+        // The shape starter-configure writes (a JSON object, sorted keys).
+        let configured: Profile = serde_json::from_value(serde_json::json!({
+            "apiVersion":"celln.parent-model-profile/v1","protocol":"openai-chat","allowInsecure":true,
+            "principal":"p","requestBinding":hash("a"),"templateBinding":hash("b"),
+            "credentialFile":"/etc/token","url":"http://10.0.0.5:8080/v1/chat/completions","model":"qwen",
+            "maxRequests":6,"maxOutputTokens":512,"maxTotalOutputTokens":3072,
+            "parameters":{"chat_template_kwargs":{"enable_thinking":false}}
+        }))
+        .unwrap();
+        assert_eq!(configured.parameters, profile.parameters);
+    }
+    #[test]
+    fn pinned_parameters_reach_the_child_grant_and_are_revalidated_on_read() {
+        let pinned =
+            serde_json::json!({"chat_template_kwargs":{"enable_thinking":false},"top_k":20});
+        let (_root, mut issuer, mut lease, path) = fixture_with(pinned.clone()).unwrap();
+        let turn = reserve(&mut lease, "one");
+        let policy = issuer.for_turn(&turn).unwrap();
+        assert_eq!(
+            serde_json::Value::Object(policy.json_posts[0].parameters.clone()),
+            pinned
+        );
+        // Parameters are hashed with the rest: editing them in place breaks
+        // the pin held by the parent permit.
+        let edited = String::from_utf8(std::fs::read(&path).unwrap())
+            .unwrap()
+            .replace(r#""enable_thinking":false"#, r#""enable_thinking":true "#);
+        std::fs::write(&path, edited).unwrap();
+        lease.confirm_child_destroyed(&turn.child).unwrap();
+        let turn = reserve(&mut lease, "two");
+        assert_eq!(
+            issuer.for_turn(&turn).unwrap_err(),
+            "parent model profile revision mismatch"
+        );
+        // A correctly hashed profile that breaks the rules is still refused.
+        for bad in [
+            serde_json::json!({"max_tokens":4096}),
+            serde_json::json!({"messages":[]}),
+            serde_json::json!({"Upper":1}),
+            serde_json::json!({"a":{"b":{"c":{"d":1}}}}),
+        ] {
+            let error = fixture_with(bad).err().unwrap();
+            assert!(
+                error.starts_with("invalid parent model profile: model parameter"),
+                "{error}"
+            );
+        }
     }
     fn reserve(lease: &mut warden::parent_lease::ParentLease, id: &str) -> ReservedTurn {
         lease.reserve(&serde_json::to_vec(&serde_json::json!({"apiVersion":warden::parent_protocol::VERSION,"turnId":id,"task":"input"})).unwrap()).unwrap()

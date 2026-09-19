@@ -10,6 +10,7 @@
 //! feature-gated stub, because it needs bare metal.
 
 pub mod egress;
+pub mod model_parameters;
 pub mod parent_child_control;
 pub mod parent_journal;
 pub mod parent_lease;
