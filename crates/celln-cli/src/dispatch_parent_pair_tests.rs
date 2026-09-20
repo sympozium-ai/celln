@@ -165,25 +165,41 @@ fn scoped_mediated_lifecycles_on_real_kvm() {
     let work = tempfile::tempdir().unwrap();
     let root = work.path();
     let runtime = crate::dispatch::tests::test_runtime_root(root).unwrap();
-    let mut parent = bundle(
-        root,
-        &runtime,
+    // Exercise the installed package, not a hand-built two-member worker that
+    // hid the monolithic starter closure's empty-selection refusal.
+    let package = root.join("starter-package");
+    let signing_key = root.join("fixture-signing-key");
+    std::fs::write(&signing_key, [31u8; 32]).unwrap();
+    let report = crate::starter_package::prepare(
+        &repo.canonicalize().unwrap(),
+        &binaries,
         &kernel,
-        "parent",
-        &[("/parent", binaries.join("celln-harness-parent"))],
-    );
-    // The retained parent must outlive every turn it is permitted to serve.
+        &signing_key,
+        &package,
+        &Default::default(),
+        &[],
+    )
+    .unwrap();
+    let packaged_request = |name: &str| {
+        let entry = report["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["name"] == name)
+            .unwrap();
+        let mut request = super::parent_tests::request();
+        request.id = name.into();
+        request.workload.id = name.into();
+        request.mote.as_mut().unwrap().hash = entry["mote"].as_str().unwrap().into();
+        request.tools[0].hash = entry["executable"].as_str().unwrap().into();
+        request.tools[0].alias = entry["entryPoint"].as_str().unwrap().into();
+        request.tools[0].closure.as_mut().unwrap().hash = entry["closure"].as_str().unwrap().into();
+        request.invocation.as_mut().unwrap().alias = entry["entryPoint"].as_str().unwrap().into();
+        request
+    };
+    let mut parent = packaged_request("parent");
     parent.capabilities.timeout_ms = 180000;
-    let worker = bundle(
-        root,
-        &runtime,
-        &kernel,
-        "worker",
-        &[
-            ("/worker", binaries.join("celln-harness-turn")),
-            ("/pilot-fetch", binaries.join("pilot-fetch")),
-        ],
-    );
+    let worker = packaged_request("runtime");
     let one_shot = bundle(
         root,
         &runtime,
@@ -194,6 +210,8 @@ fn scoped_mediated_lifecycles_on_real_kvm() {
             ("/pilot-fetch", binaries.join("pilot-fetch")),
         ],
     );
+    let package_hash = Hash::of(&std::fs::read(package.join("package.json")).unwrap());
+    crate::starter_admit::run(&package, &package_hash.0, root).unwrap();
     let motes: Vec<_> = [&parent, &worker, &one_shot]
         .iter()
         .map(|request| request.mote.as_ref().unwrap().hash.clone())

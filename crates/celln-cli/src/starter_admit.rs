@@ -49,9 +49,10 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
     let entries = report["bundles"]
         .as_array()
         .context("package bundles required")?;
+    let has_runtime = entries.iter().any(|entry| entry["name"] == "runtime");
     ensure!(
-        entries.len() == NAMES.len(),
-        "exact ten-bundle starter package required"
+        entries.len() == NAMES.len() + usize::from(has_runtime),
+        "exact starter bundles (and optional isolated runtime) required"
     );
     let kernel = regular(&package.join("kernel"), 64 << 20)?;
     ensure!(
@@ -59,10 +60,14 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
         "kernel hash mismatch"
     );
     let mut candidates = Vec::new();
-    for name in NAMES {
+    for name in NAMES
+        .iter()
+        .copied()
+        .chain(has_runtime.then_some("runtime"))
+    {
         let matching: Vec<_> = entries
             .iter()
-            .filter(|entry| entry["name"] == *name)
+            .filter(|entry| entry["name"] == name)
             .collect();
         ensure!(
             matching.len() == 1,
@@ -97,7 +102,11 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
                 "package artifact hash mismatch: {name}/{field}"
             );
         }
-        let alias = format!("/{name}");
+        let alias = if name == "runtime" {
+            "/worker".into()
+        } else {
+            format!("/{name}")
+        };
         ensure!(
             entry["entryPoint"] == alias && signed.closure.entrypoint == alias,
             "unexpected starter entrypoint"
@@ -125,7 +134,7 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
             "mote descriptor differs from verified inputs"
         );
         candidates.push(Candidate {
-            name: (*name).into(),
+            name: name.into(),
             kernel: kernel.clone(),
             initrd,
             image,
@@ -212,7 +221,7 @@ mod tests {
         assert_eq!(run(&package, &expected, &root).unwrap(), 0);
         let policy: Value =
             serde_json::from_slice(&fs::read(root.join("trusted-motes.json")).unwrap()).unwrap();
-        assert_eq!(policy["bundles"].as_array().unwrap().len(), 10);
+        assert_eq!(policy["bundles"].as_array().unwrap().len(), 11);
         for entry in report["bundles"].as_array().unwrap() {
             assert!(policy["bundles"]
                 .as_array()
@@ -227,6 +236,16 @@ mod tests {
             crate::starter_configure::run(&config_plan, &root).unwrap(),
             0
         );
+        let catalogue: Value =
+            serde_json::from_slice(&fs::read(configured.join("catalogue.json")).unwrap()).unwrap();
+        let runtime = report["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "runtime")
+            .unwrap();
+        assert_eq!(catalogue["worker"]["closure"]["hash"], runtime["closure"]);
+        assert_eq!(catalogue["worker"]["mote"]["hash"], runtime["mote"]);
         assert!(!root.join("trusted-parent-permits").exists());
         assert!(crate::starter_configure::run(&config_plan, &root).is_err());
         // The reviewed parent is also written as the scoped receiver's parent
