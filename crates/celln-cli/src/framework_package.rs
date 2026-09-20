@@ -480,7 +480,7 @@ fn prepare(
 
     let revision = format!(
         "r-{}-{}",
-        &source_revision[..12.min(source_revision.len())].to_ascii_lowercase(),
+        source_revision[..12.min(source_revision.len())].to_ascii_lowercase(),
         &Hash::of(&one_shot).0[7..19]
     );
     let resources = resources(
