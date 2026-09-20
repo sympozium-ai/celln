@@ -1,5 +1,8 @@
 //! `celln` command-line interface.
 
+#[cfg(test)]
+mod tenancy_contract;
+
 mod agent;
 mod capabilities;
 mod cells;
