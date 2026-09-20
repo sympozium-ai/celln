@@ -21,12 +21,11 @@ Stateful accounting sequences likewise belong to the durable ledger consumer.
 
 ## Not an admission implementation
 
-This module is **test-only**, not reachable from the running router/dispatcher.
-It is a cross-language conformance prerequisite, not a complete production
-verifier. It must not be used as permission to spawn a cell. Production work
-still needs complete typed/schema validation (including artifact/HTTPS limits),
-trusted key loading/atomic rotation, receiver-owned durable context, full HTTP
-surface enforcement and dynamic parent ownership/admission. Runtime wiring must
+The initial 05b implementation was test-only. The subsequent 05c library adds
+runtime schema validation and atomic public-key loading/reload; see
+`tenancy-runtime-verifier.md`. It is still not wired into router/dispatcher
+admission. Receiver-owned durable context, full HTTP surface enforcement and
+dynamic parent ownership/admission remain required before spawning cells. Runtime wiring must
 preserve independent host publisher/closure/ABI checks.
 
 The fixture's `seenAdmissionJti` is only a replay *disposition* observation.

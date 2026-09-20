@@ -1,5 +1,5 @@
-//! Independent Rust consumer for the Sympozium #496 integer-only JCS profile.
-//! Test-only prerequisite for #500; does not admit execution or verify JWS.
+//! Bounded integer-only JCS encoding shared by the runtime verifier and its
+//! independent Sympozium #496 conformance tests. Encoding grants no authority.
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
