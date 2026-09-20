@@ -26,7 +26,37 @@ All shared verifier dispositions continue to pass after this correction.
 
 ## Receiver integration requirements
 
-This is a runtime **library**, not yet router/dispatcher enforcement. Receivers
+The verifier is a library, and the dispatcher now consumes it: `celln dispatcher`
+serves `POST /v1/scoped/{prepare,start,read,cleanup}`
+(`crates/celln-cli/src/dispatch_scoped.rs`). The router does not proxy these
+routes. Every request carries the scoped operator bearer in `Authorization`
+(a separate credential from `--token-file`, which these routes refuse);
+`start`/`read`/`cleanup` carry the signed capability in
+`X-Celln-Execution-Permit`, and a `start` on a model route additionally carries
+`X-Celln-Model-Permit`. Permits are verified against the prepared decision and
+are never written to the state root.
+
+The receiver is off (`404 {"error":"scoped receiver disabled"}`) unless it is
+configured, and dispatcher start-up fails on a partial configuration:
+
+| Flag | Rule |
+|---|---|
+| `--scoped-operator-token-file`, `--scoped-jwks-file`, `--scoped-issuer` | All three or none. Token and JWKS are re-read per request; an unreadable one answers 503. |
+| `--scoped-gateway-origin` | Needs the three above. A bare `https://host[:port]` origin. Required for any model route; without it a model-route start is refused `AUTH_CONTEXT_LOST`. |
+| `--scoped-gateway-ca` | Needs `--scoped-gateway-origin`. Public CA bundle only. |
+| `--scoped-parent-request-file` | Needs `--scoped-gateway-origin`. Required for enduring runs. |
+
+Model calls are mediated: the guest sees only a logical alias, the host relay
+sends only to the configured gateway with the model permit as bearer, and no
+provider credential file exists on the node. Enduring runs
+(`enduring-initial`, then `enduring-turn` per follow-up) additionally require a
+model route (`provider: "none"` is refused `AUTH_PROTOCOL_UNSUPPORTED`), a
+mediated broker, the operator parent template, and free capacity for the parent
+plus one child and one broker slot. A follow-up turn is served only by the owner
+epoch that admitted the parent; after a restart, a refused or stopped parent, or
+lost in-memory custody it answers `AUTH_CONTEXT_LOST` and never recreates one.
+
+Receivers
 must derive expected namespace/run/parent/operation identity from trusted routing
 and durable ownership state. Populating Context solely from caller-supplied
 claims would authenticate a signature without enforcing tenant ownership.
@@ -36,8 +66,21 @@ receiver must independently recover the durable operation. A JTI must never be
 used as execution identity, request identity or a fresh budget.
 
 No host publisher, sealed-closure, schema, ABI or resource check is removed.
-Nothing in this PR enables mediated mode, dynamic parent creation or #501 host
-broker credentials. No compatible installed artifact/KVM proof is claimed.
+The verifier slice itself enabled no mediated mode or parent creation; those
+arrived with the receiver above. No installed (cluster) acceptance is claimed.
+
+## Receiver evidence
+
+`dispatch_scoped_http_tests.rs` drives the real socket handler without a guest:
+disabled/partial configuration, bearer separation, audience/forgery/expiry/
+admission-window refusals, the durable prepare/start/read/cleanup record and
+replay recovery, the mediated broker against a TLS gateway fixture, enduring
+refusals, and `AUTH_CONTEXT_LOST` after owner loss. They need the `openssl` CLI
+and `/usr/bin/curl`. `scoped_mediated_lifecycles_on_real_kvm` (in
+`make conformance-kvm`) boots a model-route one-shot and an enduring parent with
+a follow-up turn through the same routes, with every model call answered by that
+gateway fixture. A model-free (`provider: "none"`) scoped one-shot has no KVM
+case yet.
 
 ## Verification
 

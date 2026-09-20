@@ -2768,6 +2768,10 @@ fn reject_secret_material(value: &Value) -> Result<()> {
 use std::os::unix::fs::PermissionsExt;
 
 #[cfg(test)]
+#[path = "dispatch_scoped_http_tests.rs"]
+pub(super) mod http_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

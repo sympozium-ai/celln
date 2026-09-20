@@ -25,10 +25,18 @@ fn bundle(
 ) -> ExecutionRequest {
     let rootfs = state.join(format!("{name}-rootfs"));
     std::fs::create_dir_all(rootfs.join("tmp")).unwrap();
+    // Guest image modes are explicit: neither the caller's umask (the strict
+    // conformance lane runs under 077) nor Cargo's linked-binary mode applies.
+    use std::os::unix::fs::PermissionsExt;
+    for directory in [&rootfs, &rootfs.join("tmp")] {
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let mut members = BTreeMap::new();
     for (path, source) in programs {
         let bytes = std::fs::read(source).unwrap();
-        std::fs::copy(source, rootfs.join(path.trim_start_matches('/'))).unwrap();
+        let target = rootfs.join(path.trim_start_matches('/'));
+        std::fs::copy(source, &target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o555)).unwrap();
         members.insert(
             path.to_string(),
             Member {
@@ -114,6 +122,98 @@ fn bundle(
     request.tools[0].closure.as_mut().unwrap().hash = closure.0;
     request.invocation.as_mut().unwrap().alias = programs[0].0.into();
     request
+}
+
+#[test]
+#[ignore = "requires real KVM, kernel, static native parent/turn/JSON harness, initramfs tools, curl and openssl; no model calls"]
+fn scoped_mediated_lifecycles_on_real_kvm() {
+    let _proof = crate::dispatch::warm::PROOF_LOCK.lock().unwrap();
+    if !Path::new("/dev/kvm").exists() {
+        eprintln!("SKIP: no KVM");
+        return;
+    }
+    let Some(kernel) = warden::vmm::boot::BootConfig::host_kernel() else {
+        eprintln!("SKIP: no kernel");
+        return;
+    };
+    for tool in ["gcc", "cpio", "mke2fs", "openssl", "/usr/bin/curl"] {
+        if std::process::Command::new("sh")
+            .args(["-c", "command -v \"$1\"", "check", tool])
+            .output()
+            .map_or(true, |output| !output.status.success())
+        {
+            eprintln!("SKIP: missing {tool}");
+            return;
+        }
+    }
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let binaries = std::env::var_os("CELLN_PILOT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo.join("target/x86_64-unknown-linux-musl/release"));
+    for name in [
+        "celln-harness-parent",
+        "celln-harness-turn",
+        "celln-harness-json",
+        "celln-pilot",
+        "pilot-fetch",
+    ] {
+        if !binaries.join(name).exists() {
+            eprintln!("SKIP: missing {name}");
+            return;
+        }
+    }
+    let work = tempfile::tempdir().unwrap();
+    let root = work.path();
+    let runtime = crate::dispatch::tests::test_runtime_root(root).unwrap();
+    let mut parent = bundle(
+        root,
+        &runtime,
+        &kernel,
+        "parent",
+        &[("/parent", binaries.join("celln-harness-parent"))],
+    );
+    // The retained parent must outlive every turn it is permitted to serve.
+    parent.capabilities.timeout_ms = 180000;
+    let worker = bundle(
+        root,
+        &runtime,
+        &kernel,
+        "worker",
+        &[
+            ("/worker", binaries.join("celln-harness-turn")),
+            ("/pilot-fetch", binaries.join("pilot-fetch")),
+        ],
+    );
+    let one_shot = bundle(
+        root,
+        &runtime,
+        &kernel,
+        "one-shot",
+        &[
+            ("/harness", binaries.join("celln-harness-json")),
+            ("/pilot-fetch", binaries.join("pilot-fetch")),
+        ],
+    );
+    let motes: Vec<_> = [&parent, &worker, &one_shot]
+        .iter()
+        .map(|request| request.mote.as_ref().unwrap().hash.clone())
+        .collect();
+    std::fs::write(
+        root.join("trusted-motes.json"),
+        json!({"apiVersion":"celln.dev/v1alpha1","bundles":motes}).to_string(),
+    )
+    .unwrap();
+    // `bundle` signs every closure with one fixture publisher and trusts it.
+    let policy: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("trusted-closures.json")).unwrap())
+            .unwrap();
+    crate::dispatch_http::prove_scoped_on_kvm(
+        root,
+        policy["publishers"][0].as_str().unwrap(),
+        &one_shot,
+        &parent,
+        &worker,
+    );
 }
 
 #[test]

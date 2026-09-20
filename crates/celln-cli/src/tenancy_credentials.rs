@@ -1,5 +1,6 @@
 //! Strict scoped JWS verifier with locally configured public keys.
-//! Not wired to HTTP admission; durable ownership remains a separate boundary.
+//! Consumed by the dispatcher's `/v1/scoped/*` receiver (`dispatch_scoped.rs`);
+//! durable ownership remains a separate boundary (`tenancy_admission`).
 use super::tenancy_contract::{canonical, digest};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::{Signature, VerifyingKey};
