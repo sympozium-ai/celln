@@ -30,7 +30,7 @@ use celln_store::Store;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use prewarm::prove_prewarm_on_kvm;
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) use scoped::http_tests::prove_scoped_on_kvm;
+pub(crate) use scoped::http_tests::{parent_request_file_accepted, prove_scoped_on_kvm};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};

@@ -120,6 +120,22 @@ fn resolve_request_output_tokens(connection: Option<&ModelConnection>) -> Result
     Ok(cap)
 }
 
+/// Logical host reservation of one parent with its worker, as both the native
+/// template and the scoped parent request state it.
+const RESERVED_MEMORY_BYTES: u64 = 1342177280;
+
+/// The reviewed parent request as `celln dispatcher
+/// --scoped-parent-request-file` reads it. The scoped receiver names the
+/// parent and its principal per run, so the template carries its placeholders;
+/// it holds no model endpoint, egress or credential reference.
+pub(crate) fn scoped_parent_request(parent: &ExecutionRequest) -> Value {
+    let mut request = parent.clone();
+    request.id = "$parent".into();
+    request.workload.id = "$parent".into();
+    request.workload.caller = "$principal".into();
+    json!({"apiVersion":"celln.scoped-parent-template/v1","request":request,"reservedMemoryBytes":RESERVED_MEMORY_BYTES})
+}
+
 /// A worker built before the cap was configurable always requests the
 /// default and refuses a template naming `max_tokens`; its package says
 /// nothing about it. `starter-package` states the capability for new ones.
@@ -460,12 +476,16 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     }
     let bundle = entry("worker");
     let catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":{"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":TEMPLATE_MAX_TURNS,"maxCalls":TEMPLATE_MAX_CALLS},"limits":{"timeoutMillis":worker_timeout_ms(request_output_tokens),"memoryBytes":268435456u64,"taskBytes":warden::parent_protocol::MAX_TASK_BYTES,"outputBytes":65536,"workspace":"none"}}});
-    let native = json!({"admissionWindowMs":120000,"parent":parent,"worker":worker,"template":template.policy(),"modelProfile":profile_hash,"reservedMemoryBytes":1342177280u64,"maxTurns":limits.max_turns,"turnModelRequests":TURN_MODEL_REQUESTS,"turnOutputTokens":turn_tokens,"totalModelRequests":limits.max_model_requests,"totalOutputTokens":limits.max_output_tokens});
+    let native = json!({"admissionWindowMs":120000,"parent":parent,"worker":worker,"template":template.policy(),"modelProfile":profile_hash,"reservedMemoryBytes":RESERVED_MEMORY_BYTES,"maxTurns":limits.max_turns,"turnModelRequests":TURN_MODEL_REQUESTS,"turnOutputTokens":turn_tokens,"totalModelRequests":limits.max_model_requests,"totalOutputTokens":limits.max_output_tokens});
     let catalogue_bytes = serde_json::to_vec_pretty(&catalogue)?;
     let native_bytes = serde_json::to_vec_pretty(&native)?;
     fs::DirBuilder::new().mode(0o700).create(&plan.output)?;
     write_new(&plan.output.join("catalogue.json"), &catalogue_bytes)?;
     write_new(&plan.output.join("native-template.json"), &native_bytes)?;
+    write_new(
+        &plan.output.join("scoped-parent-request.json"),
+        &serde_json::to_vec_pretty(&scoped_parent_request(&parent))?,
+    )?;
     let profiles = root.join("trusted-parent-models");
     fs::create_dir_all(&profiles)?;
     let path = profiles.join(format!("{}.json", &profile_hash.0[7..]));

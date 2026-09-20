@@ -385,6 +385,18 @@ fn prepare(scoped: &ScopedState, stream: &mut std::net::TcpStream, body: &[u8]) 
             &json!({"error":"scoped preparation refused","reason":reason.to_string()}),
         );
     }
+    // Enrolment only: a record an earlier receiver enrolled must stay readable
+    // and cleanable, and `build_native` refuses the same shape at start.
+    if let Err(reason) = affordable_request_output_tokens(
+        &request.operation["resolution"]["execution"],
+        &request.decision,
+    ) {
+        return reply(
+            stream,
+            422,
+            &json!({"error":"scoped preparation refused","reason":reason}),
+        );
+    }
     let id = match operation_id(&request.operation, &request.decision) {
         Ok(id) => id,
         Err(_) => return reply(stream, 422, &json!({"error":"scoped preparation refused"})),
@@ -782,18 +794,75 @@ fn native_json_config(
 ) -> Result<Value, String> {
     let execution = &prepared.operation["resolution"]["execution"];
     let limits = &execution["profileSpec"]["json"];
-    let max_turns = u64v(&limits["maxTurns"], "maxTurns")?.min(u64v(
-        &prepared.decision["budget"]["turnCap"]["requests"],
-        "requests",
-    )?);
+    let max_turns = template_model_requests(execution, &prepared.decision)?;
     // One shared adapter: the provider origin is never a guest destination,
     // including retained workers and subsequent mailbox turns.
-    Ok(json!({"contract":pilot::json_harness::CONTRACT,
+    let mut config = json!({"contract":pilot::json_harness::CONTRACT,
         "task":if enduring {Value::String(String::new())} else {execution["payload"].clone()},
         "system":execution["systemPrompt"],"url":MODEL_ALIAS,"model":prepared.decision["route"]["model"],
         "tools":tools,"max_turns":max_turns,"max_calls":u64v(&limits["maxCalls"],"maxCalls")?,
         "require_tool_call":limits.get("requireToolCall").cloned().unwrap_or(Value::Bool(false))
-    }))
+    });
+    // Named only when it differs from the default, so an operation without
+    // the field produces the template bytes (and binding) it always did.
+    let cap = request_output_tokens(execution)?;
+    if cap != warden::egress::DEFAULT_REQUEST_OUTPUT_TOKENS {
+        config["max_tokens"] = json!(cap);
+    }
+    Ok(config)
+}
+
+/// Model requests one worker turn may make: the profile's loop, never more
+/// than the signed turn allows.
+fn template_model_requests(execution: &Value, decision: &Value) -> Result<u64, String> {
+    Ok(
+        u64v(&execution["profileSpec"]["json"]["maxTurns"], "maxTurns")?.min(u64v(
+            &decision["budget"]["turnCap"]["requests"],
+            "requests",
+        )?),
+    )
+}
+
+/// Output tokens each model request asks for: the operator-prepared
+/// `resolution.execution.requestOutputTokens`, or the harness default when the
+/// operation does not name it. The gateway enforces the per-request bound from
+/// the ModelConnection; here the value only shapes the worker's `max_tokens`
+/// and the broker grant, so no guest or tenant input reaches it.
+fn request_output_tokens(execution: &Value) -> Result<u64, String> {
+    match execution.get("requestOutputTokens") {
+        None => Ok(warden::egress::DEFAULT_REQUEST_OUTPUT_TOKENS),
+        Some(value) => value
+            .as_u64()
+            .filter(|cap| warden::egress::REQUEST_OUTPUT_TOKENS.contains(cap))
+            .ok_or_else(|| "AUTH_LIMIT_OUT_OF_RANGE".into()),
+    }
+}
+
+/// Refuse, before any claim or VM, a request shape the signed budget cannot
+/// pay for. A retained worker reserves its whole model loop per turn
+/// (`turn_worker::Template::arguments`), so that loop at the cap must fit the
+/// turn and the run; a one-shot must afford at least its first request.
+fn affordable_request_output_tokens(execution: &Value, decision: &Value) -> Result<u64, String> {
+    let cap = request_output_tokens(execution)?;
+    if decision["route"]["provider"] == "none" {
+        // A model-free operation makes no model request to shape.
+        return match execution.get("requestOutputTokens") {
+            None => Ok(cap),
+            Some(_) => Err("AUTH_ROUTE_MISMATCH".into()),
+        };
+    }
+    let requests = if decision["lifecycle"] == "one-shot" {
+        1
+    } else {
+        template_model_requests(execution, decision)?
+    };
+    let reserved = requests.checked_mul(cap).ok_or("AUTH_LIMIT_OUT_OF_RANGE")?;
+    for allowance in ["turnCap", "runCap"] {
+        if reserved > u64v(&decision["budget"][allowance]["outputTokens"], "tokens")? {
+            return Err("AUTH_LIMIT_OUT_OF_RANGE".into());
+        }
+    }
+    Ok(cap)
 }
 
 fn local_turn_id(prepared: &PreparedRecord) -> Result<String, String> {
@@ -2032,6 +2101,7 @@ fn build_native(
     } else {
         let model_permit = model_permit.ok_or("AUTH_CRED_MALFORMED")?.to_owned();
         let gateway = scoped.gateway.as_ref().ok_or("AUTH_CONTEXT_LOST")?;
+        let request_output_tokens = affordable_request_output_tokens(execution, decision)?;
         let context = ModelContext::admit(
             &scoped.verifier,
             execution_permit.to_owned(),
@@ -2072,12 +2142,15 @@ fn build_native(
             model: text(&route["model"], "model")
                 .map_err(|e| e.to_string())?
                 .into(),
-            max_output_tokens: u64v(&decision["budget"]["turnCap"]["outputTokens"], "tokens")?,
+            // One request may ask for the prepared cap, the turn for its
+            // signed total; admission proved the first fits the second.
+            max_output_tokens: request_output_tokens,
             max_total_output_tokens: u64v(
                 &decision["budget"]["turnCap"]["outputTokens"],
                 "tokens",
             )?,
-            // The gateway owns the provider request; no host-pinned fields.
+            // Operator model parameters are merged by the gateway from the
+            // ModelConnection on this path; Celln pins none of its own.
             parameters: Default::default(),
         });
         let relay = GatewayRelay::new(
@@ -2972,6 +3045,96 @@ mod tests {
             assert_eq!(config["max_turns"], 2);
             assert_eq!(config["task"], if enduring { "" } else { "task" });
         }
+    }
+
+    #[test]
+    fn an_unnamed_or_default_output_cap_leaves_the_worker_template_unchanged() {
+        let (operation, mut decision) = fixture();
+        decision["route"]["model"] = json!("model");
+        let template = |cap: Option<Value>| {
+            let mut operation = operation.clone();
+            if let Some(cap) = cap {
+                operation["resolution"]["execution"]["requestOutputTokens"] = cap;
+            }
+            let prepared = PreparedRecord {
+                version: 1,
+                id: String::new(),
+                owner: String::new(),
+                operation,
+                decision: decision.clone(),
+            };
+            let config = native_json_config(&prepared, &[], true)?;
+            let typed: pilot::json_harness::Config =
+                serde_json::from_value(config.clone()).map_err(|e| e.to_string())?;
+            let binding = pilot::turn_worker::Template::new(typed)
+                .map_err(|e| e.to_string())?
+                .binding()
+                .clone();
+            Ok::<_, String>((config.to_string(), binding))
+        };
+        let unnamed = template(None).unwrap();
+        assert!(!unnamed.0.contains("max_tokens"));
+        assert_eq!(template(Some(json!(512))).unwrap(), unnamed);
+        let raised = template(Some(json!(4096))).unwrap();
+        assert!(raised.0.contains(r#""max_tokens":4096"#));
+        // A follow-up turn naming another cap is another worker configuration.
+        assert_ne!(raised.1, unnamed.1);
+        assert_ne!(template(Some(json!(256))).unwrap().1, unnamed.1);
+        for cap in [
+            json!(255),
+            json!(4097),
+            json!(0),
+            json!(-512),
+            json!("512"),
+            Value::Null,
+        ] {
+            assert_eq!(template(Some(cap)).unwrap_err(), "AUTH_LIMIT_OUT_OF_RANGE");
+        }
+    }
+
+    #[test]
+    fn the_signed_budget_must_afford_what_the_request_shape_reserves() {
+        let (mut operation, mut decision) = fixture();
+        let afford = |operation: &Value, decision: &Value| {
+            affordable_request_output_tokens(&operation["resolution"]["execution"], decision)
+        };
+        // Model-free: nothing to afford, and no cap to name.
+        assert_eq!(afford(&operation, &decision), Ok(512));
+        operation["resolution"]["execution"]["requestOutputTokens"] = json!(512);
+        assert_eq!(
+            afford(&operation, &decision).unwrap_err(),
+            "AUTH_ROUTE_MISMATCH"
+        );
+        decision["route"]["provider"] = json!("openai");
+        let budget = |turn_requests: u64, turn: u64, run: u64| {
+            json!({"turnCap":{"requests":turn_requests,"outputTokens":turn},
+                "runCap":{"requests":6,"outputTokens":run}})
+        };
+        // The fixture profile loops twice. A one-shot needs its first request…
+        decision["budget"] = budget(2, 512, 512);
+        assert_eq!(afford(&operation, &decision), Ok(512));
+        for (turn, run) in [(511, 512), (512, 511)] {
+            decision["budget"] = budget(2, turn, run);
+            assert_eq!(
+                afford(&operation, &decision).unwrap_err(),
+                "AUTH_LIMIT_OUT_OF_RANGE"
+            );
+        }
+        // …a retained worker its whole loop, as `Template::arguments` reserves it.
+        decision["lifecycle"] = json!("enduring-initial");
+        operation["resolution"]["execution"]["requestOutputTokens"] = json!(4096);
+        decision["budget"] = budget(2, 8192, 8192);
+        assert_eq!(afford(&operation, &decision), Ok(4096));
+        for (turn, run) in [(8191, 8192), (8192, 8191)] {
+            decision["budget"] = budget(2, turn, run);
+            assert_eq!(
+                afford(&operation, &decision).unwrap_err(),
+                "AUTH_LIMIT_OUT_OF_RANGE"
+            );
+        }
+        // Fewer signed requests shorten the loop the worker is given.
+        decision["budget"] = budget(1, 4096, 4096);
+        assert_eq!(afford(&operation, &decision), Ok(4096));
     }
 
     #[test]
