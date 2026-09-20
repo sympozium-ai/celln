@@ -87,6 +87,24 @@ const fn turn_output_tokens(request_output_tokens: u64) -> u64 {
     TEMPLATE_MAX_TURNS * request_output_tokens
 }
 
+/// A worker turn's lifetime at the default cap, and the most any cap earns.
+const DEFAULT_WORKER_TIMEOUT_MS: u64 = 60_000;
+const MAX_WORKER_TIMEOUT_MS: u64 = 300_000;
+
+/// A turn's lifetime grows with the tokens each of its requests may produce:
+/// a model given four times the output needs four times as long to write it.
+/// The default cap keeps the lifetime (and the hashes) it always had.
+const fn worker_timeout_ms(request_output_tokens: u64) -> u64 {
+    let scaled = DEFAULT_WORKER_TIMEOUT_MS * request_output_tokens / DEFAULT_REQUEST_OUTPUT_TOKENS;
+    if scaled < DEFAULT_WORKER_TIMEOUT_MS {
+        DEFAULT_WORKER_TIMEOUT_MS
+    } else if scaled > MAX_WORKER_TIMEOUT_MS {
+        MAX_WORKER_TIMEOUT_MS
+    } else {
+        scaled
+    }
+}
+
 /// The backend's per-request output cap, judged from the plan alone.
 fn resolve_request_output_tokens(connection: Option<&ModelConnection>) -> Result<u64> {
     let cap = connection
@@ -315,7 +333,7 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     };
     let hosts = resolve_hosts(plan.https_hosts.as_ref())?;
     let parent = request("parent", limits.lease_seconds * 1000)?;
-    let worker = request("worker", 60000)?;
+    let worker = request("worker", worker_timeout_ms(request_output_tokens))?;
     let error = json!({"type":"string","minLength":1,"maxLength":1024});
     let revision = json!({"type":"integer","minimum":0,"maximum":65536});
     let name = json!({"type":"string","minLength":1,"maxLength":256});
@@ -441,7 +459,7 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         catalogue_tools.push(json!({"name":tool.name,"spec":{"revision":"v1","description":tool.description,"supportOwner":"native-starter-operator","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"entryPoint":tool.path,"invocationABI":"celln.json-stdio/v1","argumentsSchema":{"hash":tool.input_schema.hash},"resultSchema":{"hash":tool.output_schema.hash},"platform":"linux/amd64","lane":"tool","limits":limits}}));
     }
     let bundle = entry("worker");
-    let catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":{"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":TEMPLATE_MAX_TURNS,"maxCalls":TEMPLATE_MAX_CALLS},"limits":{"timeoutMillis":60000,"memoryBytes":268435456u64,"taskBytes":warden::parent_protocol::MAX_TASK_BYTES,"outputBytes":65536,"workspace":"none"}}});
+    let catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":{"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":TEMPLATE_MAX_TURNS,"maxCalls":TEMPLATE_MAX_CALLS},"limits":{"timeoutMillis":worker_timeout_ms(request_output_tokens),"memoryBytes":268435456u64,"taskBytes":warden::parent_protocol::MAX_TASK_BYTES,"outputBytes":65536,"workspace":"none"}}});
     let native = json!({"admissionWindowMs":120000,"parent":parent,"worker":worker,"template":template.policy(),"modelProfile":profile_hash,"reservedMemoryBytes":1342177280u64,"maxTurns":limits.max_turns,"turnModelRequests":TURN_MODEL_REQUESTS,"turnOutputTokens":turn_tokens,"totalModelRequests":limits.max_model_requests,"totalOutputTokens":limits.max_output_tokens});
     let catalogue_bytes = serde_json::to_vec_pretty(&catalogue)?;
     let native_bytes = serde_json::to_vec_pretty(&native)?;
@@ -548,6 +566,18 @@ mod tests {
                     .max_output_tokens,
                 default_total
             );
+        }
+        // A turn's lifetime follows the cap: unchanged at and below the
+        // default, proportional above it, never past five minutes.
+        for (cap, timeout_ms) in [
+            (256, 60_000),
+            (512, 60_000),
+            (1024, 120_000),
+            (2048, 240_000),
+            (2560, 300_000),
+            (4096, 300_000),
+        ] {
+            assert_eq!(worker_timeout_ms(cap), timeout_ms);
         }
         // The lifetime maximum affords the most turns at the largest cap.
         assert_eq!(1024 * 6 * 4096, 25_165_824u64);
