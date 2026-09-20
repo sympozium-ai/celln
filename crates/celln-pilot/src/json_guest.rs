@@ -82,19 +82,34 @@ pub fn run(
                 &["--json-stdin".into()],
                 wire,
                 1_048_576,
-                std::time::Duration::from_secs(45),
+                // The host broker bounds each model request by the cell's
+                // lifetime and the host ends the cell at that deadline; the
+                // guest only waits for the broker's answer.
+                MODEL_REPLY_WAIT,
             )
         },
         |tool, input| {
-            crate::harness_io::child(
-                &tool.path,
-                &[],
-                input,
-                tool.output_bytes,
-                std::time::Duration::from_millis(tool.timeout_ms),
-            )
+            let timeout = std::time::Duration::from_millis(tool.timeout_ms);
+            if tool.argv.is_some() {
+                // A borrowed command: validated arguments become argv/stdin,
+                // stdout and exit status come back as data.
+                let (args, stdin) = crate::json_harness::argv_invocation(tool, input)?;
+                let (exit, stdout) = crate::harness_io::child_status(
+                    &tool.path,
+                    &args,
+                    &stdin,
+                    tool.output_bytes,
+                    timeout,
+                )?;
+                return Ok(crate::json_harness::argv_output(exit, &stdout));
+            }
+            crate::harness_io::child(&tool.path, &[], input, tool.output_bytes, timeout)
         },
         |event| println!("CELLN_HARNESS_EVENT {event}"),
     )?;
     Ok(())
 }
+
+/// Longest the guest waits for one brokered model reply. Not a policy limit:
+/// the host deadline for the cell is shorter and is what actually applies.
+const MODEL_REPLY_WAIT: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);

@@ -32,6 +32,26 @@ name = "celln-https-fetch"
 path = "src/https_fetch.rs"
 
 [[bin]]
+name = "celln-workspace-list"
+path = "src/workspace_list.rs"
+
+[[bin]]
+name = "celln-workspace-append"
+path = "src/workspace_append.rs"
+
+[[bin]]
+name = "celln-workspace-search"
+path = "src/workspace_search.rs"
+
+[[bin]]
+name = "celln-workspace-delete"
+path = "src/workspace_delete.rs"
+
+[[bin]]
+name = "celln-https-post-json"
+path = "src/https_post_json.rs"
+
+[[bin]]
 name = "celln-demo"
 path = "src/demo.rs"
 

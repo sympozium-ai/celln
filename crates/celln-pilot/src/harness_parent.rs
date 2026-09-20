@@ -26,7 +26,7 @@ fn run() -> anyhow::Result<()> {
     loop {
         // Empty RX reads are 0xff. Poll the low 16 bits atomically so host
         // delivery after startup acknowledgement cannot split an idle read
-        // across a frame boundary. Valid frames are <=8192 bytes. A 32-bit
+        // across a frame boundary. Valid frames are below 0xffff bytes. A 32-bit
         // IN would need permission for 0x523, outside the three-port grant.
         let low = loop {
             let value = word();

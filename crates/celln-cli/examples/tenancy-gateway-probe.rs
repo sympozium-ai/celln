@@ -69,6 +69,7 @@ fn run() -> Result<(), ()> {
         model: input.decision["route"]["model"].as_str().ok_or(())?.into(),
         max_output_tokens: 512,
         max_total_output_tokens: 4096,
+        parameters: Default::default(),
     });
     let mut broker = HttpBroker::new_mediated(policy, Box::new(relay)).map_err(|_| ())?;
     let results: Vec<Value> = input.requests.into_iter().map(|body| {

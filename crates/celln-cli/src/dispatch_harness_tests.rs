@@ -199,6 +199,7 @@ fn model_over_authenticated_dispatch(json_adapter: bool, issuance_only: bool, di
                 input_bytes: 1024,
                 output_bytes: 1024,
                 timeout_ms: 1000,
+                argv: None,
             },
             arguments: r#"{"text":"celln"}"#.into(),
         };

@@ -169,6 +169,7 @@ fn main() -> Result<()> {
         model: "deepseek-chat".into(),
         max_output_tokens: 512,
         max_total_output_tokens: 1536,
+        parameters: Default::default(),
     });
     cell.enable_http_fetch(policy);
     let config = json!({"task":"Use add with args [\"37\",\"5\"], then use multiply with the returned result and \"2\". Wait for each tool result. Finally reply with exactly the final integer, no explanation.", "url":url,"model":"deepseek-chat","tools":[

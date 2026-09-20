@@ -62,6 +62,8 @@ jobs:
             --bin celln-pilot --bin pilot-fetch \
             --bin celln-harness-parent --bin celln-harness-turn \
             --bin celln-workspace-read --bin celln-workspace-write --bin celln-https-fetch \
+            --bin celln-workspace-list --bin celln-workspace-append --bin celln-workspace-search \
+            --bin celln-workspace-delete --bin celln-https-post-json \
             --bin celln-harness-reference --bin celln-harness-json
       - name: package
         run: |
@@ -71,7 +73,7 @@ jobs:
           cp "target/$target/release/celln" "$bundle/bin/"
           cp "target/$target/release/celln-pilot" "$bundle/share/celln/pilot/"
           cp "target/$target/release/pilot-fetch" "$bundle/share/celln/pilot/"
-          for binary in celln-harness-parent celln-harness-turn celln-workspace-read celln-workspace-write celln-https-fetch celln-harness-reference celln-harness-json; do
+          for binary in celln-harness-parent celln-harness-turn celln-workspace-read celln-workspace-write celln-https-fetch celln-workspace-list celln-workspace-append celln-workspace-search celln-workspace-delete celln-https-post-json celln-harness-reference celln-harness-json; do
             cp "target/$target/release/$binary" "$bundle/share/celln/pilot/"
           done
           cp -R scripts guest "$bundle/share/celln/"

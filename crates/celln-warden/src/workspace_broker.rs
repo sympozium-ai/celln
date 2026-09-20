@@ -138,6 +138,30 @@ enum Operation {
         revision: u64,
         content: String,
     },
+    List {},
+    Append {
+        name: String,
+        revision: u64,
+        content: String,
+    },
+    Search {
+        pattern: String,
+    },
+    Delete {
+        name: String,
+        revision: u64,
+    },
+}
+
+/// Most lines one search returns and the longest line it quotes.
+const SEARCH_MATCHES: usize = 32;
+const SEARCH_LINE_CHARS: usize = 256;
+
+fn truncated(text: String, chars: usize) -> String {
+    match text.char_indices().nth(chars) {
+        Some((index, _)) => text[..index].to_owned(),
+        None => text,
+    }
 }
 
 #[derive(Deserialize)]
@@ -181,6 +205,42 @@ impl Grant {
             } if authority.write => {
                 let revision = data
                     .write(&self.parent, revision, &name, content.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                serde_json::json!({"revision":revision})
+            }
+            Operation::List {} if authority.read => {
+                let files: Vec<_> = data
+                    .list(&self.parent)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|(name, bytes)| serde_json::json!({"name":name,"bytes":bytes}))
+                    .collect();
+                serde_json::json!({"revision":data.revision(), "files":files})
+            }
+            Operation::Search { pattern } if authority.read => {
+                let matches: Vec<_> = data
+                    .search(&self.parent, &pattern, SEARCH_MATCHES)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .map(|found| {
+                        serde_json::json!({"name":found.name,"line":found.line,"text":truncated(found.text, SEARCH_LINE_CHARS)})
+                    })
+                    .collect();
+                serde_json::json!({"revision":data.revision(), "matches":matches})
+            }
+            Operation::Append {
+                name,
+                revision,
+                content,
+            } if authority.write => {
+                let revision = data
+                    .append(&self.parent, revision, &name, content.as_bytes())
+                    .map_err(|e| e.to_string())?;
+                serde_json::json!({"revision":revision})
+            }
+            Operation::Delete { name, revision } if authority.write => {
+                let revision = data
+                    .delete(&self.parent, revision, &name)
                     .map_err(|e| e.to_string())?;
                 serde_json::json!({"revision":revision})
             }
@@ -332,6 +392,105 @@ mod tests {
             assert!(active.fetch(&read).is_ok());
         }
         assert!(active.fetch(&read).is_err());
+    }
+
+    #[test]
+    fn list_search_follow_read_and_append_delete_follow_write() {
+        let parent = Hash::of(b"parent");
+        let mut owner = Owner::new(
+            parent.clone(),
+            Limits {
+                files: 4,
+                file_bytes: 64,
+                total_bytes: 256,
+            },
+        )
+        .unwrap();
+        let (_lease, grant) = owner
+            .begin(&turn(&parent, "one"), true, true, 16, control())
+            .unwrap();
+        let mut active = broker(grant);
+        let call =
+            |broker: &mut HttpBroker, body: serde_json::Value| -> Result<serde_json::Value, _> {
+                broker
+                    .fetch(&wire(body))
+                    .map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).unwrap())
+            };
+        assert_eq!(
+            call(&mut active, json!({"operation":"list"})).unwrap(),
+            json!({"revision":0,"files":[]})
+        );
+        assert_eq!(
+            call(
+                &mut active,
+                json!({"operation":"append","name":"log.txt","revision":0,"content":"red\n"})
+            )
+            .unwrap(),
+            json!({"revision":1})
+        );
+        assert_eq!(
+            call(
+                &mut active,
+                json!({"operation":"append","name":"log.txt","revision":1,"content":"violet\n"})
+            )
+            .unwrap(),
+            json!({"revision":2})
+        );
+        assert_eq!(
+            call(&mut active, json!({"operation":"list"})).unwrap(),
+            json!({"revision":2,"files":[{"name":"log.txt","bytes":11}]})
+        );
+        assert_eq!(
+            call(&mut active, json!({"operation":"search","pattern":"vio"})).unwrap(),
+            json!({"revision":2,"matches":[{"name":"log.txt","line":2,"text":"violet"}]})
+        );
+        // A stale revision, an unknown name and an over-long pattern are refused as data.
+        assert!(call(
+            &mut active,
+            json!({"operation":"delete","name":"log.txt","revision":1})
+        )
+        .is_err());
+        assert!(call(
+            &mut active,
+            json!({"operation":"delete","name":"none","revision":2})
+        )
+        .is_err());
+        assert!(call(
+            &mut active,
+            json!({"operation":"search","pattern":"x".repeat(300)})
+        )
+        .is_err());
+        assert_eq!(
+            call(
+                &mut active,
+                json!({"operation":"delete","name":"log.txt","revision":2})
+            )
+            .unwrap(),
+            json!({"revision":3})
+        );
+        assert_eq!(
+            call(&mut active, json!({"operation":"list"})).unwrap(),
+            json!({"revision":3,"files":[]})
+        );
+        // A read-only grant lists and searches but never appends or deletes.
+        drop(_lease);
+        let (_lease, grant) = owner
+            .begin(&turn(&parent, "two"), true, false, 8, control())
+            .unwrap();
+        let mut reader = broker(grant);
+        assert!(call(&mut reader, json!({"operation":"list"})).is_ok());
+        assert!(call(&mut reader, json!({"operation":"search","pattern":"x"})).is_ok());
+        assert!(call(
+            &mut reader,
+            json!({"operation":"append","name":"a","revision":3,"content":"x"})
+        )
+        .is_err());
+        assert!(call(
+            &mut reader,
+            json!({"operation":"delete","name":"a","revision":3})
+        )
+        .is_err());
+        assert_eq!(truncated("héllo".into(), 2), "hé");
     }
 
     #[test]

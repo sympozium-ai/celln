@@ -804,6 +804,7 @@ fn local_turn_id(prepared: &PreparedRecord) -> Result<String, String> {
     Ok(format!("initial_{}", &hex[..48]))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_enduring(
     dispatcher: &State,
     scoped: &Arc<ScopedState>,
@@ -1471,6 +1472,7 @@ fn model_completion(transcript: &str) -> std::result::Result<String, String> {
     answer.ok_or_else(|| "missing model completion".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_scoped(
     scoped: Arc<ScopedState>,
     executions: super::Executions,
@@ -1550,7 +1552,7 @@ fn run_scoped(
         }
     }
     if phase == "Succeeded"
-        && (cell_id.as_deref().is_none_or(str::is_empty)
+        && (cell_id.as_deref().map_or(true, str::is_empty)
             || execution.is_none()
             || substrate.is_none())
     {
@@ -1686,9 +1688,11 @@ fn access(
         &permit,
         &decision,
         &receiver,
-        &enrolled_decision,
-        &enrolled_request,
-        &prepared.owner,
+        crate::tenancy_admission::Enrollment {
+            decision: &enrolled_decision,
+            request: &enrolled_request,
+            owner: &prepared.owner,
+        },
     ) {
         Ok(v) => v,
         Err(AdmissionError::Credential("AUTH_CONTEXT_LOST")) => {
@@ -2073,6 +2077,8 @@ fn build_native(
                 &decision["budget"]["turnCap"]["outputTokens"],
                 "tokens",
             )?,
+            // The gateway owns the provider request; no host-pinned fields.
+            parameters: Default::default(),
         });
         let relay = GatewayRelay::new(
             GatewayEndpoint::new(&gateway.origin, gateway.ca.clone())

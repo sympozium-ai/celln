@@ -22,6 +22,28 @@ struct WriteInput {
 struct FetchInput {
     url: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListInput {}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchInput {
+    pattern: String,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteInput {
+    name: String,
+    revision: u64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PostInput {
+    url: String,
+    /// A JSON object as text: tool schemas are closed, so the body cannot be
+    /// declared as a free-form object. The host validates the URL and host.
+    body: String,
+}
 
 fn request(kind: &str, input: &[u8]) -> Result<(Vec<String>, Vec<u8>)> {
     let body = match kind {
@@ -42,6 +64,40 @@ fn request(kind: &str, input: &[u8]) -> Result<(Vec<String>, Vec<u8>)> {
                 "invalid HTTPS URL"
             );
             return Ok((vec![input.url], vec![]));
+        }
+        "list" => {
+            let ListInput {} = serde_json::from_slice(input)?;
+            json!({"operation":"list"})
+        }
+        "append" => {
+            let input: WriteInput = serde_json::from_slice(input)?;
+            json!({"operation":"append", "name":input.name,"revision":input.revision,"content":input.content})
+        }
+        "search" => {
+            let input: SearchInput = serde_json::from_slice(input)?;
+            json!({"operation":"search", "pattern":input.pattern})
+        }
+        "delete" => {
+            let input: DeleteInput = serde_json::from_slice(input)?;
+            json!({"operation":"delete", "name":input.name,"revision":input.revision})
+        }
+        "post" => {
+            let input: PostInput = serde_json::from_slice(input)?;
+            // Plain HTTP is only ever honoured by a host that opted in for a
+            // private endpoint; the broker decides, the guest just carries it.
+            ensure!(
+                (input.url.starts_with("https://") || input.url.starts_with("http://"))
+                    && input.url.len() <= 2048
+                    && !input.url.contains('\0'),
+                "invalid URL"
+            );
+            let body: Value = serde_json::from_str(&input.body)?;
+            ensure!(body.is_object(), "body must be a JSON object");
+            let wire = serde_json::to_vec(
+                &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":input.url,"body":body}),
+            )?;
+            ensure!(wire.len() <= 8192, "POST request exceeds wire limit");
+            return Ok((vec!["--json-stdin".into()], wire));
         }
         _ => anyhow::bail!("unknown starter tool"),
     };
@@ -87,5 +143,49 @@ mod tests {
         let value: Value = serde_json::from_slice(&wire).unwrap();
         assert_eq!(value["apiVersion"], "celln.workspace/v1");
         assert_eq!(value["body"]["content"], "violet");
+    }
+
+    #[test]
+    fn workspace_operations_and_json_posts_carry_only_declared_fields() {
+        let (_, wire) = request("list", b"{}").unwrap();
+        let value: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(value["body"], serde_json::json!({"operation":"list"}));
+        assert!(request("list", br#"{"name":"x"}"#).is_err());
+        let (_, wire) = request(
+            "append",
+            br#"{"name":"log.txt","revision":2,"content":"violet\n"}"#,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(value["body"]["operation"], "append");
+        assert_eq!(value["body"]["revision"], 2);
+        let (_, wire) = request("search", br#"{"pattern":"vio"}"#).unwrap();
+        let value: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(value["body"]["pattern"], "vio");
+        let (_, wire) = request("delete", br#"{"name":"log.txt","revision":3}"#).unwrap();
+        let value: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(
+            value["body"],
+            serde_json::json!({"operation":"delete","name":"log.txt","revision":3})
+        );
+        assert!(request("delete", br#"{"name":"log.txt"}"#).is_err());
+        let (args, wire) = request(
+            "post",
+            br#"{"url":"https://hooks.example/in","body":"{\"event\":\"done\",\"n\":2}"}"#,
+        )
+        .unwrap();
+        assert_eq!(args, ["--json-stdin"]);
+        let value: Value = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(value["apiVersion"], "celln.fetch/v1");
+        assert_eq!(value["method"], "POST");
+        assert_eq!(value["body"], serde_json::json!({"event":"done","n":2}));
+        // Not an object, not a URL, or a URL that is really an option: refused.
+        assert!(request(
+            "post",
+            br#"{"url":"https://hooks.example/in","body":"[1]"}"#
+        )
+        .is_err());
+        assert!(request("post", br#"{"url":"--config=/x","body":"{}"}"#).is_err());
+        assert!(request("post", br#"{"url":"ftp://hooks.example/in","body":"{}"}"#).is_err());
     }
 }

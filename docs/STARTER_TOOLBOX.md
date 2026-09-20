@@ -8,28 +8,46 @@ or a long-running environment handoff**. Python is deferred.
 
 ## Guest programs
 
-Build `celln-workspace-read`, `celln-workspace-write` and `celln-https-fetch` from
-`celln-pilot` for `x86_64-unknown-linux-musl`. Publish them as signed, sealed
-JSON-stdio tools with `/pilot-fetch` as an admitted dependency. Publishing a
-tool does not grant its effects. The native template and operator-owned model
-profile are independently pinned by the parent permit.
+Build the eight starter tool binaries from `celln-pilot` for
+`x86_64-unknown-linux-musl`: `celln-workspace-read`, `celln-workspace-write`,
+`celln-workspace-list`, `celln-workspace-append`, `celln-workspace-search`,
+`celln-workspace-delete`, `celln-https-fetch` and `celln-https-post-json`.
+Publish them as signed, sealed JSON-stdio tools with `/pilot-fetch` as an
+admitted dependency. Publishing a tool does not grant its effects. The native
+template and operator-owned model profile are independently pinned by the
+parent permit.
 
 | Selected name | JSON input | Successful JSON result |
 | --- | --- | --- |
 | `workspace-read` | `{"name":"notes.txt"}` | `{"revision":1,"content":"violet"}` |
 | `workspace-write` | `{"name":"notes.txt","revision":0,"content":"violet"}` | `{"revision":1}` |
+| `workspace-list` | `{}` | `{"revision":1,"files":[{"name":"notes.txt","bytes":6}]}` |
+| `workspace-append` | `{"name":"log.txt","revision":1,"content":"orange\n"}` | `{"revision":2}` |
+| `workspace-search` | `{"pattern":"vio"}` | `{"revision":2,"matches":[{"name":"notes.txt","line":1,"text":"violet"}]}` |
+| `workspace-delete` | `{"name":"log.txt","revision":2}` | `{"revision":3}` |
 | `https-fetch` | `{"url":"https://example.com/"}` | `{"content":"..."}` |
+| `https-post-json` | `{"url":"https://hooks.example/in","body":"{\"event\":\"done\"}"}` | `{"status":200,"content":"..."}` |
 
 Errors return `{"error":"..."}` and do not authorize automatic retries.
 Workspace revisions apply to the entire workspace, not individual files. The
-first write uses revision zero; subsequent writes must use the latest observed
-revision. A stale write refuses without mutation.
+first write uses revision zero; subsequent writes, appends and deletes must
+use the latest observed revision. A stale change refuses without mutation.
+List and search follow the profile's `read` grant; append and delete follow
+`write`. Search is an exact substring lookup over text files, at most 32
+matching lines of at most 256 characters each; it is not an expression
+language. The POST body is a JSON object given as text (tool schemas are
+closed, so a free-form object cannot be declared); it is sent with no
+credential and no header beyond the content type, redirects are not followed,
+and the receiver's HTTP status is returned as data rather than as an error.
 
 ## Host authority
 
 The content-hash-pinned `celln.parent-model-profile/v1` supports optional
-`workspace` and `fetch` objects. Omission denies the corresponding starter
-effects. These are host-owned grants, **not tenant-uploadable policy**.
+`workspace`, `fetch` and `post` objects. Omission denies the corresponding
+starter effects. These are host-owned grants, **not tenant-uploadable policy**.
+The `post` object carries `allowHosts`, `maxRequests`, `maxBodyBytes`,
+`maxResponseBytes` and `timeoutMs`; a profile that names it must select
+`https-post-json`, just as `fetch` requires `https-fetch`.
 
 ```json
 {

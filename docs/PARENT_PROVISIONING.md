@@ -61,6 +61,25 @@ The command is a local provisioning primitive. Automatic Sympozium plan
 construction, trusted host invocation and per-run registration remain separate
 integration work. It does not establish production TLS/RBAC or a running demo.
 
+## Dispatcher route
+
+`POST /v1/parents/provision` runs the same provisioning on the dispatcher that
+will own the parent, so a fleet of owners needs no co-located operator CLI.
+The body is the plan above (at most 64 KiB); `--principal` is replaced by the
+principal authenticated from `trusted-parent-clients.json`, and the shared
+dispatcher `--token-file` is not accepted. Success returns 200 with the same
+`celln.parent-provisioned/v1` object. A malformed plan or one whose callers
+differ from the authenticated principal is 400; expired, changed or corrupt
+issuance is 409 with `retryAuthorized:false`. Nothing is launched or claimed.
+
+Through `celln route`, the request carries `X-Celln-Parent-Incarnation` and
+durably binds that identity to the chosen backend **before** forwarding, in a
+`provisions` ledger beside `parents`. An identical plan is forwarded to the
+same owner; a different plan for a bound identity is refused (409); an owner
+answering with another incarnation is 502. A later `POST /v1/parents` for that
+identity follows the provisioning binding instead of picking a backend, because
+the permit and launch profile exist only on the owner that issued them.
+
 ## Optional private worker audit
 
 By default, production does not retain raw native worker output at the turn

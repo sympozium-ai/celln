@@ -80,7 +80,7 @@ fn invalid_or_oversized_context_never_reaches_model() {
     let cfg = config(&[]);
     for history in [
         vec![Exchange {
-            user: "x".repeat(4096),
+            user: "x".repeat(warden::parent_protocol::MAX_TASK_BYTES),
             assistant: "y".into(),
         }],
         vec![Exchange {
@@ -128,6 +128,7 @@ fn config(names: &[&str]) -> Config {
         max_calls: 6,
         require_tool_call: false,
         allow_insecure: false,
+        max_tokens: DEFAULT_MAX_TOKENS,
         tools: names
             .iter()
             .map(|name| Tool {
@@ -140,6 +141,7 @@ fn config(names: &[&str]) -> Config {
                 input_bytes: 1024,
                 output_bytes: 1024,
                 timeout_ms: 1000,
+                argv: None,
             })
             .collect(),
     }
@@ -405,11 +407,26 @@ fn final_model_turn_cannot_start_side_effects_without_a_result_turn() {
 
 #[test]
 fn host_validation_rejects_initial_envelope_overflow_before_execution() {
-    let names: Vec<_> = (0..16).map(|n| format!("tool{n}")).collect();
+    let names: Vec<_> = (0..24).map(|n| format!("tool{n}")).collect();
     let refs: Vec<_> = names.iter().map(String::as_str).collect();
     let mut cfg = config(&refs);
+    // Two dozen tools with the longest allowed descriptions and wide (but
+    // valid) argument schemas overflow the model wire budget.
+    let wide = {
+        let properties: serde_json::Map<String, Value> = (0..32)
+            .map(|i| {
+                (
+                    format!("field{i}{}", "y".repeat(56)),
+                    json!({"type":"string","minLength":0,"maxLength":64}),
+                )
+            })
+            .collect();
+        json!({"type":"object","properties":properties,"required":[],"additionalProperties":false})
+            .to_string()
+    };
     for tool in &mut cfg.tools {
         tool.description = "x".repeat(512);
+        tool.input_schema = schema(&wide);
     }
     assert!(validate(&cfg).unwrap_err().to_string().contains("envelope"));
     assert!(run(
@@ -419,4 +436,378 @@ fn host_validation_rejects_initial_envelope_overflow_before_execution() {
         |_| {}
     )
     .is_err());
+    // The same two dozen tools, plainly described, fit.
+    let mut cfg = config(&refs);
+    for tool in &mut cfg.tools {
+        tool.description = "x".repeat(160);
+    }
+    assert!(validate(&cfg).is_ok());
+}
+
+// A borrowed command: validated JSON becomes argv/stdin through the fixed
+// binding, never a shell; its stdout and exit status come back as data.
+#[test]
+fn argv_binding_maps_validated_arguments_and_reports_exit_status() {
+    let output_bytes = 4096;
+    let input = r#"{"type":"object","properties":{"pattern":{"type":"string","minLength":1,"maxLength":64},"text":{"type":"string","minLength":0,"maxLength":1024},"ignore_case":{"type":"boolean"},"count":{"type":"integer","minimum":0,"maximum":9}},"required":["pattern","text"],"additionalProperties":false}"#;
+    let mut tool = Tool {
+        name: "grep".into(),
+        path: "/busybox".into(),
+        hash: format!("blake3:{}", "a".repeat(64)),
+        description: "grep".into(),
+        input_schema: schema(input),
+        output_schema: schema(&argv_output_schema().to_string()),
+        input_bytes: 2048,
+        output_bytes,
+        timeout_ms: 1000,
+        argv: Some(Argv {
+            args: vec![
+                "grep".into(),
+                "{ignore_case?-i}".into(),
+                "{count:-m}".into(),
+                "-e".into(),
+                "{pattern}".into(),
+            ],
+            stdin: Some("text".into()),
+        }),
+    };
+    let mut cfg = config(&[]);
+    cfg.tools = vec![tool.clone()];
+    cfg.max_calls = 1;
+    cfg.max_turns = 2;
+    validate(&cfg).unwrap();
+    let (args, stdin) = argv_invocation(
+        &tool,
+        br#"{"pattern":"vio","text":"violet\norange\n","ignore_case":true,"count":2}"#,
+    )
+    .unwrap();
+    assert_eq!(args, ["grep", "-i", "-m", "2", "-e", "vio"]);
+    assert_eq!(stdin, b"violet\norange\n");
+    let (args, _) = argv_invocation(&tool, br#"{"pattern":"vio","text":""}"#).unwrap();
+    assert_eq!(
+        args,
+        ["grep", "-e", "vio"],
+        "absent optional fields drop their entries, flag included"
+    );
+    assert!(argv_invocation(&tool, br#"{"pattern":"a b","text":""}"#).is_err());
+    let result: Value = serde_json::from_slice(&argv_output(1, b"")).unwrap();
+    assert_eq!(result, json!({"output":"","exit":1}));
+    let long: Value = serde_json::from_slice(&argv_output(0, "é".repeat(5000).as_bytes())).unwrap();
+    assert!(long["output"].as_str().unwrap().len() <= ARGV_OUTPUT_CHARS);
+    assert!(long["output"].as_str().unwrap().starts_with("éé"));
+    // The binding is checked against the schema it is declared with.
+    tool.argv = Some(Argv {
+        args: vec!["{missing}".into()],
+        stdin: None,
+    });
+    cfg.tools = vec![tool.clone()];
+    assert!(validate(&cfg).is_err());
+    tool.argv = Some(Argv {
+        args: vec!["{pattern?-x}".into()],
+        stdin: None,
+    });
+    cfg.tools = vec![tool.clone()];
+    assert!(
+        validate(&cfg).is_err(),
+        "a flag placeholder needs a boolean field"
+    );
+    tool.argv = Some(Argv {
+        args: vec!["grep".into()],
+        stdin: Some("count".into()),
+    });
+    cfg.tools = vec![tool.clone()];
+    assert!(validate(&cfg).is_err(), "stdin needs a string field");
+    tool.argv = Some(Argv {
+        args: vec!["grep".into()],
+        stdin: None,
+    });
+    tool.output_schema =
+        schema(r#"{"type":"object","properties":{},"required":[],"additionalProperties":false}"#);
+    cfg.tools = vec![tool];
+    assert!(
+        validate(&cfg).is_err(),
+        "argv tools return the argv result shape"
+    );
+}
+
+fn reply(content: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({"choices":[{"message":{"role":"assistant","content":content}}]}))
+        .unwrap()
+}
+
+#[test]
+fn final_answers_are_bounded_at_eight_kibibytes_and_state_their_limit() {
+    assert_eq!(MAX_ANSWER_BYTES, 8192);
+    let cfg = config(&[]);
+    let mut events = Vec::new();
+    let full = "a".repeat(MAX_ANSWER_BYTES);
+    assert_eq!(
+        run(
+            &cfg,
+            |_| Ok(reply(&full)),
+            |_, _| panic!(),
+            |e| events.push(e)
+        )
+        .unwrap(),
+        full
+    );
+    let completed = events.iter().find(|e| e["type"] == "completed").unwrap();
+    assert_eq!(completed["answerLimit"], 8192);
+    // One byte more, or nothing at all, fails the turn with its own reason.
+    let over = "a".repeat(MAX_ANSWER_BYTES + 1);
+    let error = run(&cfg, |_| Ok(reply(&over)), |_, _| panic!(), |_| {}).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("final answer exceeds 8192 bytes"));
+    let error = run(&cfg, |_| Ok(reply(" ")), |_, _| panic!(), |_| {}).unwrap_err();
+    assert_eq!(error.to_string(), "final answer is empty");
+}
+
+#[test]
+fn a_long_history_gives_way_to_tool_rounds_oldest_exchange_first() {
+    let history: Vec<_> = (0..8)
+        .map(|i| Exchange {
+            user: format!("question {i}"),
+            assistant: "a".repeat(2000),
+        })
+        .collect();
+    let sent = |cfg: &Config| {
+        let (mut users, mut events, mut length) = (Vec::new(), Vec::new(), 0usize);
+        run_with_history(
+            cfg,
+            &history,
+            |wire| {
+                let value: Value = serde_json::from_slice(wire)?;
+                users = value["body"]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|m| m["role"] == "user")
+                    .map(|m| m["content"].as_str().unwrap().to_owned())
+                    .collect();
+                length = wire.len();
+                Ok(answer())
+            },
+            |_, _| panic!("no tool requested"),
+            |event| events.push(event),
+        )
+        .unwrap();
+        (users, events, length)
+    };
+    // Without tools there are no later rounds: the whole history is sent.
+    let (users, events, _) = sent(&config(&[]));
+    assert_eq!(users.len(), history.len() + 1);
+    assert!(events.iter().all(|e| e["type"] != "context"));
+    // With tools the first request leaves the reserve free: the oldest
+    // exchanges are left out, the newest and the task stay, and it is said.
+    let cfg = config(&["echo"]);
+    let (users, events, wire) = sent(&cfg);
+    assert!(users.len() > 2 && users.len() < history.len() + 1);
+    assert_eq!(users[users.len() - 1], cfg.task);
+    assert_eq!(users[users.len() - 2], "question 7");
+    assert!(wire <= MODEL_WIRE_BYTES - TOOL_ROUND_WIRE_RESERVE);
+    let context = events.iter().find(|e| e["type"] == "context").unwrap();
+    assert_eq!(context["historyKept"], users.len() as u64 - 1);
+    assert_eq!(
+        context["historyDropped"],
+        (history.len() + 1 - users.len()) as u64
+    );
+    // Host validation of the same turn agrees instead of refusing it.
+    assert!(validate_with_history(&cfg, &history).is_ok());
+}
+
+fn finished(message: Value, finish: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({"choices":[{"index":0,"message":message,"finish_reason":finish}]}))
+        .unwrap()
+}
+
+fn outcome(response: Vec<u8>) -> Result<String> {
+    run(
+        &config(&[]),
+        |_| Ok(response.clone()),
+        |_, _| panic!("no tools requested"),
+        |_| {},
+    )
+}
+
+#[test]
+fn an_answer_starved_by_reasoning_is_diagnosed_as_such() {
+    // llama-server with a thinking model: every token went to reasoning.
+    for content in [json!(""), json!("  \n"), Value::Null] {
+        let error = outcome(finished(
+            json!({"role":"assistant","content":content,"reasoning_content":"Let me think..."}),
+            "length",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert_eq!(error, empty_at_length(512));
+        assert!(error.starts_with("final answer is empty"));
+        assert!(error.contains("512 tokens") && error.contains("disable thinking"));
+        // The reasoning text is never quoted into the error.
+        assert!(!error.contains("Let me think"));
+    }
+    // No content field at all, as the Anthropic normalisation cannot produce
+    // but an OpenAI-compatible server may.
+    assert_eq!(
+        outcome(finished(json!({"role":"assistant"}), "length"))
+            .unwrap_err()
+            .to_string(),
+        empty_at_length(512)
+    );
+    // The diagnosis names the budget this worker was actually given.
+    let mut roomy = config(&[]);
+    roomy.max_tokens = 2048;
+    let error = run(
+        &roomy,
+        |_| Ok(finished(json!({"role":"assistant","content":""}), "length")),
+        |_, _| panic!("no tools requested"),
+        |_| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("(2048 tokens)") && error.contains("maxOutputTokens"));
+    // An empty answer that did not hit the ceiling keeps the plain message.
+    assert_eq!(
+        outcome(finished(json!({"role":"assistant","content":""}), "stop"))
+            .unwrap_err()
+            .to_string(),
+        "final answer is empty"
+    );
+    // A truncated but present answer is still an answer.
+    assert_eq!(
+        outcome(finished(
+            json!({"role":"assistant","content":"partial"}),
+            "length"
+        ))
+        .unwrap(),
+        "partial"
+    );
+}
+
+#[test]
+fn llama_server_shaped_responses_with_extra_fields_parse_as_before() {
+    let response = serde_json::to_vec(&json!({
+        "id":"chatcmpl-x","object":"chat.completion","created":1,"model":"qwen",
+        "system_fingerprint":"b1-x",
+        "choices":[{"index":0,"finish_reason":"stop","message":{
+            "role":"assistant","content":"Paris.","reasoning_content":"The capital of France"}}],
+        "usage":{"prompt_tokens":20,"completion_tokens":115,"total_tokens":135},
+        "timings":{"prompt_n":20,"prompt_ms":31.5,"predicted_n":115,"predicted_per_second":48.2}
+    }))
+    .unwrap();
+    let mut events = Vec::new();
+    let answer = run(
+        &config(&[]),
+        |_| Ok(response.clone()),
+        |_, _| panic!("no tools requested"),
+        |event| events.push(event),
+    )
+    .unwrap();
+    assert_eq!(answer, "Paris.");
+    // Reasoning is not part of the answer or of any event.
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("capital of France"));
+}
+
+fn requested_max_tokens(cfg: &Config) -> Vec<Value> {
+    let tool_call = serde_json::to_vec(
+        &json!({"choices":[{"index":0,"finish_reason":"tool_calls","message":{
+        "role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function",
+            "function":{"name":"echo","arguments":"{\"text\":\"hi\"}"}}]}}]}),
+    )
+    .unwrap();
+    let mut seen = Vec::new();
+    run(
+        cfg,
+        |wire| {
+            let request: Value = serde_json::from_slice(wire).unwrap();
+            seen.push(request["body"]["max_tokens"].clone());
+            Ok(if seen.len() == 1 {
+                tool_call.clone()
+            } else {
+                finished(json!({"role":"assistant","content":"done"}), "stop")
+            })
+        },
+        |_, _| Ok(br#"{"text":"ok"}"#.to_vec()),
+        |_| {},
+    )
+    .unwrap();
+    seen
+}
+
+#[test]
+fn every_model_request_asks_for_the_configured_cap_and_512_when_none_is_given() {
+    // A template written before the field existed: no `max_tokens`.
+    let mut raw = serde_json::to_value(config(&["echo"])).unwrap();
+    assert!(raw.get("max_tokens").is_none());
+    let absent: Config = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(absent.max_tokens, 512);
+    assert_eq!(requested_max_tokens(&absent), [json!(512), json!(512)]);
+    // The host-delivered cap is sent in every request of the loop.
+    for cap in [256u64, 2048, 4096] {
+        raw["max_tokens"] = json!(cap);
+        let cfg: Config = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(requested_max_tokens(&cfg), [json!(cap), json!(cap)]);
+        assert_eq!(serde_json::to_value(&cfg).unwrap()["max_tokens"], cap);
+    }
+    // Outside the contract the worker refuses before any model request.
+    for cap in [json!(0), json!(255), json!(4097), json!(-1), json!("512")] {
+        raw["max_tokens"] = cap;
+        let refused = serde_json::from_value::<Config>(raw.clone())
+            .map_err(anyhow::Error::from)
+            .and_then(|cfg| {
+                run(
+                    &cfg,
+                    |_| panic!("no model request"),
+                    |_, _| panic!("no tool"),
+                    |_| {},
+                )
+            });
+        assert!(refused.is_err());
+    }
+}
+
+#[test]
+fn the_default_cap_keeps_the_serialized_template_existing_fleets_hashed() {
+    let mut cfg = config(&[]);
+    cfg.task.clear();
+    // Literal output of the struct as it was before `max_tokens` existed.
+    let before = r#"{"contract":"celln.json-tools/v1","task":"","system":"Bounded agent","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","tools":[],"max_turns":6,"max_calls":6}"#;
+    assert_eq!(serde_json::to_string(&cfg).unwrap(), before);
+    // Stating the default explicitly is the same template.
+    let mut explicit: Value = serde_json::from_str(before).unwrap();
+    explicit["max_tokens"] = json!(512);
+    let explicit: Config = serde_json::from_value(explicit).unwrap();
+    assert_eq!(serde_json::to_string(&explicit).unwrap(), before);
+    cfg.max_tokens = 4096;
+    assert_eq!(
+        serde_json::to_string(&cfg).unwrap(),
+        format!(r#"{},"max_tokens":4096}}"#, &before[..before.len() - 1])
+    );
+}
+
+#[test]
+fn an_answer_longer_than_the_parent_accepts_fails_the_turn_with_the_remedy() {
+    // 4096 tokens can be well over 8192 bytes.
+    let mut cfg = config(&[]);
+    cfg.max_tokens = 4096;
+    let answer = |bytes: usize| {
+        run(
+            &cfg,
+            |_| {
+                Ok(finished(
+                    json!({"role":"assistant","content":"a".repeat(bytes)}),
+                    "length",
+                ))
+            },
+            |_, _| panic!("no tools requested"),
+            |_| {},
+        )
+    };
+    assert_eq!(answer(MAX_ANSWER_BYTES).unwrap().len(), 8192);
+    assert_eq!(
+        answer(MAX_ANSWER_BYTES + 1).unwrap_err().to_string(),
+        "final answer exceeds 8192 bytes: ask for a shorter answer or lower the backend's maxOutputTokens"
+    );
 }

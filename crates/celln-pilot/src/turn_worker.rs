@@ -81,7 +81,8 @@ impl Template {
         let context = ContextInput::decode(&turn.request.task)?;
         ensure!(
             self.config.max_turns as u64 <= turn.limits.model_requests
-                && (self.config.max_turns as u64) * 512 <= turn.limits.output_tokens,
+                && (self.config.max_turns as u64) * self.config.max_tokens
+                    <= turn.limits.output_tokens,
             "worker template exceeds reserved model budget"
         );
         let mut config = self.config.clone();
@@ -106,6 +107,7 @@ mod tests {
             max_calls: 0,
             require_tool_call: false,
             allow_insecure: false,
+            max_tokens: json_harness::DEFAULT_MAX_TOKENS,
         }
     }
     fn turn(task: &str) -> ReservedTurn {
@@ -162,6 +164,24 @@ mod tests {
         request.limits.output_tokens = 512;
         request.limits.model_requests = 0;
         assert!(template.arguments(&request).is_err());
+        // A configured cap raises what the reservation must afford, reaches
+        // the guest in its arguments and is part of the template identity.
+        let mut roomy = config();
+        roomy.max_tokens = 4096;
+        let roomy = Template::new(roomy).unwrap();
+        assert_ne!(roomy.binding(), template.binding());
+        request.limits.model_requests = 1;
+        request.limits.output_tokens = 4095;
+        assert!(roomy.arguments(&request).is_err());
+        request.limits.output_tokens = 4096;
+        let args = roomy.arguments(&request).unwrap();
+        assert!(args[0].ends_with(r#""max_tokens":4096}"#));
+        assert!(!template.arguments(&request).unwrap()[0].contains("max_tokens"));
+        for cap in [255, 4097] {
+            let mut outside = config();
+            outside.max_tokens = cap;
+            assert!(Template::new(outside).is_err());
+        }
         let mut bad = config();
         bad.task = "hidden task".into();
         assert!(Template::new(bad).is_err());

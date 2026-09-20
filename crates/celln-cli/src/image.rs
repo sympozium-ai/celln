@@ -61,6 +61,10 @@ pub struct CatalogueImage {
     pub default: bool,
     #[serde(default)]
     pub provides: Vec<Provide>,
+    /// Commands a Sympozium starter package may borrow from this image as
+    /// argv tools; see `tool_commands`. Each names a static executable.
+    #[serde(default)]
+    pub commands: Vec<crate::tool_commands::CatalogueCommand>,
 }
 
 #[derive(serde::Deserialize, Clone)]
@@ -76,6 +80,17 @@ pub struct Provide {
     /// How this interpreter takes a program on the command line, e.g. `-c`.
     #[serde(default)]
     pub code_flag: Option<String>,
+}
+
+/// Where a catalogue image's sealed filesystem lives once pulled.
+pub fn materialised_path(image: &CatalogueImage, root: &Path) -> PathBuf {
+    let digest = image
+        .ref_
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .replace(':', "_");
+    images_dir(root).join(format!("{digest}.ext2"))
 }
 
 /// Has this catalogue image already been built into a sealed filesystem?
@@ -570,7 +585,21 @@ mod catalogue {
         for i in &cat.images {
             // The pin is what a cell is lent; a tag here would be a hole.
             digest_of(&i.ref_).unwrap_or_else(|e| panic!("{} is not digest-pinned: {e}", i.name));
-            assert!(!i.provides.is_empty(), "{} provides nothing", i.name);
+            assert!(
+                !i.provides.is_empty() || !i.commands.is_empty(),
+                "{} provides nothing",
+                i.name
+            );
+            let mut command_names = std::collections::BTreeSet::new();
+            for c in &i.commands {
+                crate::tool_commands::validate(c).unwrap_or_else(|e| panic!("{}: {e}", i.name));
+                assert!(
+                    command_names.insert(&c.name),
+                    "{} repeats command {}",
+                    i.name,
+                    c.name
+                );
+            }
             for p in &i.provides {
                 assert!(p.alias.starts_with('/'), "{} alias must be a path", i.name);
                 assert!(p.exec.starts_with('/'), "{} exec must be a path", i.name);

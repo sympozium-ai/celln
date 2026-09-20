@@ -727,6 +727,7 @@ fn source(
     Ok(built)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn composed(
     staging: &Path,
     output: &Path,

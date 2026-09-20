@@ -160,6 +160,10 @@ const LIVE_SIGNAL_PORT: u16 = 0x3f0;
 /// This is not a NIC: the guest gets no packet interface and no socket API.
 // 0x2f8 is COM2 and Linux probes it; use an otherwise-unassigned range.
 pub const PILOT_FETCH_TX: u16 = 0x500;
+/// Largest broker request the host buffers from a cell. The model request
+/// carries every tool schema and the conversation (32 KiB in the guest and
+/// broker); the workspace and fetch tools bound themselves lower.
+const MAX_FETCH_REQUEST_BYTES: usize = 32768;
 pub const PILOT_FETCH_CALL: u16 = 0x501;
 pub const PILOT_FETCH_RX: u16 = 0x502;
 pub const PILOT_FETCH_STATUS: u16 = 0x503;
@@ -885,6 +889,10 @@ pub struct LinuxCell {
     next_slot: u32,
     next_tool_gpa: u64,
     cfg: BootConfig,
+    /// The last run parked this VM, so the next run resumes a guest the host
+    /// held stopped for however long the caller waited (a parent waiting out
+    /// a worker turn). See [`LinuxCell::run`].
+    parked: bool,
 }
 
 impl LinuxCell {
@@ -1020,6 +1028,7 @@ impl LinuxCell {
             next_slot: FIRST_TOOL_SLOT,
             next_tool_gpa: TOOL_WINDOW_GPA,
             cfg,
+            parked: false,
         })
     }
 
@@ -1449,6 +1458,7 @@ impl LinuxCell {
                 next_slot,
                 next_tool_gpa: TOOL_WINDOW_GPA,
                 cfg: mote.cfg.clone(),
+                parked: false,
             },
             t,
         ))
@@ -1481,6 +1491,16 @@ impl LinuxCell {
     pub fn run(&mut self) -> Result<BootReport, VmmError> {
         let control = celln_control::current();
         celln_control::check().map_err(|e| VmmError::Backend(e.to_string()))?;
+        if std::mem::take(&mut self.parked) {
+            // A parked guest's clock kept running while the host held its
+            // vCPU. Without KVM_KVMCLOCK_CTRL the guest kernel sees a vCPU
+            // stuck for the whole wait and prints a soft-lockup report on the
+            // shared console, which can land inside a dispatch frame. The
+            // call sets PVCLOCK_GUEST_STOPPED so the guest's watchdogs treat
+            // the gap as a host pause. EINVAL means the guest has no pvclock;
+            // any failure only loses this courtesy, never the run.
+            let _ = self.vcpu.kvmclock_ctrl();
+        }
         install_wake_handler();
         let stop = Arc::new(AtomicBool::new(false));
         // `pthread_t` is opaque and may be pointer-shaped, so it cannot cross
@@ -1591,7 +1611,7 @@ impl LinuxCell {
                                 // cannot make the host buffer an unbounded URL.
                                 // Retain one overflow byte so a truncated,
                                 // valid JSON prefix cannot execute as a request.
-                                let take = 8193usize
+                                let take = (MAX_FETCH_REQUEST_BYTES + 1)
                                     .saturating_sub(self.fetch_request.len())
                                     .min(data.len());
                                 self.fetch_request.extend_from_slice(&data[..take]);
@@ -1647,8 +1667,9 @@ impl LinuxCell {
                             }
                         }
                         VcpuExit::MmioRead(_, data) => data.fill(0),
-                        // A write trapped in a sealed tool region was refused
-                        // by stage-2 protection rather than reaching tool code.
+                        // A write that reached us instead of memory. If it
+                        // landed in a sealed tool region, stage-2 just
+                        // refused a guest write to lent tool code.
                         VcpuExit::MmioWrite(gpa, _)
                             if self
                                 .tools
@@ -1678,6 +1699,7 @@ impl LinuxCell {
         };
         stop.store(true, Ordering::Relaxed);
         let _ = watchdog.join();
+        self.parked = end == BootEnd::Parked;
 
         Ok(BootReport {
             console: String::from_utf8_lossy(&self.serial.out).into_owned(),
@@ -2106,6 +2128,7 @@ mod tests {
             model: "fixture".into(),
             max_output_tokens: 1,
             max_total_output_tokens: 1,
+            parameters: Default::default(),
         });
         let original = Arc::new(AtomicUsize::new(0));
         let replacement = Arc::new(AtomicUsize::new(0));

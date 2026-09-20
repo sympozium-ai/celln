@@ -36,6 +36,7 @@ mod tenancy_credentials;
 mod tenancy_model_context;
 #[cfg(target_os = "linux")]
 mod tenancy_model_relay;
+mod tool_commands;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -117,7 +118,7 @@ enum Cmd {
         #[arg(long)]
         package_hash: String,
     },
-    /// Cold-package the native parent/worker and three starter tools; grants no authority.
+    /// Cold-package the native parent/worker and eight starter tools; grants no authority.
     StarterPackage {
         #[arg(long)]
         runtime_dir: PathBuf,
@@ -129,6 +130,13 @@ enum Cmd {
         signing_key: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// A catalogue image whose `commands` join the worker as borrowed
+        /// tools (repeatable). Each command's static executable is taken from
+        /// the digest-pinned image in this root's image store (pulled once if
+        /// absent) and lent under its own alias; the model calls it through the
+        /// argv binding the catalogue declares.
+        #[arg(long = "tool-image")]
+        tool_images: Vec<String>,
     },
     /// Publish one run's parent authority from an independently authorized local plan; does not launch.
     ParentProvision {
@@ -214,8 +222,10 @@ enum Cmd {
         backends: Vec<String>,
 
         /// DNS name of a headless Service whose A records are dispatcher
-        /// backends. Combined with --backends. Example:
-        /// celln-dispatcher.celln-system.svc.cluster.local.
+        /// backends, re-resolved every few seconds so owners can join or
+        /// leave without a restart. Combined with --backends; may be the only
+        /// source, in which case the router serves 503 until an owner resolves.
+        /// Example: celln-node.celln-system.svc.cluster.local.
         #[arg(long)]
         backends_srv: Option<String>,
 
@@ -231,7 +241,8 @@ enum Cmd {
         /// Both files are reread per request so rotation does not need a restart.
         #[arg(long)]
         client_token_file: PathBuf,
-        /// Optional read-only bearer credential for GET /v1/capabilities only.
+        /// Optional read-only discovery credential: GET /v1/capabilities and
+        /// GET /v1/cells only.
         #[arg(long)]
         capability_token_file: Option<PathBuf>,
         /// Optional operator parent principal credential for enduring routes.
@@ -693,14 +704,31 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             kernel,
             signing_key,
             output,
+            tool_images,
         } => {
             #[cfg(target_os = "linux")]
             {
-                starter_package::run(runtime_dir, guest_dir, kernel, signing_key, output)
+                starter_package::run(
+                    runtime_dir,
+                    guest_dir,
+                    kernel,
+                    signing_key,
+                    output,
+                    tool_images,
+                    &root,
+                    o,
+                )
             }
             #[cfg(not(target_os = "linux"))]
             {
-                let _ = (runtime_dir, guest_dir, kernel, signing_key, output);
+                let _ = (
+                    runtime_dir,
+                    guest_dir,
+                    kernel,
+                    signing_key,
+                    output,
+                    tool_images,
+                );
                 anyhow::bail!("Unsupported: native starter packaging requires Linux")
             }
         }

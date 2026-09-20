@@ -27,6 +27,11 @@ fn native_parent_starter_cross_turn_live() {
         "celln-workspace-read",
         "celln-workspace-write",
         "celln-https-fetch",
+        "celln-workspace-list",
+        "celln-workspace-append",
+        "celln-workspace-search",
+        "celln-workspace-delete",
+        "celln-https-post-json",
     ] {
         assert!(
             binaries.join(name).exists(),

@@ -9,6 +9,9 @@ use serde_json::json;
 #[path = "dispatch_parent_process_tests.rs"]
 mod process_tests;
 
+/// Broker contexts one native parent charges: the parent plus its child.
+pub(super) const PARENT_EGRESS_SLOTS: u32 = 2;
+
 /// Test/internal capacity gate. Creation uses spawn_after_check to claim its
 /// durable identity after the same one-shot/prewarm capacity check. Artifact
 /// preparation then runs on the reserved owner thread before parent launch.
@@ -67,6 +70,7 @@ where
             incarnation,
             lifetime,
             reservation.memory_bytes,
+            reservation.egress_slots,
             initialize,
         )
         .map_err(anyhow::Error::msg)
@@ -170,6 +174,12 @@ pub(super) fn handle(
             return reply(stream, 404, &json!({"error":"not found"}));
         }
         return create(state, stream, reader, length, &principal);
+    }
+    if path == "/v1/parents/provision" {
+        if method != "POST" {
+            return reply(stream, 404, &json!({"error":"not found"}));
+        }
+        return provision(state, stream, reader, length, &principal);
     }
     let mut parts = path.trim_start_matches("/v1/parents/").split('/');
     let id = parts.next().unwrap_or_default();
@@ -313,12 +323,18 @@ pub(super) fn handle(
             ),
         },
         ("POST", Some("turns")) => {
-            if length == 0 || length > warden::parent_mailbox::MAX_FRAME_BYTES {
+            if length == 0 || length > warden::parent_protocol::MAX_TURN_INPUT_BYTES {
                 return reply(stream, 413, &json!({"error":"invalid turn size"}));
             }
             let mut bytes = vec![0; length];
             stream.set_read_timeout(Some(Duration::from_secs(5)))?;
             reader.read_exact(&mut bytes)?;
+            // Refuse what no parent can carry before it reaches the owner:
+            // nothing is reserved or journalled, and the conversation's
+            // context is not put at risk by one bad submission.
+            if let Some(error) = refuse_turn(&bytes) {
+                return reply(stream, 413, &json!({"error":error,"retryAuthorized":false}));
+            }
             let pending = match state.parents.submit(&principal, &id, &bytes) {
                 Ok(pending) => pending,
                 Err(_) => {
@@ -358,6 +374,32 @@ pub(super) fn handle(
         }
         _ => reply(stream, 404, &json!({"error":"not found"})),
     }
+}
+
+/// Why a well-formed turn cannot be submitted, if it cannot. Anything that is
+/// not a turn is left to the owner's own refusal.
+fn refuse_turn(bytes: &[u8]) -> Option<&'static str> {
+    match serde_json::from_slice(bytes) {
+        Ok(pilot::parent_harness::HostMessage::Turn { message, .. })
+            if message.len() > warden::parent_protocol::MAX_MESSAGE_BYTES =>
+        {
+            Some("turn message exceeds 2048 bytes")
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn only_an_oversized_turn_message_is_refused_before_the_owner() {
+    let turn = |message: &str| {
+        serde_json::to_vec(&json!({"kind":"turn","apiVersion":pilot::parent_harness::VERSION,"turnId":"one","message":message})).unwrap()
+    };
+    assert_eq!(refuse_turn(&turn(&"x".repeat(2048))), None);
+    assert_eq!(
+        refuse_turn(&turn(&"x".repeat(2049))),
+        Some("turn message exceeds 2048 bytes")
+    );
+    assert_eq!(refuse_turn(b"not a turn"), None);
 }
 
 #[derive(Deserialize)]
@@ -752,9 +794,11 @@ fn create(
         };
         let id = admission.incarnation().clone();
         let lifetime = admission.lifetime();
+        // A native parent holds its own broker context and one for its single
+        // possible active child; both are charged for the owner's whole life.
         let reservation = Reservation {
             memory_bytes: admission.reserved_memory_bytes(),
-            egress_slots: 1,
+            egress_slots: PARENT_EGRESS_SLOTS,
         };
         // Claim is serialized after capacity checks but before owner creation.
         // Any subsequent failure is non-retryable for this incarnation.
@@ -777,9 +821,174 @@ fn create(
     }
 }
 
+/// The owner that will serve a parent issues its permit and launch profile, so
+/// provisioning no longer requires a co-located operator CLI. The plan is the
+/// same trusted contract as `parent-provision`; HTTP adds no authority because
+/// the plan is bound to the authenticated principal and nothing is launched.
+fn provision(
+    state: &State,
+    stream: &mut TcpStream,
+    reader: &mut impl Read,
+    length: usize,
+    principal: &str,
+) -> Result<()> {
+    if length == 0 || length > 65536 {
+        return reply(stream, 413, &json!({"error":"invalid provision plan size"}));
+    }
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut bytes = vec![0; length];
+    reader.read_exact(&mut bytes)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, principal, bytes);
+        reply(
+            stream,
+            503,
+            &json!({"error":"parent provisioning unsupported on this host"}),
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        match crate::dispatch::parent_create::provision(&state.root, &bytes, principal) {
+            Ok((launch, incarnation)) => reply(
+                stream,
+                200,
+                &json!({"apiVersion":"celln.parent-provisioned/v1",
+                "launchProfile":launch,"incarnation":incarnation}),
+            ),
+            Err(error)
+                if error.starts_with("invalid parent provision plan")
+                    || error.starts_with("parent provision version") =>
+            {
+                reply(
+                    stream,
+                    400,
+                    &json!({"error":"invalid parent provision plan"}),
+                )
+            }
+            // Expired, changed or corrupt issuance is never renewed by retry.
+            Err(_) => reply(
+                stream,
+                409,
+                &json!({"error":"parent provisioning refused; preserve issuance state",
+                "retryAuthorized":false}),
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn provision_route_requires_parent_principal_and_bounded_plan() {
+        let root = tempfile::tempdir().unwrap();
+        let state = super::super::tests::lifecycle_state(root.path());
+        let token = "parent-provision-test-credential-long-enough";
+        policy(root.path(), token, "tenant");
+        assert!(http(&state, "GET", "/v1/parents/provision", token, "").starts_with("HTTP/1.1 404"));
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            "another-credential-at-least-24-bytes",
+            "{}"
+        )
+        .starts_with("HTTP/1.1 401"));
+        assert!(
+            http(&state, "POST", "/v1/parents/provision", token, "").starts_with("HTTP/1.1 413")
+        );
+        // A body at the bound is read and rejected as a plan, not as a size.
+        #[cfg(target_os = "linux")]
+        for body in [
+            "{}".to_string(),
+            json!({"apiVersion":"celln.parent-provision-plan/v0"}).to_string(),
+            "x".repeat(65536),
+        ] {
+            assert!(http(&state, "POST", "/v1/parents/provision", token, &body)
+                .starts_with("HTTP/1.1 400"));
+        }
+        assert!(!root.path().join("parent-issuance").exists());
+        assert!(!root.path().join("parent-journal").exists());
+        assert_eq!(state.parents.reserved_capacity().unwrap().owners, 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provision_route_publishes_launch_for_bound_principal_without_creating() {
+        let (root, launch) = crate::dispatch::parent_create::publication_tests::fixture();
+        std::fs::create_dir(root.path().join("parent-issuance")).unwrap();
+        let state = super::super::tests::lifecycle_state(root.path());
+        let profile: serde_json::Value = serde_json::from_slice(&launch).unwrap();
+        let principal = profile["parent"]["workload"]["caller"].as_str().unwrap();
+        let token = "parent-provision-owner-credential-long-enough";
+        policy(root.path(), token, principal);
+        let mut plan = json!({
+            "apiVersion":"celln.parent-provision-plan/v1", "scope":"test-cluster",
+            "runUid":"immutable-run-uid", "intentSHA256":format!("sha256:{}", "a".repeat(64)),
+            "admissionWindowMs":60000, "parent":profile["parent"], "worker":profile["worker"],
+            "template":profile["template"], "modelProfile":profile["modelProfile"],
+            "reservedMemoryBytes":profile["reservedMemoryBytes"], "maxTurns":2,
+            "turnModelRequests":1, "turnOutputTokens":512, "totalModelRequests":2,
+            "totalOutputTokens":1024
+        });
+        let first = http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            token,
+            &plan.to_string(),
+        );
+        assert!(first.starts_with("HTTP/1.1 200"), "{first}");
+        let body: serde_json::Value =
+            serde_json::from_str(first.rsplit("\r\n\r\n").next().unwrap()).unwrap();
+        assert_eq!(body["apiVersion"], "celln.parent-provisioned/v1");
+        assert!(hash_valid(body["launchProfile"].as_str().unwrap()));
+        assert_eq!(
+            body["incarnation"].as_str().unwrap(),
+            warden::parent_permit::run_incarnation("test-cluster", "immutable-run-uid")
+                .unwrap()
+                .0
+        );
+        // Identical plans recover the same identity; nothing is launched.
+        assert_eq!(
+            http(
+                &state,
+                "POST",
+                "/v1/parents/provision",
+                token,
+                &serde_json::to_string_pretty(&plan).unwrap()
+            ),
+            first
+        );
+        assert!(crate::dispatch::parent_create::admit(
+            root.path(),
+            &Hash(body["launchProfile"].as_str().unwrap().into()),
+            principal
+        )
+        .is_ok());
+        plan["intentSHA256"] = json!(format!("sha256:{}", "b".repeat(64)));
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            token,
+            &plan.to_string()
+        )
+        .starts_with("HTTP/1.1 409"));
+        policy(root.path(), token, "another-tenant");
+        assert!(http(
+            &state,
+            "POST",
+            "/v1/parents/provision",
+            token,
+            &plan.to_string()
+        )
+        .starts_with("HTTP/1.1 400"));
+        assert!(!root.path().join("parent-journal").exists());
+        assert_eq!(state.parents.reserved_capacity().unwrap().owners, 0);
+    }
+
     #[test]
     fn exact_turn_http_cancel_preserves_parent_and_rejects_stale_requests() {
         let root = tempfile::tempdir().unwrap();
@@ -796,6 +1005,7 @@ mod tests {
                 &id,
                 Duration::from_secs(30),
                 4096,
+                0,
                 move |children| {
                     Ok(move |bytes: &[u8]| {
                         let turn = String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())?;
@@ -974,7 +1184,7 @@ mod tests {
         let (finished, done) = std::sync::mpsc::sync_channel(1);
         state
             .parents
-            .spawn_admitted("tenant", &id, Duration::from_secs(10), 4096, move || {
+            .spawn_admitted("tenant", &id, Duration::from_secs(10), 4096, 0, move || {
                 Ok(move |_: &[u8]| {
                     wait.recv_timeout(Duration::from_secs(2))
                         .map_err(|e| e.to_string())?;
@@ -1067,6 +1277,66 @@ mod tests {
         }
     }
 
+    /// Owners charge exact broker contexts, so `--egress-slots` bounds
+    /// concurrent parents per node instead of the first parent zeroing it.
+    #[test]
+    fn egress_slots_bound_concurrent_parents_and_return_on_stop() {
+        type Handler = fn(&[u8]) -> std::result::Result<Vec<u8>, String>;
+        let root = tempfile::tempdir().unwrap();
+        let mut state = super::super::tests::lifecycle_state(root.path());
+        state.probe.max_cells = 8;
+        state.probe.egress_slots = 2 * PARENT_EGRESS_SLOTS;
+        let reservation = Reservation {
+            memory_bytes: 4096,
+            egress_slots: PARENT_EGRESS_SLOTS,
+        };
+        for name in [&b"one"[..], b"two"] {
+            spawn_admitted(
+                &state,
+                "tenant",
+                &Hash::of(name),
+                Duration::from_secs(10),
+                reservation,
+                || Ok(|_: &[u8]| Ok(vec![1])),
+            )
+            .unwrap();
+        }
+        let node = current_node(&state, &state.executions.lock().unwrap());
+        assert_eq!(node.live_cells, 4);
+        assert_eq!(node.egress_slots, 0);
+        assert_eq!(
+            state.parents.reserved_capacity().unwrap().egress_slots,
+            2 * PARENT_EGRESS_SLOTS
+        );
+        // Cells and memory remain; broker contexts are the binding limit.
+        assert!(spawn_admitted(
+            &state,
+            "tenant",
+            &Hash::of(b"three"),
+            Duration::from_secs(10),
+            reservation,
+            || -> std::result::Result<Handler, String> {
+                panic!("capacity refusal must not initialize a runtime")
+            }
+        )
+        .is_err());
+        state.parents.stop("tenant", &Hash::of(b"one")).unwrap();
+        let node = current_node(&state, &state.executions.lock().unwrap());
+        assert_eq!(node.egress_slots, PARENT_EGRESS_SLOTS);
+        spawn_admitted(
+            &state,
+            "tenant",
+            &Hash::of(b"three"),
+            Duration::from_secs(10),
+            reservation,
+            || Ok(|_: &[u8]| Ok(vec![1])),
+        )
+        .unwrap();
+        for name in [&b"two"[..], b"three"] {
+            state.parents.stop("tenant", &Hash::of(name)).unwrap();
+        }
+    }
+
     #[test]
     fn http_session_commits_turn_and_reads_journal_after_stop() {
         let root = tempfile::tempdir().unwrap();
@@ -1082,6 +1352,7 @@ mod tests {
             &id,
             Duration::from_secs(10),
             4096,
+            0,
             move || {
                 let journal = warden::parent_journal::ParentJournal::create(
                     &journal_root,
@@ -1165,7 +1436,7 @@ mod tests {
         let id = Hash::of(b"incarnation");
         state
             .parents
-            .spawn_admitted("tenant-one", &id, Duration::from_secs(10), 4096, || {
+            .spawn_admitted("tenant-one", &id, Duration::from_secs(10), 4096, 0, || {
                 Ok(|_: &[u8]| Ok(br#"{"kind":"completed"}"#.to_vec()))
             })
             .unwrap();

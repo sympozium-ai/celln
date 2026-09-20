@@ -11,6 +11,7 @@ use std::time::Duration;
 mod post;
 pub use post::{
     model_endpoint_host, model_endpoint_target, JsonPostGrant, ModelEndpoint, ModelProtocol,
+    DEFAULT_REQUEST_OUTPUT_TOKENS, REQUEST_OUTPUT_TOKENS,
 };
 
 /// Independent credential-free GET authority for native starter tools.
@@ -18,6 +19,18 @@ pub use post::{
 pub struct GetGrant {
     pub allow_hosts: Vec<String>,
     pub max_requests: usize,
+    pub max_response_bytes: usize,
+    pub timeout: Duration,
+}
+
+/// Independent credential-free JSON POST authority for native starter tools:
+/// exact hosts, a request budget and body/response ceilings. It never carries
+/// a credential and never implies GET or model access.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostGrant {
+    pub allow_hosts: Vec<String>,
+    pub max_requests: usize,
+    pub max_body_bytes: usize,
     pub max_response_bytes: usize,
     pub timeout: Duration,
 }
@@ -37,6 +50,8 @@ pub struct HttpPolicy {
     /// None preserves the legacy shared GET/model budget. Some uses an
     /// independent GET budget; an empty allowlist explicitly denies all GETs.
     pub get: Option<GetGrant>,
+    /// Credential-free JSON POSTs to named hosts; None denies them all.
+    pub post: Option<PostGrant>,
     /// Operator opt-in that also permits HTTP and self-signed HTTPS model
     /// endpoints on private addresses. Default false keeps the HTTPS-only,
     /// public-address contract.
@@ -53,9 +68,25 @@ impl HttpPolicy {
             json_posts: Vec::new(),
             workspace: None,
             get: None,
+            post: None,
             allow_insecure: false,
         }
     }
+}
+
+/// The lowercase host of an http(s) URL, without port, credentials or path.
+pub(crate) fn url_host(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let authority = rest.split('/').next()?;
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(host, _)| host);
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 /// A validated egress destination with its resolved address.
@@ -96,6 +127,7 @@ pub struct HttpBroker {
     policy: HttpPolicy,
     used: usize,
     get_used: usize,
+    post_used: usize,
     post_output_reserved: std::collections::BTreeMap<String, u64>,
     model_relay: Option<Box<dyn ModelRelay>>,
 }
@@ -106,6 +138,7 @@ impl HttpBroker {
             policy,
             used: 0,
             get_used: 0,
+            post_used: 0,
             post_output_reserved: Default::default(),
             model_relay: None,
         }
@@ -245,7 +278,9 @@ impl HttpBroker {
     /// followed one hop at a time so every destination is independently
     /// authorised; `curl --location` would bypass the allowlist on hop two.
     pub fn fetch(&mut self, raw: &str) -> Result<Vec<u8>, FetchDenied> {
-        if raw.len() > 8192 {
+        // Model requests carry every tool schema and the conversation; the
+        // workspace and plain POST paths bound themselves more tightly below.
+        if raw.len() > 32768 {
             return Err(FetchDenied::Fetch(
                 "request exceeds broker wire budget".into(),
             ));
@@ -442,6 +477,21 @@ mod tests {
                 .unwrap_err(),
             FetchDenied::Scheme
         );
+    }
+
+    #[test]
+    fn url_host_is_the_bare_lowercase_authority() {
+        assert_eq!(
+            url_host("https://Hooks.Example/in?x=1"),
+            Some("hooks.example".into())
+        );
+        assert_eq!(
+            url_host("http://echo.svc:8080/post"),
+            Some("echo.svc".into())
+        );
+        assert_eq!(url_host("https://user@hooks.example/"), None);
+        assert_eq!(url_host("ftp://hooks.example/"), None);
+        assert_eq!(url_host("https:///path"), None);
     }
 
     #[test]

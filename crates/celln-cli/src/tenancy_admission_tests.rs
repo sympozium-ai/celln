@@ -91,9 +91,11 @@ impl Fixture {
             &self.token,
             &self.decision,
             &self.context,
-            &canonical(&serde_json::to_vec(&enrolled).unwrap()).unwrap(),
-            &self.request,
-            enrolled_owner,
+            Enrollment {
+                decision: &canonical(&serde_json::to_vec(&enrolled).unwrap()).unwrap(),
+                request: &self.request,
+                owner: enrolled_owner,
+            },
         )
     }
     fn resign(&mut self, d: Value) {

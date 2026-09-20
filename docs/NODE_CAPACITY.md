@@ -9,6 +9,15 @@ are `--max-cells`, `--memory-bytes`, and `--egress-slots` (or their existing
 egress-enabled execution can be admitted, even if host destination policy
 allows its hostname. Configure both policy and capacity when enabling fetch.
 
+A native parent reserves two cell slots, its declared memory and two broker
+slots (its own and its single possible active child's) for its whole life,
+between turns included. The parent registry records that exact charge under
+the same admission lock and releases it only on confirmed stop or reap, so
+`--egress-slots` bounds concurrent parents per node alongside `--max-cells`
+and `--memory-bytes`. One broker slot per cell (`--egress-slots` equal to
+`--max-cells`) lets a node hold `max-cells / 2` parents when memory allows.
+A teardown-uncertain parent stays charged.
+
 Memory is an aggregate active guest-RAM commitment, not process RSS or a
 physical host-memory guarantee. The bounded warm cache retains one mote;
 sealed tool pages, old templates referenced by active forks, artifact buffers,

@@ -13,6 +13,11 @@ const NAMES: &[&str] = &[
     "workspace-read",
     "workspace-write",
     "https-fetch",
+    "workspace-list",
+    "workspace-append",
+    "workspace-search",
+    "workspace-delete",
+    "https-post-json",
 ];
 
 pub(crate) struct Candidate {
@@ -46,7 +51,7 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
         .context("package bundles required")?;
     ensure!(
         entries.len() == NAMES.len(),
-        "exact five-bundle starter package required"
+        "exact ten-bundle starter package required"
     );
     let kernel = regular(&package.join("kernel"), 64 << 20)?;
     ensure!(
@@ -180,8 +185,16 @@ mod tests {
         let package = dir.path().join("package");
         let key = dir.path().join("key");
         fs::write(&key, [19u8; 32]).unwrap();
-        let report =
-            crate::starter_package::prepare(&repo, &guest, &kernel, &key, &package).unwrap();
+        let report = crate::starter_package::prepare(
+            &repo,
+            &guest,
+            &kernel,
+            &key,
+            &package,
+            &Default::default(),
+            &[],
+        )
+        .unwrap();
         let expected = Hash::of(&fs::read(package.join("package.json")).unwrap()).0;
         let root = dir.path().join("authority");
         fs::create_dir(&root).unwrap();
@@ -199,7 +212,7 @@ mod tests {
         assert_eq!(run(&package, &expected, &root).unwrap(), 0);
         let policy: Value =
             serde_json::from_slice(&fs::read(root.join("trusted-motes.json")).unwrap()).unwrap();
-        assert_eq!(policy["bundles"].as_array().unwrap().len(), 5);
+        assert_eq!(policy["bundles"].as_array().unwrap().len(), 10);
         for entry in report["bundles"].as_array().unwrap() {
             assert!(policy["bundles"]
                 .as_array()
@@ -216,6 +229,82 @@ mod tests {
         );
         assert!(!root.join("trusted-parent-permits").exists());
         assert!(crate::starter_configure::run(&config_plan, &root).is_err());
+        // Reviewed defaults are published as the host ceilings.
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(configured.join("configured.json")).unwrap()).unwrap();
+        assert_eq!(receipt["hostLimits"]["leaseSeconds"], 3600);
+        assert_eq!(receipt["hostLimits"]["maxTurns"], 12);
+        // Operator host limits reach the parent lifetime, the native
+        // template totals and the receipt; out-of-range values are refused
+        // before anything is written.
+        let long_lived = dir.path().join("configured-long");
+        let long_plan = dir.path().join("config-plan-long.json");
+        let mut plan: Value = serde_json::from_slice(&fs::read(&config_plan).unwrap()).unwrap();
+        plan["output"] = json!(long_lived);
+        plan["hostLimits"] = json!({"leaseSeconds": 86400, "maxTurns": 256, "maxModelRequests": 1536, "maxOutputTokens": 786432});
+        fs::write(&long_plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert_eq!(crate::starter_configure::run(&long_plan, &root).unwrap(), 0);
+        let native: Value =
+            serde_json::from_slice(&fs::read(long_lived.join("native-template.json")).unwrap())
+                .unwrap();
+        assert_eq!(native["parent"]["capabilities"]["timeoutMs"], 86_400_000);
+        assert_eq!(native["maxTurns"], 256);
+        assert_eq!(native["totalModelRequests"], 1536);
+        assert_eq!(native["totalOutputTokens"], 786432);
+        // Each turn affords the template's whole model loop: six requests
+        // of 512 tokens, enough for four tool calls one at a time.
+        assert_eq!(native["turnModelRequests"], 6);
+        assert_eq!(native["turnOutputTokens"], 3072);
+        assert_eq!(native["template"]["max_turns"], 6);
+        assert_eq!(native["template"]["max_calls"], 4);
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(long_lived.join("configured.json")).unwrap()).unwrap();
+        assert_eq!(receipt["hostLimits"]["leaseSeconds"], 86400);
+        // A backend cap scales the turn allowance and the default totals,
+        // reaches the worker template and the pinned profile, and is stated
+        // in the receipt; the default plan above named none of it.
+        assert!(receipt["model"].get("maxOutputTokens").is_none());
+        assert!(native["template"].get("max_tokens").is_none());
+        let roomy = dir.path().join("configured-roomy");
+        let roomy_plan = dir.path().join("config-plan-roomy.json");
+        let mut capped: Value = serde_json::from_slice(&fs::read(&config_plan).unwrap()).unwrap();
+        capped["output"] = json!(roomy);
+        capped["modelConnection"] = json!({"provider":"llama-server","protocol":"openai-chat",
+            "endpoint":"http://10.0.0.5:8080/v1/chat/completions","model":"qwen",
+            "credentialProfile":"local","allowInsecure":true,"maxOutputTokens":2048});
+        fs::write(&roomy_plan, serde_json::to_vec(&capped).unwrap()).unwrap();
+        assert_eq!(
+            crate::starter_configure::run(&roomy_plan, &root).unwrap(),
+            0
+        );
+        let native: Value =
+            serde_json::from_slice(&fs::read(roomy.join("native-template.json")).unwrap()).unwrap();
+        assert_eq!(native["template"]["max_tokens"], 2048);
+        assert_eq!(native["turnModelRequests"], 6);
+        assert_eq!(native["turnOutputTokens"], 12288);
+        assert_eq!(native["totalOutputTokens"], 147_456);
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(roomy.join("configured.json")).unwrap()).unwrap();
+        assert_eq!(receipt["model"]["maxOutputTokens"], 2048);
+        assert_eq!(receipt["hostLimits"]["maxOutputTokens"], 147_456);
+        let pinned = native["modelProfile"].as_str().unwrap();
+        let profile: Value = serde_json::from_slice(
+            &fs::read(
+                root.join("trusted-parent-models")
+                    .join(format!("{}.json", &pinned[7..])),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(profile["maxOutputTokens"], 2048);
+        assert_eq!(profile["maxTotalOutputTokens"], 12288);
+        let bad = dir.path().join("configured-bad");
+        let bad_plan = dir.path().join("config-plan-bad.json");
+        plan["output"] = json!(bad);
+        plan["hostLimits"] = json!({"leaseSeconds": 86401});
+        fs::write(&bad_plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(crate::starter_configure::run(&bad_plan, &root).is_err());
+        assert!(!bad.exists());
         for name in [
             "parent-issuance",
             "trusted-parent-permits",

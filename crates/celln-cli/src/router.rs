@@ -14,11 +14,12 @@ use crate::dispatch_http::{
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::io::{BufReader, Read, Write};
+use std::net::IpAddr;
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 #[path = "router_ownership.rs"]
 mod ownership;
@@ -87,6 +88,67 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 struct Health {
     ok: bool,
     kvm: bool,
+    /// Present on dispatchers that report their live budget; absent on older
+    /// ones, which are then placed as if they had no spare capacity.
+    #[serde(default)]
+    node: Option<HealthNode>,
+}
+
+#[derive(Debug, serde::Deserialize, Default, Clone, Copy)]
+struct HealthNode {
+    #[serde(default)]
+    live_cells: u32,
+    #[serde(default)]
+    max_cells: u32,
+    #[serde(default)]
+    memory_bytes: u64,
+}
+
+impl Health {
+    /// Spare cells and memory the owner advertises right now.
+    fn spare(&self) -> (u32, u64) {
+        let node = self.node.unwrap_or_default();
+        (
+            node.max_cells.saturating_sub(node.live_cells),
+            node.memory_bytes,
+        )
+    }
+}
+
+/// Places a new parent on the healthy owner with the most spare cells (then
+/// memory). Ties keep the hash order, so equally free owners spread parents
+/// deterministically. Once provisioned, the ownership ledger binds the parent
+/// to that owner for good; this choice happens exactly once per incarnation.
+fn pick_owner(state: &RouterState, action_id: &str, token: &Option<String>) -> Result<String> {
+    let backends = state.backends();
+    let n = backends.len();
+    if n == 0 {
+        bail!("no dispatcher backends configured or discovered");
+    }
+    let start = (fnv1a(action_id.as_bytes()) as usize) % n;
+    let mut best: Option<(String, (u32, u64))> = None;
+    for offset in 0..n {
+        let backend = &backends[(start + offset) % n];
+        let Ok(Some(health)) = health_of(backend, token) else {
+            continue;
+        };
+        let spare = health.spare();
+        if best.as_ref().map_or(true, |(_, current)| spare > *current) {
+            best = Some((backend.clone(), spare));
+        }
+    }
+    best.map(|(backend, _)| backend)
+        .ok_or_else(|| anyhow::anyhow!("no healthy dispatcher backends among {n} candidates"))
+}
+
+fn health_of(backend: &str, token: &Option<String>) -> Result<Option<Health>> {
+    let resp = forward_get(backend, "/v1/health", token)?;
+    if parse_status(&resp) != 200 {
+        return Ok(None);
+    }
+    Ok(serde_json::from_str::<Health>(extract_body(&resp))
+        .ok()
+        .filter(|h| h.ok && h.kvm))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -101,55 +163,27 @@ pub fn serve(
     parent_token_file: Option<&Path>,
     ownership_dir: &Path,
 ) -> Result<u8> {
-    let mut urls: Vec<String> = backends
-        .into_iter()
-        .map(|b| b.trim_end_matches('/').to_string())
-        .collect();
-
-    // DNS-based discovery: resolve the SRV name to all pod IPs.
-    if let Some(srv) = backends_srv {
-        let srv = srv.trim_end_matches('/');
-        let addr = if srv.contains(':') {
-            srv.to_string()
-        } else {
-            format!("{srv}:8787")
-        };
-        match addr.to_socket_addrs() {
-            Ok(addrs) => {
-                for a in addrs {
-                    let url = format!("http://{}:{}", a.ip(), a.port());
-                    if !urls.contains(&url) {
-                        urls.push(url);
-                    }
-                }
-            }
-            Err(e) => eprintln!("celln route: warning: could not resolve {addr}: {e}"),
-        }
-    }
-
-    if urls.is_empty() {
-        bail!("at least one dispatcher backend URL is required (--backends or --backends-srv)");
-    }
-    for url in &urls {
-        backend_to_addr(url)?;
-    }
+    let (urls, discovery) = initial_backends(backends, backends_srv)?;
     let state = Arc::new(RouterState {
-        backends: urls.clone(),
+        backends: urls,
+        discovery,
         mode,
         cursor: AtomicUsize::new(0),
         executions: ownership::Ledger::open(ownership_dir, 100_000)?,
         parents: ownership::Ledger::open(&ownership_dir.join("parents"), 100_000)?,
+        provisions: ownership::Ledger::open(&ownership_dir.join("provisions"), 100_000)?,
         parent_token_file: parent_token_file.map(Path::to_owned),
         token_file: token_file.to_owned(),
         client_token_file: client_token_file.to_owned(),
         capability_token_file: capability_token_file.map(Path::to_owned),
         capability_probe_active: AtomicBool::new(false),
+        cells_probe_active: AtomicBool::new(false),
     });
     credentials(&state).context("router credentials are missing, invalid or not distinct")?;
     let listener = TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
     eprintln!(
         "celln route listening on {listen} ({} backends, {mode:?})",
-        urls.len()
+        state.backends().len()
     );
     for stream in listener.incoming() {
         match stream {
@@ -167,18 +201,139 @@ pub fn serve(
     Ok(crate::exit::OK)
 }
 
+/// Owners discovered by name (typically a headless Service). They are
+/// re-resolved so a fleet can grow or shrink without a router restart; the
+/// ownership ledgers still pin every action to the exact address that took it,
+/// so an owner that disappears is reported, never replaced.
+struct Discovery {
+    address: String,
+    resolved: RwLock<Vec<String>>,
+    refreshed: Mutex<Option<Instant>>,
+}
+
+const DISCOVERY_TTL: Duration = Duration::from_secs(5);
+
+impl Discovery {
+    fn new(address: String) -> Self {
+        let discovery = Self {
+            address,
+            resolved: RwLock::new(Vec::new()),
+            refreshed: Mutex::new(None),
+        };
+        discovery.refresh();
+        discovery
+    }
+
+    fn refresh(&self) {
+        match resolve_backends(&self.address) {
+            Ok(urls) => *self.resolved.write().unwrap_or_else(|e| e.into_inner()) = urls,
+            // Keep the last good answer: a DNS blip must not evict live owners.
+            Err(error) => eprintln!(
+                "celln route: warning: could not resolve {}: {error}",
+                self.address
+            ),
+        }
+        *self.refreshed.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    fn current(&self) -> Vec<String> {
+        let stale = self
+            .refreshed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map_or(true, |at| at.elapsed() >= DISCOVERY_TTL);
+        if stale {
+            self.refresh();
+        }
+        self.resolved
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+fn resolve_backends(address: &str) -> Result<Vec<String>> {
+    let mut urls: Vec<String> = address
+        .to_socket_addrs()?
+        .map(|a| match a.ip() {
+            IpAddr::V6(ip) => format!("http://[{ip}]:{}", a.port()),
+            ip => format!("http://{ip}:{}", a.port()),
+        })
+        .collect();
+    urls.sort();
+    urls.dedup();
+    Ok(urls)
+}
+
+/// Static `--backends` are validated once; `--backends-srv` becomes live
+/// discovery. Without any static backend, discovery may legitimately be empty
+/// at startup (no owner is ready yet) and the router answers 503 until one is.
+fn initial_backends(
+    backends: Vec<String>,
+    backends_srv: Option<&str>,
+) -> Result<(Vec<String>, Option<Discovery>)> {
+    let urls: Vec<String> = backends
+        .into_iter()
+        .map(|b| b.trim_end_matches('/').to_string())
+        .collect();
+    for url in &urls {
+        backend_to_addr(url)?;
+    }
+    let discovery = backends_srv.map(|srv| {
+        let srv = srv.trim_end_matches('/');
+        Discovery::new(if srv.contains(':') {
+            srv.to_string()
+        } else {
+            format!("{srv}:8787")
+        })
+    });
+    match &discovery {
+        None if urls.is_empty() => {
+            bail!("at least one dispatcher backend URL is required (--backends or --backends-srv)")
+        }
+        Some(discovery) if urls.is_empty() && discovery.current().is_empty() => eprintln!(
+            "celln route: warning: no owners resolved from {} yet; refusing work until one is",
+            discovery.address
+        ),
+        _ => {}
+    }
+    Ok((urls, discovery))
+}
+
 struct RouterState {
     backends: Vec<String>,
+    discovery: Option<Discovery>,
     mode: RoutingMode,
     cursor: AtomicUsize,
     /// Shared durable ownership and anti-replay tombstones.
     executions: ownership::Ledger,
     parents: ownership::Ledger,
+    /// Owner chosen at provisioning; creation must follow it, never re-pick.
+    provisions: ownership::Ledger,
     parent_token_file: Option<PathBuf>,
     token_file: PathBuf,
     client_token_file: PathBuf,
     capability_token_file: Option<PathBuf>,
     capability_probe_active: AtomicBool,
+    /// Separate from capability discovery so dashboard polling of `/v1/cells`
+    /// can never starve an admission-time capability probe, or vice versa.
+    cells_probe_active: AtomicBool,
+}
+
+impl RouterState {
+    /// Every backend the router may forward to right now: the static list plus
+    /// whatever discovery currently resolves.
+    fn backends(&self) -> Vec<String> {
+        let mut urls = self.backends.clone();
+        if let Some(discovery) = &self.discovery {
+            for url in discovery.current() {
+                if !urls.contains(&url) {
+                    urls.push(url);
+                }
+            }
+        }
+        urls
+    }
 }
 
 fn handle(mut stream: TcpStream, state: &RouterState) -> Result<()> {
@@ -333,10 +488,17 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
         let (scheme, token) = value.split_once(' ')?;
         scheme.eq_ignore_ascii_case("bearer").then_some(token)
     });
-    let is_capability_read = method == "GET" && path == "/v1/capabilities";
+    // The optional capability credential is a read-only *discovery* token. It
+    // opens exactly two GET routes, both aggregate fan-outs that mutate no
+    // ledger and return no tenant content: `/v1/capabilities` and `/v1/cells`
+    // (operator dashboard listing: identifiers, stages, timings, outcomes).
+    // Every other route — including `/v1/node` and all of `/v1/parents` —
+    // still requires the client credential.
+    let is_discovery_read = method == "GET"
+        && (path == "/v1/capabilities" || crate::cells::report_query(&path).is_some());
     let authorized = presented.is_some_and(|token| {
         constant_time_eq(token.as_bytes(), client_token.as_bytes())
-            || (is_capability_read
+            || (is_discovery_read
                 && read_token
                     .as_ref()
                     .is_some_and(|read| constant_time_eq(token.as_bytes(), read.as_bytes())))
@@ -348,7 +510,7 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
     // Pins are trusted-controller routing intent, not tenant URLs. Match only
     // an exact operator-configured endpoint and never probe/select a fallback.
     if let Some(backend) = &pinned_backend {
-        if backend.len() > 1024 || !state.backends.contains(backend) {
+        if backend.len() > 1024 || !state.backends().contains(backend) {
             return reply(
                 stream,
                 400,
@@ -378,6 +540,9 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
             )?;
         }
         ("GET", "/v1/capabilities") => capability_report(state, stream, &backend_token)?,
+        ("GET", target) if crate::cells::report_query(target).is_some() => {
+            cells_report(state, stream, target, &backend_token)?
+        }
         ("POST", "/v1/artifacts/prewarm") => forward_prewarm(
             stream,
             &mut reader,
@@ -421,7 +586,8 @@ fn capability_report(
 ) -> Result<()> {
     // Bound fanout and permit only one probe at a time per router. No request or
     // owner ledger is mutated by discovery; failures never trigger execution.
-    if state.backends.len() > 32 || state.capability_probe_active.swap(true, Ordering::AcqRel) {
+    let backends = state.backends();
+    if backends.len() > 32 || state.capability_probe_active.swap(true, Ordering::AcqRel) {
         return reply(
             stream,
             503,
@@ -436,7 +602,7 @@ fn capability_report(
     }
     let _guard = ProbeGuard(&state.capability_probe_active);
     let nodes = std::thread::scope(|scope| {
-        let probes: Vec<_> = state.backends.iter().enumerate().map(|(index, backend)| {
+        let probes: Vec<_> = backends.iter().enumerate().map(|(index, backend)| {
             scope.spawn(move || {
                 let report = (|| -> Result<crate::capabilities::DispatcherCapabilities> {
                     let addr = backend_to_addr(backend)?;
@@ -479,6 +645,90 @@ fn capability_report(
             "parentRouting":state.parent_token_file.is_some(),
             "nodes":nodes,
         }),
+    )
+}
+
+/// `GET /v1/cells[?all=&limit=]`: every backend's `celln ps`-style listing.
+///
+/// Shaped like [`capability_report`]: bounded parallel fan-out (at most 32
+/// backends, 3 s connect, 2 s whole-response deadline), one in flight per
+/// router, and no request or owner ledger involvement — nothing is recorded,
+/// routed or retried. A backend that fails in any way yields a `reason`, never
+/// a partial or guessed report. The query is parsed here and re-serialized, so
+/// no caller bytes reach a backend request line.
+fn cells_report(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    target: &str,
+    token: &Option<String>,
+) -> Result<()> {
+    let query = crate::cells::report_query(target).flatten();
+    let target = match crate::cells::ListQuery::parse(query) {
+        Ok(query) => query.target(),
+        Err(error) => return reply(stream, 400, &serde_json::json!({"error":error})),
+    };
+    let backends = state.backends();
+    if backends.len() > 32 || state.cells_probe_active.swap(true, Ordering::AcqRel) {
+        return reply(
+            stream,
+            503,
+            &serde_json::json!({"error":"cells probe unavailable"}),
+        );
+    }
+    struct ProbeGuard<'a>(&'a AtomicBool);
+    impl Drop for ProbeGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _guard = ProbeGuard(&state.cells_probe_active);
+    let target = target.as_str();
+    let nodes = std::thread::scope(|scope| {
+        let probes: Vec<_> = backends
+            .iter()
+            .enumerate()
+            .map(|(index, backend)| {
+                scope.spawn(move || {
+                    let report = (|| -> Result<serde_json::Value> {
+                        let addr = backend_to_addr(backend)?;
+                        let mut conn = connect(&addr)?;
+                        let credential = token.as_deref().context("backend credential missing")?;
+                        write!(conn, "GET {target} HTTP/1.1\r\nHost: dispatcher\r\nAuthorization: Bearer {credential}\r\nConnection: close\r\n\r\n")?;
+                        let response = read_probe_response(&mut conn, MAX_CELLS_RESPONSE)?;
+                        if parse_status(&response) != 200 {
+                            bail!("backend cells request failed");
+                        }
+                        let report: serde_json::Value =
+                            serde_json::from_str(extract_body(&response))?;
+                        if report["apiVersion"] != crate::cells::REPORT_VERSION
+                            || !report["cells"].is_array()
+                            || !report["parents"].is_array()
+                        {
+                            bail!("incompatible backend cells report");
+                        }
+                        Ok(report)
+                    })();
+                    match report {
+                        Ok(report) => serde_json::json!({"index":index,"report":report}),
+                        Err(_) => serde_json::json!({"index":index,"reason":"unreachable_unauthorized_or_incompatible"}),
+                    }
+                })
+            })
+            .collect();
+        probes
+            .into_iter()
+            .enumerate()
+            .map(|(index, probe)| {
+                probe
+                    .join()
+                    .unwrap_or_else(|_| serde_json::json!({"index":index,"reason":"probe_failed"}))
+            })
+            .collect::<Vec<_>>()
+    });
+    reply(
+        stream,
+        200,
+        &serde_json::json!({"apiVersion":crate::cells::REPORT_VERSION,"nodes":nodes}),
     )
 }
 
@@ -645,7 +895,7 @@ fn forward_owned(
     path: &str,
     token: &Option<String>,
 ) -> Result<()> {
-    if !state.backends.iter().any(|url| url == backend) {
+    if !state.backends().iter().any(|url| url == backend) {
         return reply(
             stream,
             503,
@@ -688,7 +938,11 @@ fn valid_path_id(id: &str) -> bool {
 }
 
 fn pick_backend(state: &RouterState, action_id: &str, token: &Option<String>) -> Result<String> {
-    let n = state.backends.len();
+    let backends = state.backends();
+    let n = backends.len();
+    if n == 0 {
+        bail!("no dispatcher backends configured or discovered");
+    }
     let start = match state.mode {
         RoutingMode::RoundRobin => (fnv1a(action_id.as_bytes()) as usize) % n,
         RoutingMode::Random => {
@@ -703,7 +957,7 @@ fn pick_backend(state: &RouterState, action_id: &str, token: &Option<String>) ->
     };
 
     for offset in 0..n {
-        let backend = &state.backends[(start + offset) % n];
+        let backend = &backends[(start + offset) % n];
         if is_healthy(backend, token).unwrap_or(false) {
             return Ok(backend.clone());
         }
@@ -712,17 +966,7 @@ fn pick_backend(state: &RouterState, action_id: &str, token: &Option<String>) ->
 }
 
 fn is_healthy(backend: &str, token: &Option<String>) -> Result<bool> {
-    let resp = forward_get(backend, "/v1/health", token)?;
-    match parse_status(&resp) {
-        200 => {
-            let body = extract_body(&resp);
-            match serde_json::from_str::<Health>(body) {
-                Ok(h) => Ok(h.ok && h.kvm),
-                Err(_) => Ok(false),
-            }
-        }
-        _ => Ok(false),
-    }
+    Ok(health_of(backend, token)?.is_some())
 }
 
 fn forward_get(backend: &str, path: &str, token: &Option<String>) -> Result<String> {
@@ -803,6 +1047,16 @@ fn read_response(stream: &mut TcpStream) -> Result<String> {
 }
 
 fn read_capability_response(stream: &mut TcpStream) -> Result<String> {
+    read_probe_response(stream, 65536)
+}
+
+/// One node's `/v1/cells` report is bounded by the dispatcher (500 cells, 50
+/// journal parents plus live owners, 32 turns each); this is a generous ceiling
+/// on that, times at most 32 backends per aggregate.
+const MAX_CELLS_RESPONSE: usize = 2 * 1024 * 1024;
+
+/// Discovery fan-out read: a 2 s deadline for the whole response, not per read.
+fn read_probe_response(stream: &mut TcpStream, max_response: usize) -> Result<String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut bytes = Vec::new();
     let mut buf = [0u8; 4096];
@@ -816,7 +1070,7 @@ fn read_capability_response(stream: &mut TcpStream) -> Result<String> {
             break;
         }
         bytes.extend_from_slice(&buf[..n]);
-        if bytes.len() > 65536 {
+        if bytes.len() > max_response {
             bail!("oversized capability response");
         }
     }
@@ -928,6 +1182,44 @@ mod tests {
     }
 
     #[test]
+    fn discovery_merges_resolved_owners_and_tolerates_an_empty_fleet() {
+        assert!(initial_backends(vec![], None).is_err());
+        assert!(initial_backends(vec!["https://node:8787".into()], None).is_err());
+        let (urls, discovery) =
+            initial_backends(vec![], Some("celln-node.invalid.test:8787")).unwrap();
+        assert!(urls.is_empty());
+        let discovery = discovery.unwrap();
+        assert!(discovery.current().is_empty());
+        let (urls, discovery) =
+            initial_backends(vec!["http://node-a:8787/".into()], Some("localhost:18787")).unwrap();
+        assert_eq!(urls, vec!["http://node-a:8787".to_string()]);
+        let discovery = discovery.unwrap();
+        let resolved = discovery.current();
+        assert!(
+            resolved.contains(&"http://127.0.0.1:18787".to_string()),
+            "{resolved:?}"
+        );
+        for url in &resolved {
+            backend_to_addr(url).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        state.backends = urls;
+        state.discovery = Some(discovery);
+        let all = state.backends();
+        assert_eq!(all[0], "http://node-a:8787");
+        assert!(all.contains(&"http://127.0.0.1:18787".to_string()));
+        assert_eq!(all.len(), 1 + resolved.len());
+        // A refresh that cannot resolve keeps the last good owners.
+        state.discovery.as_mut().unwrap().address = "celln-node.invalid.test:8787".into();
+        *state.discovery.as_ref().unwrap().refreshed.lock().unwrap() = None;
+        assert_eq!(state.backends().len(), 1 + resolved.len());
+        state.backends = vec![];
+        state.discovery = Some(Discovery::new("celln-node.invalid.test:8787".into()));
+        assert!(pick_backend(&state, "action", &None).is_err());
+    }
+
+    #[test]
     fn backend_to_addr_defaults_to_port_80_without_an_explicit_port() {
         assert_eq!(backend_to_addr("http://node1").unwrap(), "node1:80");
         assert_eq!(backend_to_addr("http://node1:9000").unwrap(), "node1:9000");
@@ -1024,6 +1316,169 @@ mod tests {
                 &headers(second),
                 ""
             )),
+            503
+        );
+    }
+
+    #[test]
+    fn cells_listing_accepts_the_discovery_token_which_still_opens_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        let path = dir.path().join("capability");
+        let discovery = "readonly-test-credential-at-least-24";
+        std::fs::write(&path, discovery).unwrap();
+        state.capability_token_file = Some(path);
+        let headers = |token| format!("Authorization: Bearer {token}\r\n");
+        // Read-only discovery, like /v1/capabilities: either credential works.
+        for token in [discovery, CLIENT_TOKEN] {
+            for target in ["/v1/cells", "/v1/cells?all=true&limit=5"] {
+                let response = request(&state, "GET", target, &headers(token), "");
+                assert_eq!(parse_status(&response), 200, "{target}");
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(extract_body(&response)).unwrap(),
+                    serde_json::json!({"apiVersion":"celln.cells/v1","nodes":[]})
+                );
+            }
+        }
+        // The discovery token is not widened beyond the two aggregate GETs.
+        for (method, target) in [
+            ("GET", "/v1/node"),
+            ("POST", "/v1/cells"),
+            ("GET", "/v1/cells/x"),
+            ("GET", "/v1/cellsx"),
+            ("GET", "/v1/parents"),
+            ("GET", "/v1/executions/x"),
+            ("POST", "/v1/executions"),
+        ] {
+            assert_eq!(
+                parse_status(&request(&state, method, target, &headers(discovery), "")),
+                401,
+                "{method} {target}"
+            );
+        }
+        for token in ["", BACKEND_TOKEN, "wrong"] {
+            assert_eq!(
+                parse_status(&request(&state, "GET", "/v1/cells", &headers(token), "")),
+                401
+            );
+        }
+        // Without a configured discovery credential only the client token works.
+        state.capability_token_file = None;
+        assert_eq!(
+            parse_status(&request(
+                &state,
+                "GET",
+                "/v1/cells",
+                &headers(discovery),
+                ""
+            )),
+            401
+        );
+        for target in ["/v1/cells?limit=0", "/v1/cells?all=1", "/v1/cells?x=y"] {
+            assert_eq!(
+                parse_status(&request(&state, "GET", target, &headers(CLIENT_TOKEN), "")),
+                400,
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn cells_fanout_reports_each_backend_or_a_reason_and_touches_no_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        let good = serde_json::json!({
+            "apiVersion":"celln.cells/v1","node":"node-a",
+            "cells":[{"id":"abc","status":"running"}],"parents":[],
+        });
+        let fixtures = [
+            (200, good.clone()),
+            (500, serde_json::json!({"error":"boom"})),
+            (
+                200,
+                serde_json::json!({"apiVersion":"future/unknown","cells":[],"parents":[]}),
+            ),
+        ];
+        std::thread::scope(|scope| {
+            for (status, body) in fixtures {
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                state
+                    .backends
+                    .push(format!("http://{}", listener.local_addr().unwrap()));
+                scope.spawn(move || {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                    // Canonical re-serialization of the caller's query.
+                    assert_eq!(line, "GET /v1/cells?all=true&limit=7 HTTP/1.1\r\n");
+                    let mut seen_backend = false;
+                    loop {
+                        let line = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        if line.starts_with("Authorization:") {
+                            assert_eq!(line, format!("Authorization: Bearer {BACKEND_TOKEN}\r\n"));
+                            seen_backend = true;
+                        }
+                    }
+                    assert!(seen_backend);
+                    reply(&mut stream, status, &body).unwrap();
+                });
+            }
+            // An unreachable backend is a reason too, not a failed aggregate.
+            let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+            state
+                .backends
+                .push(format!("http://{}", closed.local_addr().unwrap()));
+            drop(closed);
+            let response = request(
+                &state,
+                "GET",
+                "/v1/cells?limit=7&all=true",
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                "",
+            );
+            assert_eq!(parse_status(&response), 200);
+            assert!(!response.contains(BACKEND_TOKEN));
+            let report: serde_json::Value = serde_json::from_str(extract_body(&response)).unwrap();
+            let reason = "unreachable_unauthorized_or_incompatible";
+            assert_eq!(
+                report,
+                serde_json::json!({"apiVersion":"celln.cells/v1","nodes":[
+                    {"index":0,"report":good},
+                    {"index":1,"reason":reason},
+                    {"index":2,"reason":reason},
+                    {"index":3,"reason":reason},
+                ]})
+            );
+        });
+        // Discovery records nothing: no execution, parent or provision owner.
+        for ledger in ["ownership", "ownership/parents", "ownership/provisions"] {
+            let entries = std::fs::read_dir(dir.path().join(ledger))
+                .unwrap()
+                .filter(|entry| entry.as_ref().unwrap().path().is_file())
+                .count();
+            assert_eq!(entries, 0, "{ledger}");
+        }
+        // One aggregate in flight per router, independent of capability probes.
+        assert!(!state.cells_probe_active.load(Ordering::Acquire));
+        state.capability_probe_active.store(true, Ordering::Release);
+        state.backends.clear();
+        let auth = format!("Authorization: Bearer {CLIENT_TOKEN}\r\n");
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/cells", &auth, "")),
+            200
+        );
+        state.cells_probe_active.store(true, Ordering::Release);
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/cells", &auth, "")),
+            503
+        );
+        state.cells_probe_active.store(false, Ordering::Release);
+        state.backends = vec!["http://127.0.0.1:1".into(); 33];
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/cells", &auth, "")),
             503
         );
     }
@@ -1335,6 +1790,293 @@ mod tests {
     }
 
     #[test]
+    fn provisioning_binds_parent_owner_before_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = state(dir.path());
+        let parent_file = dir.path().join("parent-token");
+        const PARENT: &str = "parent-principal-credential-at-least-24";
+        std::fs::write(&parent_file, PARENT).unwrap();
+        first.parent_token_file = Some(parent_file.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let backend = format!("http://{}", listener.local_addr().unwrap());
+        // The dead backend is skipped by the health probe; the live one must
+        // then serve provisioning and every later parent request.
+        first.backends = vec!["http://127.0.0.1:1".into(), backend.clone()];
+        let id = format!("blake3:{}", "c".repeat(64));
+        let other = format!("blake3:{}", "d".repeat(64));
+        let plan =
+            r#"{"apiVersion":"celln.parent-provision-plan/v1","scope":"cluster","runUid":"run"}"#;
+        let launch = format!("blake3:{}", "e".repeat(64));
+        let create =
+            format!(r#"{{"apiVersion":"celln.parent-create/v1","launchProfile":"{launch}"}}"#);
+        let owner_id = id.clone();
+        let owner_launch = launch.clone();
+        let server = std::thread::spawn(move || {
+            for expected in [
+                "GET /v1/health".to_string(),
+                "POST /v1/parents/provision".to_string(),
+                "POST /v1/parents/provision".to_string(),
+                "POST /v1/parents".to_string(),
+                format!("GET /v1/parents/{owner_id}"),
+                "GET /v1/health".to_string(),
+                "POST /v1/parents/provision".to_string(),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                assert!(line.starts_with(&format!("{expected} HTTP/1.1")), "{line}");
+                let mut credential = String::new();
+                let mut length = 0;
+                loop {
+                    let h = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    if h.starts_with("Authorization:") {
+                        credential = h.clone();
+                    }
+                    if h.starts_with("Content-Length:") {
+                        length = h
+                            .split_once(':')
+                            .unwrap()
+                            .1
+                            .trim()
+                            .parse::<usize>()
+                            .unwrap();
+                    }
+                }
+                let mut bytes = vec![0; length];
+                reader.read_exact(&mut bytes).unwrap();
+                if expected == "GET /v1/health" {
+                    assert_eq!(
+                        credential,
+                        format!("Authorization: Bearer {BACKEND_TOKEN}\r\n")
+                    );
+                    reply(&mut stream, 200, &serde_json::json!({"ok":true,"kvm":true})).unwrap();
+                    continue;
+                }
+                assert_eq!(credential, format!("Authorization: Bearer {PARENT}\r\n"));
+                match expected.as_str() {
+                    "POST /v1/parents/provision" => {
+                        // The last provisioning answer names another identity.
+                        let incarnation = if bytes.ends_with(br#""runUid":"run"}"#) { owner_id.clone() } else { "blake3:".to_string() + &"f".repeat(64) };
+                        reply(&mut stream, 200, &serde_json::json!({"apiVersion":"celln.parent-provisioned/v1","launchProfile":owner_launch,"incarnation":incarnation})).unwrap();
+                    }
+                    "POST /v1/parents" => reply(&mut stream, 202, &serde_json::json!({"incarnation":owner_id,"initializationPending":true,"retryAuthorized":false})).unwrap(),
+                    _ => reply(&mut stream, 200, &serde_json::json!({"incarnation":owner_id,"status":"Ready","retryAuthorized":false})).unwrap(),
+                }
+            }
+        });
+        let headers = |incarnation: &str, body: &str| {
+            format!("Authorization: Bearer {CLIENT_TOKEN}\r\nX-Celln-Parent-Incarnation: {incarnation}\r\nContent-Length: {}\r\n", body.len())
+        };
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, "{}"),
+                "{}"
+            )),
+            400
+        );
+        assert!(first.provisions.lookup(&id).unwrap().is_none());
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, plan),
+                plan
+            )),
+            200
+        );
+        assert_eq!(
+            first.provisions.lookup(&id).unwrap().unwrap().backend,
+            backend
+        );
+        // Retrying the identical plan recovers the same owner without a re-pick.
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, plan),
+                plan
+            )),
+            200
+        );
+        let changed = plan.replace("\"run\"", "\"other-run\"");
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, &changed),
+                &changed
+            )),
+            409
+        );
+        assert!(first.parents.lookup(&id).unwrap().is_none());
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents",
+                &headers(&id, &create),
+                &create
+            )),
+            202
+        );
+        assert_eq!(first.parents.lookup(&id).unwrap().unwrap().backend, backend);
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents",
+                &headers(&id, &create),
+                &create
+            )),
+            409
+        );
+        drop(first);
+        let mut replica = state(dir.path());
+        replica.parent_token_file = Some(parent_file);
+        replica.backends = vec![backend.clone(), "http://127.0.0.1:1".into()];
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "GET",
+                &format!("/v1/parents/{id}"),
+                &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+                ""
+            )),
+            200
+        );
+        // An owner answering with another incarnation cannot bind this identity.
+        let stray = plan.replace("\"run\"", "\"stray\"");
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&other, &stray),
+                &stray
+            )),
+            502
+        );
+        server.join().unwrap();
+        replica.backends = vec!["http://127.0.0.1:1".into()];
+        assert_eq!(
+            parse_status(&request(
+                &replica,
+                "POST",
+                "/v1/parents/provision",
+                &headers(&id, plan),
+                plan
+            )),
+            503
+        );
+    }
+
+    #[test]
+    fn parent_provisioning_prefers_the_roomiest_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = state(dir.path());
+        let parent_file = dir.path().join("parent-token");
+        const PARENT: &str = "parent-principal-credential-at-least-24";
+        std::fs::write(&parent_file, PARENT).unwrap();
+        first.parent_token_file = Some(parent_file);
+        let id = format!("blake3:{}", "a".repeat(64));
+        let launch = format!("blake3:{}", "b".repeat(64));
+        // An owner answers health with its live budget and provisions on demand.
+        let owner = |live: u32, max: u32, provisions: Arc<AtomicUsize>| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let id = id.clone();
+            let launch = launch.clone();
+            std::thread::spawn(move || {
+                for mut stream in listener.incoming().flatten() {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                    let mut length = 0;
+                    loop {
+                        let h = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                        if h.trim().is_empty() {
+                            break;
+                        }
+                        if let Some(v) = h.strip_prefix("Content-Length:") {
+                            length = v.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    let mut bytes = vec![0; length];
+                    reader.read_exact(&mut bytes).unwrap();
+                    if line.starts_with("GET /v1/health") {
+                        reply(&mut stream, 200, &serde_json::json!({"ok":true,"kvm":true,"node":{"live_cells":live,"max_cells":max,"memory_bytes":1u64<<30}})).unwrap();
+                    } else {
+                        provisions.fetch_add(1, Ordering::SeqCst);
+                        reply(&mut stream, 200, &serde_json::json!({"apiVersion":"celln.parent-provisioned/v1","launchProfile":launch,"incarnation":id})).unwrap();
+                    }
+                }
+            });
+            url
+        };
+        let cramped_count = Arc::new(AtomicUsize::new(0));
+        let roomy_count = Arc::new(AtomicUsize::new(0));
+        let cramped = owner(6, 8, cramped_count.clone());
+        let roomy = owner(2, 8, roomy_count.clone());
+        // Put the cramped owner where the hash would land, so only capacity
+        // can move the parent.
+        let start = (fnv1a(id.as_bytes()) as usize) % 2;
+        first.backends = if start == 0 {
+            vec![cramped.clone(), roomy.clone()]
+        } else {
+            vec![roomy.clone(), cramped.clone()]
+        };
+        let plan =
+            r#"{"apiVersion":"celln.parent-provision-plan/v1","scope":"cluster","runUid":"run"}"#;
+        let headers = format!("Authorization: Bearer {CLIENT_TOKEN}\r\nX-Celln-Parent-Incarnation: {id}\r\nContent-Length: {}\r\n", plan.len());
+        assert_eq!(
+            parse_status(&request(
+                &first,
+                "POST",
+                "/v1/parents/provision",
+                &headers,
+                plan
+            )),
+            200
+        );
+        assert_eq!(
+            first.provisions.lookup(&id).unwrap().unwrap().backend,
+            roomy
+        );
+        assert_eq!(roomy_count.load(Ordering::SeqCst), 1);
+        assert_eq!(cramped_count.load(Ordering::SeqCst), 0);
+        // Equal capacity keeps the hash order deterministic.
+        std::fs::create_dir_all(dir.path().join("second")).unwrap();
+        let mut second = state(&dir.path().join("second"));
+        second.parent_token_file = first.parent_token_file.clone();
+        let even_a = owner(2, 8, Arc::new(AtomicUsize::new(0)));
+        let even_b = owner(2, 8, Arc::new(AtomicUsize::new(0)));
+        second.backends = vec![even_a.clone(), even_b.clone()];
+        let expected = second.backends[(fnv1a(id.as_bytes()) as usize) % 2].clone();
+        assert_eq!(
+            parse_status(&request(
+                &second,
+                "POST",
+                "/v1/parents/provision",
+                &headers,
+                plan
+            )),
+            200
+        );
+        assert_eq!(
+            second.provisions.lookup(&id).unwrap().unwrap().backend,
+            expected
+        );
+    }
+
+    #[test]
     fn parent_routes_refuse_discovery_credentials_and_malformed_identity() {
         let dir = tempfile::tempdir().unwrap();
         let mut owner = state(dir.path());
@@ -1399,15 +2141,18 @@ mod tests {
         std::fs::write(&token_file, BACKEND_TOKEN).unwrap();
         RouterState {
             backends: vec![],
+            discovery: None,
             mode: RoutingMode::RoundRobin,
             cursor: AtomicUsize::new(0),
             executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
             parents: ownership::Ledger::open(&dir.join("ownership/parents"), 100).unwrap(),
+            provisions: ownership::Ledger::open(&dir.join("ownership/provisions"), 100).unwrap(),
             parent_token_file: None,
             token_file,
             client_token_file,
             capability_token_file: None,
             capability_probe_active: AtomicBool::new(false),
+            cells_probe_active: AtomicBool::new(false),
         }
     }
 

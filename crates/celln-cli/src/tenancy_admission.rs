@@ -69,6 +69,7 @@ impl Identity {
 }
 
 impl Record {
+    #[allow(dead_code)] // Library API; the binary's copy of this module does not read it.
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
@@ -102,6 +103,7 @@ pub struct Fresh {
     record: Record,
 }
 impl Fresh {
+    #[allow(dead_code)] // Library API; the binary's copy of this module does not read it.
     pub fn record(&self) -> &Record {
         &self.record
     }
@@ -109,6 +111,16 @@ impl Fresh {
 pub enum Claim {
     Fresh(Fresh),
     Recovery(Record),
+}
+
+/// The receiver's durable prepared enrollment, supplied to `Journal::access`.
+/// Operator-independent: neither the credential nor the receiver context can
+/// invent it.
+#[derive(Clone, Copy)]
+pub struct Enrollment<'a> {
+    pub decision: &'a [u8],
+    pub request: &'a [u8],
+    pub owner: &'a str,
 }
 
 pub struct Journal {
@@ -468,10 +480,13 @@ impl Journal {
         token: &str,
         decision: &[u8],
         receiver: &Context,
-        enrolled_decision: &[u8],
-        request: &[u8],
-        enrolled_owner: &str,
+        enrollment: Enrollment<'_>,
     ) -> Result<Record, Error> {
+        let Enrollment {
+            decision: enrolled_decision,
+            request,
+            owner: enrolled_owner,
+        } = enrollment;
         if receiver.expected_audience != "celln-execution"
             || !matches!(
                 receiver.expected_operation.as_str(),

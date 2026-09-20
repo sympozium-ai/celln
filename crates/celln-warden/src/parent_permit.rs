@@ -16,6 +16,16 @@ use std::{
 };
 
 pub const VERSION: &str = "celln.parent-permit/v1";
+/// Most turns one parent may take, and the model requests each may make.
+pub const MAX_TURNS: u64 = 1024;
+pub const MAX_TURN_MODEL_REQUESTS: u64 = 6;
+/// Lifetime ceilings of one parent. The token ceiling lets the longest parent
+/// (`MAX_TURNS` turns of `MAX_TURN_MODEL_REQUESTS` requests) run at the
+/// largest per-request output cap an operator may configure: 25 165 824.
+pub const MAX_TOTAL_MODEL_REQUESTS: u64 = MAX_TURNS * MAX_TURN_MODEL_REQUESTS;
+pub const MAX_TOTAL_OUTPUT_TOKENS: u64 =
+    MAX_TOTAL_MODEL_REQUESTS * *crate::egress::REQUEST_OUTPUT_TOKENS.end();
+const _: () = assert!(MAX_TOTAL_MODEL_REQUESTS == 6144 && MAX_TOTAL_OUTPUT_TOKENS == 25_165_824);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -251,8 +261,8 @@ impl Binding {
                 .is_none()
             || !(1..=86_400_000).contains(&self.lifetime_ms)
             || self.turn_timeout_ms > self.lifetime_ms
-            || self.total_model_requests > 6144
-            || self.total_output_tokens > 3_145_728
+            || self.total_model_requests > MAX_TOTAL_MODEL_REQUESTS
+            || self.total_output_tokens > MAX_TOTAL_OUTPUT_TOKENS
         {
             return Err(invalid("invalid parent permit limits or identity"));
         }
@@ -524,13 +534,22 @@ mod tests {
             ("turnModelRequests", 1),
             ("turnOutputTokens", 1),
             ("totalModelRequests", 6145),
-            ("totalOutputTokens", 3_145_729),
+            ("totalOutputTokens", 25_165_825),
         ] {
             let mut changed = fields.clone();
             changed[field] = serde_json::json!(value);
             let binding: Binding = serde_json::from_value(changed).unwrap();
             assert!(binding.lease().is_err(), "{field}={value}");
         }
+        // The longest parent at the largest per-request cap is a lease:
+        // 1024 turns of 6 requests of 4096 tokens.
+        let mut longest = permit().binding;
+        longest.max_turns = 1024;
+        longest.turn_model_requests = 6;
+        longest.turn_output_tokens = 6 * 4096;
+        longest.total_model_requests = 6144;
+        longest.total_output_tokens = 25_165_824;
+        assert!(longest.lease().is_ok());
     }
 
     #[test]

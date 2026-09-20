@@ -29,6 +29,34 @@ the agent lane. Authority is decided per call, not per binary.
        alt="Two digest-pinned tool images are lent into a hardware-isolated cell, each sealed read-only at its own mount. A model writes a program, an attested python is asked to run it and that call is demoted to the agent lane, it runs and returns its answer, and the lend is finally taken back as the cell dissolves.">
 </p>
 
+## Tools come from images, not from Celln
+
+Celln does not ship its own `grep` or `jq`. Every tool a cell can borrow is
+an ordinary program taken from a container image pinned by digest. The
+catalogue of those images is [`crates/celln-cli/tools.toml`](crates/celln-cli/tools.toml):
+one entry per image, the digest it was resolved to, and what it provides.
+Pulling an image flattens it into a sealed read-only filesystem whose hash is
+what a cell is actually lent; a tag never reaches a cell, and CI opens a pull
+request when an upstream tag moves so every refresh is a reviewed diff.
+
+Two ways to use it:
+
+- **Directly.** `celln agent --tool python …` lends the pinned interpreter
+  into a cell. `celln image add node:22-slim` pins a new image into your own
+  catalogue at `~/.celln/tools.toml`. No rebuild of Celln; a local entry adds
+  a name, never authority, because the digest is what is verified.
+- **As a toolbox for a fleet.** An image entry may declare `commands`: which
+  programs inside it a model may call, what arguments they take, and how those
+  arguments become a command line (the `celln.argv/v1` binding, no shell).
+  `celln starter-package --tool-image busybox --tool-image jq` extracts each
+  command's static executable from the pinned image, lends it inside the
+  signed worker closure, and records the image digest as the tool's source, so
+  a Sympozium fleet can offer grep, sed, awk, sort, jq and friends to every
+  namespace, each traceable to the layer it came from. The workspace tools
+  (read, write, list, append, search, delete) and the HTTPS tools (fetch,
+  post JSON) stay Celln's own, because they are the only way a cell touches
+  files or the network: each goes through a host broker with its own grant.
+
 ## How is this different?
 
 Most agent runtimes give an agent a machine. Celln gives it a temporary,

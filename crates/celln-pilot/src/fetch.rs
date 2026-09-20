@@ -14,6 +14,9 @@ const PORT_COUNT: u16 = RX - TX + 1;
 const FIRST_DENIED_PORT: u16 = RX + 1;
 const SCOPE_PROBE: &str = "--prove-ioperm-scope";
 const DENIAL_PROBE: &str = "--probe-denied-port";
+/// Largest request the guest carries to the broker; the host bounds each
+/// request kind again on its own terms.
+const MAX_REQUEST_BYTES: usize = 32768;
 
 #[inline]
 unsafe fn out(port: u16, byte: u8) {
@@ -111,7 +114,7 @@ fn main() {
     if url == "--json-stdin" {
         url.clear();
         if std::io::stdin()
-            .take(8193)
+            .take(MAX_REQUEST_BYTES as u64 + 1)
             .read_to_string(&mut url)
             .is_err()
             || !url.starts_with('{')
@@ -120,7 +123,7 @@ fn main() {
             std::process::exit(2);
         }
     }
-    if url.len() > 8192 || url.contains('\0') {
+    if url.len() > MAX_REQUEST_BYTES || url.contains('\0') {
         eprintln!("pilot-fetch: invalid URL request");
         std::process::exit(2);
     }

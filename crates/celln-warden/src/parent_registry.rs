@@ -26,11 +26,14 @@ struct Entry {
     owner: Option<ParentOwner>,
     status: Status,
     reserved_bytes: u64,
-    broker_slots: Option<u32>,
+    /// Broker (egress) contexts this owner charges while live: the parent's
+    /// own plus its one possible active child.
+    reserved_egress: u32,
 }
 struct State {
     entries: BTreeMap<String, Entry>,
     reserved_bytes: u64,
+    reserved_egress: u32,
     draining: bool,
 }
 pub struct ParentRegistry {
@@ -44,8 +47,19 @@ pub struct ParentRegistry {
 pub struct ReservedCapacity {
     pub owners: u32,
     pub memory_bytes: u64,
-    /// None preserves the conservative fence for owners without an explicit charge.
-    pub broker_slots: Option<u32>,
+    /// Exact broker-slot charge of every live owner, released with its memory.
+    pub egress_slots: u32,
+}
+
+fn observed(entry: &Entry) -> Status {
+    match entry.owner.as_ref().map(ParentOwner::status) {
+        Some(OwnerStatus::Initializing) => Status::Initializing,
+        Some(OwnerStatus::Ready) => Status::Ready,
+        Some(OwnerStatus::TurnActive) => Status::TurnActive,
+        Some(OwnerStatus::Stopping) => Status::Stopping,
+        Some(OwnerStatus::ContextLost) => Status::ContextLost,
+        None => entry.status,
+    }
 }
 
 impl ParentRegistry {
@@ -84,7 +98,9 @@ impl ParentRegistry {
             if joined {
                 entry.status = Status::ContextLost;
                 let bytes = std::mem::take(&mut entry.reserved_bytes);
+                let egress = std::mem::take(&mut entry.reserved_egress);
                 state.reserved_bytes -= bytes;
+                state.reserved_egress -= egress;
                 released += 1;
             } else {
                 entry.status = Status::TeardownUncertain;
@@ -105,11 +121,7 @@ impl ParentRegistry {
                 .filter(|entry| entry.reserved_bytes != 0)
                 .count() as u32,
             memory_bytes: state.reserved_bytes,
-            broker_slots: state
-                .entries
-                .values()
-                .filter(|entry| entry.reserved_bytes != 0)
-                .try_fold(0u32, |total, entry| total.checked_add(entry.broker_slots?)),
+            egress_slots: state.reserved_egress,
         })
     }
     /// Budget must include parent, child and retained warm-mote memory as
@@ -123,6 +135,7 @@ impl ParentRegistry {
             state: Mutex::new(State {
                 entries: BTreeMap::new(),
                 reserved_bytes: 0,
+                reserved_egress: 0,
                 draining: false,
             }),
             max_entries,
@@ -139,15 +152,20 @@ impl ParentRegistry {
         incarnation: &Hash,
         lifetime: Duration,
         reserved_bytes: u64,
+        reserved_egress: u32,
         initialize: F,
     ) -> Result<(), String>
     where
         F: FnOnce() -> Result<H, String> + Send + 'static,
         H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
     {
-        self.insert_admitted(principal, incarnation, reserved_bytes, None, || {
-            ParentOwner::spawn(lifetime, initialize)
-        })
+        self.insert_admitted(
+            principal,
+            incarnation,
+            reserved_bytes,
+            reserved_egress,
+            || ParentOwner::spawn(lifetime, initialize),
+        )
     }
 
     /// Native runtimes explicitly opt in to exact child cancellation. Legacy
@@ -158,6 +176,7 @@ impl ParentRegistry {
         incarnation: &Hash,
         lifetime: Duration,
         reserved_bytes: u64,
+        reserved_egress: u32,
         initialize: F,
     ) -> Result<(), String>
     where
@@ -168,9 +187,13 @@ impl ParentRegistry {
             + 'static,
         H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
     {
-        self.insert_admitted(principal, incarnation, reserved_bytes, None, || {
-            ParentOwner::spawn_with_children(incarnation.clone(), lifetime, initialize)
-        })
+        self.insert_admitted(
+            principal,
+            incarnation,
+            reserved_bytes,
+            reserved_egress,
+            || ParentOwner::spawn_with_children(incarnation.clone(), lifetime, initialize),
+        )
     }
 
     /// Scoped owners have one serialized child and one owned model broker.
@@ -192,7 +215,7 @@ impl ParentRegistry {
             + 'static,
         H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
     {
-        self.insert_admitted(principal, incarnation, reserved_bytes, Some(1), || {
+        self.insert_admitted(principal, incarnation, reserved_bytes, 1, || {
             ParentOwner::spawn_with_children(incarnation.clone(), lifetime, initialize)
         })
     }
@@ -202,7 +225,7 @@ impl ParentRegistry {
         principal: &str,
         incarnation: &Hash,
         reserved_bytes: u64,
-        broker_slots: Option<u32>,
+        reserved_egress: u32,
         spawn: impl FnOnce() -> std::io::Result<ParentOwner>,
     ) -> Result<(), String> {
         if principal.is_empty() || principal.len() > 512 || reserved_bytes == 0 {
@@ -225,8 +248,13 @@ impl ParentRegistry {
         if state.entries.len() >= self.max_entries || total > self.memory_bytes {
             return Err("parent registry capacity exhausted".into());
         }
+        let total_egress = state
+            .reserved_egress
+            .checked_add(reserved_egress)
+            .ok_or("parent egress capacity exhausted")?;
         let owner = spawn().map_err(|e| e.to_string())?;
         state.reserved_bytes = total;
+        state.reserved_egress = total_egress;
         state.entries.insert(
             incarnation.0.clone(),
             Entry {
@@ -234,7 +262,7 @@ impl ParentRegistry {
                 owner: Some(owner),
                 status: Status::Initializing,
                 reserved_bytes,
-                broker_slots,
+                reserved_egress,
             },
         );
         Ok(())
@@ -266,15 +294,23 @@ impl ParentRegistry {
             .state
             .lock()
             .map_err(|_| "parent registry unavailable")?;
-        let entry = scoped(&state, principal, incarnation)?;
-        Ok(match entry.owner.as_ref().map(ParentOwner::status) {
-            Some(OwnerStatus::Initializing) => Status::Initializing,
-            Some(OwnerStatus::Ready) => Status::Ready,
-            Some(OwnerStatus::TurnActive) => Status::TurnActive,
-            Some(OwnerStatus::Stopping) => Status::Stopping,
-            Some(OwnerStatus::ContextLost) => Status::ContextLost,
-            None => entry.status,
-        })
+        Ok(observed(scoped(&state, principal, incarnation)?))
+    }
+
+    /// Node-operator observation of every claimed incarnation, across all
+    /// principals. Identities and statuses only: it grants no access to an
+    /// owner, so it must sit behind node-operator authentication, never a
+    /// tenant credential. Holds the registry lock for a status read per entry.
+    pub fn statuses(&self) -> Result<Vec<(Hash, Status)>, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "parent registry unavailable")?;
+        Ok(state
+            .entries
+            .iter()
+            .map(|(id, entry)| (Hash(id.clone()), observed(entry)))
+            .collect())
     }
 
     /// Request cancellation only. Resources remain charged until stop joins.
@@ -379,7 +415,9 @@ impl ParentRegistry {
         if result.is_ok() {
             entry.status = Status::Stopped;
             let released = std::mem::take(&mut entry.reserved_bytes);
+            let egress = std::mem::take(&mut entry.reserved_egress);
             state.reserved_bytes -= released;
+            state.reserved_egress -= egress;
         } else {
             entry.status = Status::TeardownUncertain;
         }
@@ -399,10 +437,24 @@ fn scoped<'a>(state: &'a State, principal: &str, incarnation: &Hash) -> Result<&
 mod tests {
     use super::*;
     fn spawn(registry: &ParentRegistry, id: &Hash) -> Result<(), String> {
-        registry.spawn_admitted("tenant-one", id, Duration::from_secs(10), 100, || {
+        registry.spawn_admitted("tenant-one", id, Duration::from_secs(10), 100, 0, || {
             Ok(|bytes: &[u8]| Ok(bytes.to_vec()))
         })
     }
+    #[test]
+    fn operator_snapshot_lists_every_principals_owner_with_its_observed_status() {
+        let registry = ParentRegistry::new(4, 400).unwrap();
+        assert!(registry.statuses().unwrap().is_empty());
+        let id = Hash::of(b"snapshot");
+        spawn(&registry, &id).unwrap();
+        let live = registry.statuses().unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].0, id);
+        assert_eq!(live[0].1, registry.status("tenant-one", &id).unwrap());
+        registry.stop("tenant-one", &id).unwrap();
+        assert_eq!(registry.statuses().unwrap(), [(id, Status::Stopped)]);
+    }
+
     #[test]
     fn drain_joins_all_owners_and_permanently_closes_admission() {
         let registry = ParentRegistry::new(4, 400).unwrap();
@@ -477,6 +529,7 @@ mod tests {
                 &expired,
                 Duration::from_millis(20),
                 100,
+                2,
                 || Ok(|bytes: &[u8]| Ok(bytes.to_vec())),
             )
             .unwrap();
@@ -495,7 +548,7 @@ mod tests {
             ReservedCapacity {
                 owners: 1,
                 memory_bytes: 100,
-                broker_slots: None,
+                egress_slots: 0
             }
         );
         assert!(registry.submit("tenant-one", &expired, b"retry").is_err());
@@ -520,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_brokers_are_charged_until_join_and_legacy_stays_unknown() {
+    fn scoped_brokers_are_charged_until_join_and_legacy_is_charged_exactly() {
         let registry = ParentRegistry::new(4, 400).unwrap();
         let one = Hash::of(b"broker-one");
         let two = Hash::of(b"broker-two");
@@ -535,19 +588,22 @@ mod tests {
                 )
                 .unwrap();
         }
-        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(2));
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 2);
         registry.stop("tenant", &one).unwrap();
-        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(1));
-        let legacy = Hash::of(b"unaccounted");
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 1);
+        // Since main's exact per-owner accounting, a legacy owner cannot be
+        // admitted without a charge, so there is no unknown total to fence:
+        // its charge is summed with the scoped owner's.
+        let legacy = Hash::of(b"legacy");
         registry
-            .spawn_admitted("tenant", &legacy, Duration::from_secs(10), 100, || {
+            .spawn_admitted("tenant", &legacy, Duration::from_secs(10), 100, 2, || {
                 Ok(|input: &[u8]| Ok(input.to_vec()))
             })
             .unwrap();
-        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, None);
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 3);
         registry.stop("tenant", &legacy).unwrap();
         registry.stop("tenant", &two).unwrap();
-        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(0));
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 0);
     }
 
     #[test]
@@ -565,7 +621,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .is_err());
         assert!(registry.stop("tenant", &id).is_err());
-        assert_eq!(registry.reserved_capacity().unwrap().broker_slots, Some(1));
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 1);
     }
 
     #[test]
@@ -573,7 +629,7 @@ mod tests {
         let registry = ParentRegistry::new(2, 100).unwrap();
         let id = Hash::of(b"reap-panic");
         registry
-            .spawn_admitted("tenant-one", &id, Duration::from_secs(10), 100, || {
+            .spawn_admitted("tenant-one", &id, Duration::from_secs(10), 100, 0, || {
                 Ok(|_: &[u8]| -> Result<Vec<u8>, String> { panic!("test panic") })
             })
             .unwrap();
@@ -596,7 +652,7 @@ mod tests {
             ReservedCapacity {
                 owners: 1,
                 memory_bytes: 100,
-                broker_slots: None,
+                egress_slots: 0
             }
         );
         assert!(registry.stop("tenant-one", &id).is_err());
@@ -607,7 +663,7 @@ mod tests {
         let registry = ParentRegistry::new(2, 100).unwrap();
         let id = Hash::of(b"panic");
         registry
-            .spawn_admitted("tenant-one", &id, Duration::from_secs(10), 100, || {
+            .spawn_admitted("tenant-one", &id, Duration::from_secs(10), 100, 0, || {
                 Ok(|_: &[u8]| -> Result<Vec<u8>, String> { panic!("test owner panic") })
             })
             .unwrap();
@@ -628,7 +684,7 @@ mod tests {
             ReservedCapacity {
                 owners: 1,
                 memory_bytes: 100,
-                broker_slots: None,
+                egress_slots: 0
             }
         );
         assert!(spawn(&registry, &Hash::of(b"new")).is_err());
@@ -647,6 +703,7 @@ mod tests {
                 &one,
                 Duration::from_secs(10),
                 100,
+                0,
                 move || {
                     Ok(move |_: &[u8]| {
                         started.send(()).unwrap();
@@ -691,6 +748,7 @@ mod tests {
                 &parent,
                 Duration::from_secs(30),
                 4096,
+                0,
                 move |children| {
                     Ok(move |bytes: &[u8]| {
                         let turn = String::from_utf8(bytes.to_vec()).map_err(|e| e.to_string())?;
@@ -752,7 +810,7 @@ mod tests {
 
         let legacy = Hash::of(b"legacy-parent");
         registry
-            .spawn_admitted("tenant", &legacy, Duration::from_secs(30), 4096, || {
+            .spawn_admitted("tenant", &legacy, Duration::from_secs(30), 4096, 0, || {
                 Ok(|_: &[u8]| Ok(vec![]))
             })
             .unwrap();

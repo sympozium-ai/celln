@@ -236,11 +236,14 @@ impl PreparedParent {
             let report = cell.run()?;
             anyhow::ensure!(
                 report.end == warden::vmm::boot::BootEnd::Parked,
-                "parent did not yield a mailbox response"
+                "parent did not yield a mailbox response (run ended {:?}); parent console: {}",
+                report.end,
+                parent_console_tail(&report.console)
             );
             anyhow::ensure!(
                 !report.console.contains("Linux version"),
-                "unexpected parent hot boot"
+                "unexpected parent hot boot; parent console: {}",
+                parent_console_tail(&report.console)
             );
             let mut grants = 0;
             for line in report
@@ -248,7 +251,13 @@ impl PreparedParent {
                 .lines()
                 .filter_map(|l| l.strip_prefix(pilot::dispatch_report::PREFIX))
             {
-                match serde_json::from_str::<pilot::dispatch_report::Frame>(line)? {
+                let frame = parse_parent_frame(line).map_err(|e| {
+                    anyhow::anyhow!(
+                        "unreadable parent dispatch frame ({e}): {line:?}; parent console: {}",
+                        parent_console_tail(&report.console)
+                    )
+                })?;
+                match frame {
                     pilot::dispatch_report::Frame::Started { grant } => {
                         anyhow::ensure!(
                             grant.tool == expected
@@ -259,10 +268,13 @@ impl PreparedParent {
                         );
                         grants += 1;
                     }
-                    pilot::dispatch_report::Frame::Failed { .. }
+                    frame @ (pilot::dispatch_report::Frame::Failed { .. }
                     | pilot::dispatch_report::Frame::Signal { .. }
-                    | pilot::dispatch_report::Frame::Exit { .. } => {
-                        anyhow::bail!("parent execution ended unexpectedly")
+                    | pilot::dispatch_report::Frame::Exit { .. }) => {
+                        anyhow::bail!(
+                            "parent execution ended unexpectedly ({frame:?}); parent console: {}",
+                            parent_console_tail(&report.console)
+                        )
                     }
                     _ => {}
                 }
@@ -735,8 +747,94 @@ fn check_members_validated(
     }
 }
 
+/// One dispatch frame from a parent console line.
+///
+/// Kernel printk writes to the serial console synchronously while pilot's
+/// frame is still in the tty buffer, so a kernel line can land between a
+/// frame and its newline. Text after the frame is accepted only when it cannot
+/// carry another frame, so it can never add a grant or hide an exit.
+fn parse_parent_frame(line: &str) -> anyhow::Result<pilot::dispatch_report::Frame> {
+    let mut frames =
+        serde_json::Deserializer::from_str(line).into_iter::<pilot::dispatch_report::Frame>();
+    let frame = frames
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("empty frame"))??;
+    let rest = &line[frames.byte_offset()..];
+    anyhow::ensure!(
+        !rest.contains(pilot::dispatch_report::PREFIX) && !rest.trim_start().starts_with('{'),
+        "trailing frame data"
+    );
+    if !rest.trim().is_empty() {
+        eprintln!(
+            "celln parent: kernel console text interleaved with a dispatch frame: {:?}",
+            rest.chars().take(256).collect::<String>()
+        );
+    }
+    Ok(frame)
+}
+
+/// The last kernel and harness lines a parent printed, for diagnosing a lost
+/// parent. Dispatch frames (grants) are left out; the tail is bounded.
+fn parent_console_tail(console: &str) -> String {
+    const LINES: usize = 20;
+    const BYTES: usize = 2048;
+    let lines: Vec<&str> = console
+        .lines()
+        .filter(|line| !line.starts_with(pilot::dispatch_report::PREFIX) && !line.trim().is_empty())
+        .collect();
+    let mut tail = lines[lines.len().saturating_sub(LINES)..].join(" | ");
+    if tail.len() > BYTES {
+        let mut start = tail.len() - BYTES;
+        while !tail.is_char_boundary(start) {
+            start += 1;
+        }
+        tail = format!("…{}", &tail[start..]);
+    }
+    if tail.is_empty() {
+        "(empty)".into()
+    } else {
+        tail
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parent_frame_tolerates_interleaved_kernel_text() {
+        let started = r#"{"kind":"started","grant":{"tool":"blake3:094125db74c19f6d588258fcf8f21c87b735e997e240a0290cf3a3beeac4d36f","lane":"agent","workspace":"none","fetch":false}}"#;
+        let line = format!(
+            "{started}[   35.479307] watchdog: BUG: soft lockup - CPU#0 stuck for 26s! [parent:72]"
+        );
+        assert!(matches!(
+            super::parse_parent_frame(&line).unwrap(),
+            pilot::dispatch_report::Frame::Started { .. }
+        ));
+        assert!(super::parse_parent_frame(started).is_ok());
+        // Nothing after a frame may carry another frame.
+        assert!(super::parse_parent_frame(&format!("{started}{started}")).is_err());
+        assert!(super::parse_parent_frame(&format!(
+            "{started} {}{}",
+            pilot::dispatch_report::PREFIX,
+            r#"{"kind":"exit","code":1}"#
+        ))
+        .is_err());
+        assert!(super::parse_parent_frame("[ 1.0] not a frame").is_err());
+        assert!(super::parse_parent_frame("").is_err());
+    }
+
+    #[test]
+    fn parent_console_tail_is_bounded_and_skips_frames() {
+        let console = format!(
+            "{}{{}}\nboot\n\n{}\n",
+            pilot::dispatch_report::PREFIX,
+            "x".repeat(5000)
+        );
+        let tail = super::parent_console_tail(&console);
+        assert!(!tail.contains(pilot::dispatch_report::PREFIX));
+        assert!(tail.len() <= 2048 + '…'.len_utf8());
+        assert_eq!(super::parent_console_tail(""), "(empty)");
+    }
+
     use super::*;
     use celln_manifest::Hash;
     use celln_store::Store;

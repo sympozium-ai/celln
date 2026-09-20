@@ -193,6 +193,7 @@ fn main() -> Result<()> {
                 model: "deepseek-chat".into(),
                 max_output_tokens: 512,
                 max_total_output_tokens: 3072,
+                parameters: Default::default(),
             });
             cell.enable_http_fetch(policy);
         }

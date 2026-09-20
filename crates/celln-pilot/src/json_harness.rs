@@ -21,12 +21,27 @@ pub struct Exchange {
 #[path = "json_harness_tests.rs"]
 mod tests;
 
+/// Output tokens a worker requests when its template names no `max_tokens`.
+pub const DEFAULT_MAX_TOKENS: u64 = warden::egress::DEFAULT_REQUEST_OUTPUT_TOKENS;
+
+/// Diagnosis for an empty answer that stopped at the output ceiling.
+pub fn empty_at_length(max_tokens: u64) -> String {
+    format!("final answer is empty: the model used its whole output budget ({max_tokens} tokens) without answering; for a reasoning model, disable thinking in the backend's model parameters or raise the backend's maxOutputTokens")
+}
+
+/// Diagnosis for an answer longer than the parent accepts. The turn fails;
+/// the parent and its conversation stay.
+pub fn answer_too_long() -> String {
+    format!("final answer exceeds {MAX_ANSWER_BYTES} bytes: ask for a shorter answer or lower the backend's maxOutputTokens")
+}
+
 pub fn validate(config: &Config) -> Result<()> {
     validate_with_history(config, &[])
 }
 
 pub fn validate_with_history(config: &Config, history: &[Exchange]) -> Result<()> {
     let tools = compile(config)?;
+    let history = fit_history(config, &tools, history)?;
     model_request(config, &tools, &contextual_messages(config, history)?, 0).map(|_| ())
 }
 
@@ -49,6 +64,130 @@ pub struct Tool {
     pub input_bytes: usize,
     pub output_bytes: usize,
     pub timeout_ms: u64,
+    /// `celln.argv/v1`: the tool is an ordinary command-line program borrowed
+    /// from a pinned image. Validated arguments become argv and stdin through
+    /// this fixed binding; stdout and the exit status come back as JSON. No
+    /// shell, no free-form flags, no host paths. Absent means JSON on stdin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argv: Option<Argv>,
+}
+
+/// How a validated JSON argument object becomes a command line. An `args`
+/// entry is a literal, `{field}` (the field's string form; an absent optional
+/// field drops the entry), `{field?FLAG}` (FLAG when the boolean field is
+/// true, else dropped) or `{field:FLAG}` (FLAG followed by the field's value
+/// when present, else nothing). `stdin` names a string field fed to the tool.
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Argv {
+    pub args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+}
+
+/// Longest stdout an argv tool hands back, in bytes; the tool schema subset
+/// bounds strings at this length.
+pub const ARGV_OUTPUT_CHARS: usize = 4096;
+
+/// Most bytes one model request may occupy on the broker wire: the persona,
+/// every selected tool's schema and the conversation so far. A worker with
+/// two dozen tools and a long conversation needs more than the 8 KiB the
+/// workspace and fetch tools are held to.
+pub const MODEL_WIRE_BYTES: usize = 32768;
+
+/// Wire room a turn's first model request leaves for what follows it: each
+/// tool round adds the model's call and the tool's result to the same
+/// conversation. History is what gives way, oldest exchange first, so a long
+/// conversation with tools keeps working instead of failing every turn.
+pub const TOOL_ROUND_WIRE_RESERVE: usize = MODEL_WIRE_BYTES / 2;
+
+/// Largest final answer a worker commits, and the most the parent accepts.
+pub const MAX_ANSWER_BYTES: usize = warden::parent_protocol::MAX_ANSWER_BYTES;
+
+/// Result shape every argv tool returns to the model; the packager declares
+/// it as such a tool's output schema.
+pub fn argv_output_schema() -> Value {
+    json!({"type":"object","properties":{"output":{"type":"string","minLength":0,"maxLength":ARGV_OUTPUT_CHARS},"exit":{"type":"integer","minimum":-1,"maximum":255}},"required":["output","exit"],"additionalProperties":false})
+}
+
+/// Builds argv and stdin for one call from already schema-validated arguments.
+pub fn argv_invocation(tool: &Tool, arguments: &[u8]) -> Result<(Vec<String>, Vec<u8>)> {
+    let binding = tool.argv.as_ref().context("tool has no argv binding")?;
+    let input: serde_json::Map<String, Value> = serde_json::from_slice(arguments)?;
+    let text = |field: &str| -> Result<Option<String>> {
+        Ok(match input.get(field) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.clone()),
+            Some(Value::Number(n)) => Some(n.to_string()),
+            Some(Value::Bool(b)) => Some(b.to_string()),
+            Some(_) => bail!("argument {field} is not a scalar"),
+        })
+    };
+    let mut args = Vec::with_capacity(binding.args.len());
+    for entry in &binding.args {
+        match placeholder(entry) {
+            Some((field, Placeholder::Switch(flag))) => {
+                if input.get(field) == Some(&Value::Bool(true)) {
+                    args.push(flag.to_string());
+                }
+            }
+            Some((field, Placeholder::Option(flag))) => {
+                if let Some(value) = text(field)? {
+                    ensure!(!value.contains('\0'), "argument {field} contains NUL");
+                    args.push(flag.to_string());
+                    args.push(value);
+                }
+            }
+            Some((field, Placeholder::Value)) => {
+                if let Some(value) = text(field)? {
+                    ensure!(!value.contains('\0'), "argument {field} contains NUL");
+                    args.push(value);
+                }
+            }
+            None => args.push(entry.clone()),
+        }
+    }
+    let stdin = match &binding.stdin {
+        Some(field) => text(field)?.unwrap_or_default().into_bytes(),
+        None => Vec::new(),
+    };
+    Ok((args, stdin))
+}
+
+enum Placeholder<'a> {
+    Value,
+    Switch(&'a str),
+    Option(&'a str),
+}
+
+/// `{field}`, `{field?FLAG}` or `{field:FLAG}`; anything else is a literal.
+fn placeholder(entry: &str) -> Option<(&str, Placeholder<'_>)> {
+    let inner = entry.strip_prefix('{')?.strip_suffix('}')?;
+    if inner.is_empty() || inner.contains(['{', '}']) {
+        return None;
+    }
+    if let Some((field, flag)) = inner.split_once('?') {
+        return Some((field, Placeholder::Switch(flag)));
+    }
+    if let Some((field, flag)) = inner.split_once(':') {
+        return Some((field, Placeholder::Option(flag)));
+    }
+    Some((inner, Placeholder::Value))
+}
+
+/// What the model sees from an argv tool: bounded UTF-8 stdout and the exit
+/// status. Invalid UTF-8 is replaced rather than failing the turn.
+pub fn argv_output(exit: i32, stdout: &[u8]) -> Vec<u8> {
+    let mut text = String::from_utf8_lossy(stdout).into_owned();
+    let room = ARGV_OUTPUT_CHARS;
+    if text.len() > room {
+        let mut end = room;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    serde_json::to_vec(&json!({"output": text, "exit": exit})).unwrap_or_default()
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -70,10 +209,28 @@ pub struct Config {
     /// Omission preserves the original serialized template hash.
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_insecure: bool,
+    /// Output tokens every model request of this worker asks for: the
+    /// operator's per-request cap for the backend, delivered by the host.
+    /// Omitted at the default, which preserves the original serialized
+    /// template hash; a worker built before this field refuses a template
+    /// that carries it, so the host only sends it to a package that knows it.
+    #[serde(
+        default = "default_max_tokens",
+        skip_serializing_if = "is_default_max_tokens"
+    )]
+    pub max_tokens: u64,
 }
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn default_max_tokens() -> u64 {
+    DEFAULT_MAX_TOKENS
+}
+
+fn is_default_max_tokens(value: &u64) -> bool {
+    *value == DEFAULT_MAX_TOKENS
 }
 
 struct CheckedTool<'a> {
@@ -98,8 +255,14 @@ fn compile(config: &Config) -> Result<Vec<CheckedTool<'_>>> {
         "invalid model selection"
     );
     ensure!(
-        (1..=6).contains(&config.max_turns) && config.max_calls <= 16 && config.tools.len() <= 16,
+        (1..=6).contains(&config.max_turns) && config.max_calls <= 16 && config.tools.len() <= 24,
         "turn/call/tool limit exceeds contract"
+    );
+    ensure!(
+        warden::egress::REQUEST_OUTPUT_TOKENS.contains(&config.max_tokens),
+        "max_tokens must be {}..={}",
+        warden::egress::REQUEST_OUTPUT_TOKENS.start(),
+        warden::egress::REQUEST_OUTPUT_TOKENS.end()
     );
     ensure!(
         !config.require_tool_call
@@ -125,6 +288,25 @@ fn compile_tools(tools: &[Tool]) -> Result<Vec<CheckedTool<'_>>> {
         let output = ToolSchema::parse(tool.output_schema.bytes.as_bytes(), &Hash(tool.output_schema.hash.clone())).map_err(anyhow::Error::msg)?;
         let parameters: Value = serde_json::from_str(&tool.input_schema.bytes)?;
         ensure!(parameters["type"] == "object", "JSON-tool inputs must use an object schema");
+        if let Some(argv) = &tool.argv {
+            let properties = parameters["properties"].as_object().cloned().unwrap_or_default();
+            ensure!(argv.args.len() <= 32 && argv.args.iter().all(|a| a.len() <= 1024 && !a.contains('\0')), "argv binding exceeds contract");
+            for entry in &argv.args {
+                if let Some((field, shape)) = placeholder(entry) {
+                    let kind = properties.get(field).map(|p| p["type"].clone()).unwrap_or(Value::Null);
+                    ensure!(!kind.is_null(), "argv placeholder {field} is not an input field");
+                    match shape {
+                        Placeholder::Switch(_) => ensure!(kind == "boolean", "argv flag placeholder {field} must be a boolean field"),
+                        _ => ensure!(kind == "string" || kind == "integer" || kind == "number" || kind == "boolean", "argv placeholder {field} must be a scalar field"),
+                    }
+                }
+            }
+            if let Some(field) = &argv.stdin {
+                ensure!(properties.get(field).is_some_and(|p| p["type"] == "string"), "argv stdin field must be a string input field");
+            }
+            let output: Value = serde_json::from_str(&tool.output_schema.bytes)?;
+            ensure!(output == argv_output_schema(), "argv tool output schema must be the argv result shape");
+        }
         let definition = json!({"type":"function","function":{"name":tool.name,"description":tool.description,"parameters":parameters}});
         Ok(CheckedTool { tool, input, output, definition })
     }).collect()
@@ -147,6 +329,11 @@ fn direct_tool(config: &DirectConfig) -> Result<CheckedTool<'_>> {
     ensure!(
         config.contract == DIRECT_CONTRACT,
         "unsupported direct contract"
+    );
+    // The direct adapter delivers JSON on stdin only; it has no argv binding.
+    ensure!(
+        config.tool.argv.is_none(),
+        "direct contract does not support argv-bound tools"
     );
     let mut tools = compile_tools(std::slice::from_ref(&config.tool))?;
     let tool = tools.remove(0);
@@ -194,6 +381,13 @@ pub fn run_with_history(
     mut event: impl FnMut(Value),
 ) -> Result<String> {
     let tools = compile(config)?;
+    let offered = history.len();
+    let history = fit_history(config, &tools, history)?;
+    if history.len() < offered {
+        event(
+            json!({"type":"context","historyKept":history.len(),"historyDropped":offered - history.len()}),
+        );
+    }
     let mut messages = contextual_messages(config, history)?;
     let mut ids = BTreeSet::new();
     let mut calls = 0usize;
@@ -223,14 +417,25 @@ pub fn run_with_history(
                 !config.require_tool_call || calls > 0,
                 "model completed without required tool execution"
             );
+            // A reasoning model can spend its whole output budget thinking
+            // and return no content (null or empty). Say so: the fix is in
+            // the backend's model parameters, not in the task.
+            let starved = choices[0]["finish_reason"] == "length"
+                && message["content"].as_str().map_or(
+                    message["content"].is_null() || message.get("content").is_none(),
+                    |text| text.trim().is_empty(),
+                );
+            ensure!(!starved, "{}", empty_at_length(config.max_tokens));
             let answer = message["content"]
                 .as_str()
                 .context("missing final answer")?;
-            ensure!(
-                !answer.trim().is_empty() && answer.len() <= 4096,
-                "final answer is empty or exceeds limit"
+            ensure!(!answer.trim().is_empty(), "final answer is empty");
+            ensure!(answer.len() <= MAX_ANSWER_BYTES, "{}", answer_too_long());
+            // `answerLimit` tells the host which answer contract this guest
+            // package was built with; a package without it predates 8 KiB.
+            event(
+                json!({"type":"completed","answer":answer,"calls":calls,"answerLimit":MAX_ANSWER_BYTES}),
             );
-            event(json!({"type":"completed","answer":answer,"calls":calls}));
             return Ok(answer.into());
         }
         // Do not start side effects when the configured turn budget already
@@ -315,7 +520,10 @@ fn contextual_messages(config: &Config, history: &[Exchange]) -> Result<Vec<Valu
             bytes = bytes
                 .checked_add(text.len())
                 .context("parent history overflow")?;
-            ensure!(bytes <= 4096, "parent history exceeds byte limit");
+            ensure!(
+                bytes <= warden::parent_protocol::MAX_TASK_BYTES,
+                "parent history exceeds byte limit"
+            );
         }
     }
     let mut messages = initial_messages(config);
@@ -328,14 +536,52 @@ fn contextual_messages(config: &Config, history: &[Exchange]) -> Result<Vec<Valu
     Ok(messages)
 }
 
+/// The newest exchanges whose first model request leaves
+/// `TOOL_ROUND_WIRE_RESERVE` free. Host validation and the guest loop both
+/// use this, so they agree on the request. With no history left the ordinary
+/// wire bound alone decides.
+fn fit_history<'a>(
+    config: &Config,
+    tools: &[CheckedTool<'_>],
+    history: &'a [Exchange],
+) -> Result<&'a [Exchange]> {
+    // A worker that can make no tool call has no later rounds to reserve for.
+    let reserve = if tools.is_empty() || config.max_calls == 0 {
+        0
+    } else {
+        TOOL_ROUND_WIRE_RESERVE
+    };
+    for start in 0..history.len() {
+        let kept = &history[start..];
+        let wire = model_wire(config, tools, &contextual_messages(config, kept)?, 0)?;
+        if wire.len() <= MODEL_WIRE_BYTES - reserve {
+            return Ok(kept);
+        }
+    }
+    Ok(&[])
+}
+
 fn model_request(
     config: &Config,
     tools: &[CheckedTool<'_>],
     messages: &[Value],
     calls: usize,
 ) -> Result<Vec<u8>> {
-    let mut body =
-        json!({"model":config.model,"stream":false,"max_tokens":512,"messages":messages});
+    let wire = model_wire(config, tools, messages, calls)?;
+    ensure!(
+        wire.len() <= MODEL_WIRE_BYTES,
+        "conversation/schema envelope exceeds broker byte limit"
+    );
+    Ok(wire)
+}
+
+fn model_wire(
+    config: &Config,
+    tools: &[CheckedTool<'_>],
+    messages: &[Value],
+    calls: usize,
+) -> Result<Vec<u8>> {
+    let mut body = json!({"model":config.model,"stream":false,"max_tokens":config.max_tokens,"messages":messages});
     if !tools.is_empty() {
         body["tools"] = json!(tools.iter().map(|t| &t.definition).collect::<Vec<_>>());
         // Provider request is advisory; completion is independently checked
@@ -347,12 +593,7 @@ fn model_request(
             "auto"
         });
     }
-    let wire = serde_json::to_vec(
+    Ok(serde_json::to_vec(
         &json!({"apiVersion":"celln.fetch/v1","method":"POST","url":config.url,"body":body}),
-    )?;
-    ensure!(
-        wire.len() <= 8192,
-        "conversation/schema envelope exceeds broker byte limit"
-    );
-    Ok(wire)
+    )?)
 }

@@ -118,6 +118,97 @@ impl Workspace {
         self.revision = revision;
         Ok(revision)
     }
+
+    /// Every artifact name with its size, in name order.
+    pub fn list(&self, parent: &Hash) -> Result<Vec<(&str, usize)>, Error> {
+        if *parent != self.parent {
+            return Err(Error::WrongParent);
+        }
+        Ok(self
+            .artifacts
+            .iter()
+            .map(|(name, data)| (name.as_str(), data.len()))
+            .collect())
+    }
+
+    /// Extend an artifact, creating it when absent, under the same revision
+    /// check and quota as a replacement: the combined size must fit.
+    pub fn append(
+        &mut self,
+        parent: &Hash,
+        expected_revision: u64,
+        name: &str,
+        data: &[u8],
+    ) -> Result<u64, Error> {
+        self.check(parent, name)?;
+        if expected_revision != self.revision {
+            return Err(Error::StaleRevision);
+        }
+        let mut combined = self.artifacts.get(name).cloned().unwrap_or_default();
+        combined.extend_from_slice(data);
+        self.write(parent, expected_revision, name, &combined)
+    }
+
+    /// Remove an artifact; its bytes return to the quota and the revision
+    /// advances so a concurrent writer notices.
+    pub fn delete(
+        &mut self,
+        parent: &Hash,
+        expected_revision: u64,
+        name: &str,
+    ) -> Result<u64, Error> {
+        self.check(parent, name)?;
+        if expected_revision != self.revision {
+            return Err(Error::StaleRevision);
+        }
+        let removed = self.artifacts.get(name).ok_or(Error::NotFound)?.len();
+        let revision = self.revision.checked_add(1).ok_or(Error::Quota)?;
+        self.artifacts.remove(name);
+        self.bytes -= removed;
+        self.revision = revision;
+        Ok(revision)
+    }
+
+    /// Lines of text artifacts containing `pattern` as an exact substring, in
+    /// name then line order, at most `limit` of them. Binary artifacts are
+    /// skipped; this is a lookup, not an expression language.
+    pub fn search(&self, parent: &Hash, pattern: &str, limit: usize) -> Result<Vec<Match>, Error> {
+        if *parent != self.parent {
+            return Err(Error::WrongParent);
+        }
+        if pattern.is_empty() || pattern.len() > 256 {
+            return Err(Error::Invalid);
+        }
+        let mut matches = Vec::new();
+        for (name, data) in &self.artifacts {
+            let Ok(text) = std::str::from_utf8(data) else {
+                continue;
+            };
+            for (index, line) in text.lines().enumerate() {
+                if !line.contains(pattern) {
+                    continue;
+                }
+                if matches.len() >= limit {
+                    return Ok(matches);
+                }
+                matches.push(Match {
+                    name: name.clone(),
+                    line: index + 1,
+                    text: line.to_owned(),
+                });
+            }
+        }
+        Ok(matches)
+    }
+}
+
+/// One line of a text artifact that contained a searched pattern.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Match {
+    pub name: String,
+    /// 1-based line number within the artifact.
+    pub line: usize,
+    pub text: String,
 }
 
 #[cfg(test)]
@@ -182,6 +273,58 @@ mod tests {
             Err(Error::Quota)
         );
         assert_eq!(workspace.read(&parent, "a"), Ok(b"12".as_slice()));
+    }
+
+    #[test]
+    fn list_append_search_and_delete_share_the_revision_and_quota() {
+        let (parent, mut workspace) = workspace();
+        assert_eq!(workspace.list(&parent), Ok(vec![]));
+        assert_eq!(workspace.append(&parent, 0, "a", b"vio"), Ok(1));
+        assert_eq!(workspace.append(&parent, 1, "a", b"let\n"), Ok(2));
+        assert_eq!(workspace.read(&parent, "a"), Ok(b"violet\n".as_slice()));
+        // Appending past the file quota fails atomically.
+        assert_eq!(
+            workspace.append(&parent, 2, "a", b"orange"),
+            Err(Error::Quota)
+        );
+        assert_eq!(
+            workspace.append(&parent, 1, "a", b"x"),
+            Err(Error::StaleRevision)
+        );
+        assert_eq!(workspace.write(&parent, 2, "b", b"vio"), Ok(3));
+        assert_eq!(workspace.list(&parent), Ok(vec![("a", 7), ("b", 3)]));
+        let found = workspace.search(&parent, "vio", 8).unwrap();
+        assert_eq!(
+            found,
+            vec![
+                Match {
+                    name: "a".into(),
+                    line: 1,
+                    text: "violet".into()
+                },
+                Match {
+                    name: "b".into(),
+                    line: 1,
+                    text: "vio".into()
+                },
+            ]
+        );
+        assert_eq!(workspace.search(&parent, "vio", 1).unwrap().len(), 1);
+        assert_eq!(workspace.search(&parent, "", 8), Err(Error::Invalid));
+        assert_eq!(
+            workspace.search(&Hash::of(b"other"), "vio", 8),
+            Err(Error::WrongParent)
+        );
+        assert_eq!(workspace.delete(&parent, 2, "a"), Err(Error::StaleRevision));
+        assert_eq!(
+            workspace.delete(&parent, 3, "missing"),
+            Err(Error::NotFound)
+        );
+        assert_eq!(workspace.delete(&parent, 3, "a"), Ok(4));
+        assert_eq!(workspace.list(&parent), Ok(vec![("b", 3)]));
+        // The freed bytes are available again.
+        assert_eq!(workspace.write(&parent, 4, "c", b"12"), Ok(5));
+        assert_eq!(workspace.delete(&parent, 5, "../x"), Err(Error::Invalid));
     }
 
     #[test]

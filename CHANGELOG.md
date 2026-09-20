@@ -1,5 +1,133 @@
 # Changelog
 
+## [0.5.25](https://github.com/sympozium-ai/celln/compare/v0.5.24...v0.5.25) (2026-09-20)
+
+
+### Bug Fixes
+
+* **starter:** scale the worker turn lifetime with the backend's output-token cap ([97c87bb](https://github.com/sympozium-ai/celln/commit/97c87bb43987371a7b023ecd6e19513289462573))
+* **starter:** scale the worker turn lifetime with the backend's output-token cap ([cdd0c0f](https://github.com/sympozium-ai/celln/commit/cdd0c0f481e1d5b036f6ac2c14e940b3ffe57fc3))
+
+## [0.5.24](https://github.com/sympozium-ai/celln/compare/v0.5.23...v0.5.24) (2026-09-19)
+
+
+### Features
+
+* **starter:** configurable per-request output cap for a model backend ([ed40f9b](https://github.com/sympozium-ai/celln/commit/ed40f9b9bc75a492bb1712f56b0e25fb9d7d2c4c))
+* **starter:** configurable per-request output cap for a model backend ([66dfa61](https://github.com/sympozium-ai/celln/commit/66dfa6110447fdcb79b97a9770fa624641e31302))
+
+## [0.5.23](https://github.com/sympozium-ai/celln/compare/v0.5.22...v0.5.23) (2026-09-19)
+
+
+### Features
+
+* **model:** operator-pinned provider request parameters for a model backend ([be3554a](https://github.com/sympozium-ai/celln/commit/be3554a92427cdf72284303edcb609c7cdb5a688))
+* **model:** operator-pinned provider request parameters for a model backend ([5fd2fdf](https://github.com/sympozium-ai/celln/commit/5fd2fdf6d093137a3133e4afefd20c954fc7a991))
+
+## [0.5.22](https://github.com/sympozium-ai/celln/compare/v0.5.21...v0.5.22) (2026-09-19)
+
+
+### Features
+
+* **dispatch:** read-only GET /v1/cells listing on dispatcher and router ([aef410e](https://github.com/sympozium-ai/celln/commit/aef410eb4af05494b610e61f2f4db860489d940a))
+* **dispatch:** read-only GET /v1/cells listing on dispatcher and router ([30ddfad](https://github.com/sympozium-ai/celln/commit/30ddfadeae4a5300ac74333a110bbdbe6cce2676))
+* **parent:** keep long conversations alive and widen the turn bounds ([504dfa2](https://github.com/sympozium-ai/celln/commit/504dfa2d0395b3a1c5e6afcf0f5532d753ab3ed2))
+* **parent:** keep long conversations alive and widen the turn bounds ([7d61d37](https://github.com/sympozium-ai/celln/commit/7d61d3774a5ee50da70738a9720009180e2392f0))
+
+## [0.5.21](https://github.com/sympozium-ai/celln/compare/v0.5.20...v0.5.21) (2026-09-17)
+
+
+### Bug Fixes
+
+* **parent:** keep parents alive across long worker turns ([daeef20](https://github.com/sympozium-ai/celln/commit/daeef204ba07d578defd2382e4df8447be9d94d2))
+* **parent:** keep parents alive across long worker turns ([cdb82e5](https://github.com/sympozium-ai/celln/commit/cdb82e567e605975908009533cda64a289dcbf63))
+
+## [0.5.20](https://github.com/sympozium-ai/celln/compare/v0.5.19...v0.5.20) (2026-09-15)
+
+
+### Bug Fixes
+
+* **starter:** look for packaging tools under sbin too ([fa70d12](https://github.com/sympozium-ai/celln/commit/fa70d12d27b56a148ef2c215fe60e568008a31c5))
+* **starter:** look for packaging tools under sbin too ([3ca6b80](https://github.com/sympozium-ai/celln/commit/3ca6b806a8228bd4d2cdffd0bb3e3ad512ad5435))
+
+## [0.5.19](https://github.com/sympozium-ai/celln/compare/v0.5.18...v0.5.19) (2026-09-15)
+
+
+### Features
+
+* **harness:** 32 KiB model request wire budget for two dozen tools ([0063841](https://github.com/sympozium-ai/celln/commit/0063841dfcaf6e526213bc5309bb7ae6dce4c5a3))
+* **starter:** workspace list/append/search/delete and credential-free JSON POST tools ([4dc50b9](https://github.com/sympozium-ai/celln/commit/4dc50b91974f6f042d1fa5f9b929bd31d83c30c9))
+* **starter:** workspace list/append/search/delete and credential-free JSON POST tools ([cad57b3](https://github.com/sympozium-ai/celln/commit/cad57b363d10ecdd587067016597c6a3cf2706cf))
+
+
+### Bug Fixes
+
+* **vmm:** buffer 32 KiB broker requests from a cell ([1ba40eb](https://github.com/sympozium-ai/celln/commit/1ba40ebf488c766cc6aee170c66452fc2b594a85))
+
+## [0.5.18](https://github.com/sympozium-ai/celln/compare/v0.5.17...v0.5.18) (2026-09-15)
+
+
+### Features
+
+* **tools:** borrow real commands from pinned images as argv tools ([b16db8a](https://github.com/sympozium-ai/celln/commit/b16db8ac628db33c339ecff4464f0b4d5fdf440d))
+* **tools:** borrow real commands from pinned images as argv tools ([4c90df5](https://github.com/sympozium-ai/celln/commit/4c90df5268d23db391f32859c6795738b1992e1b))
+
+## [0.5.17](https://github.com/sympozium-ai/celln/compare/v0.5.16...v0.5.17) (2026-09-14)
+
+
+### Bug Fixes
+
+* **parent:** a failed child is a failed turn, not lost parent context ([5ebbcfb](https://github.com/sympozium-ai/celln/commit/5ebbcfb8291dba0a4760fafa54912c73e44d6966))
+* **parent:** a failed child is a failed turn, not lost parent context ([6d04a99](https://github.com/sympozium-ai/celln/commit/6d04a9945e51c0c97c8f4b171799d17689365759)), closes [#124](https://github.com/sympozium-ai/celln/issues/124)
+
+## [0.5.16](https://github.com/sympozium-ai/celln/compare/v0.5.15...v0.5.16) (2026-09-14)
+
+
+### Features
+
+* **router:** place new parents on the owner with the most spare capacity ([8d515bd](https://github.com/sympozium-ai/celln/commit/8d515bd8cfdcc665a4fdfabbcfe1fc8a3ab76d40))
+* **router:** place new parents on the owner with the most spare capacity ([38e5d14](https://github.com/sympozium-ai/celln/commit/38e5d147144db3640cad9639cd02f0e52cea0b44))
+
+## [0.5.15](https://github.com/sympozium-ai/celln/compare/v0.5.14...v0.5.15) (2026-09-14)
+
+
+### Features
+
+* **starter:** operator host limits — lease up to 24h, turn and token ceilings per plan ([c922759](https://github.com/sympozium-ai/celln/commit/c922759c9923e930f9c950112cad6232e4c90ea6))
+* **starter:** operator host limits — lease up to 24h, turn and token ceilings per plan ([74817f1](https://github.com/sympozium-ai/celln/commit/74817f1d32852c261691883cc0eb43162496ef59))
+
+## [0.5.14](https://github.com/sympozium-ai/celln/compare/v0.5.13...v0.5.14) (2026-09-14)
+
+
+### Bug Fixes
+
+* **egress:** accept Anthropic thinking blocks without forwarding them ([bbfab46](https://github.com/sympozium-ai/celln/commit/bbfab4653253a0a55985d19da8c462bad1924de6))
+* **egress:** accept Anthropic thinking blocks without forwarding them ([a8c8682](https://github.com/sympozium-ai/celln/commit/a8c8682d929bbbdd28220242125340836a840d02))
+
+## [0.5.13](https://github.com/sympozium-ai/celln/compare/v0.5.12...v0.5.13) (2026-09-14)
+
+
+### Bug Fixes
+
+* **dispatcher:** bound model requests by the turn deadline instead of a fixed 45 seconds ([24b30c0](https://github.com/sympozium-ai/celln/commit/24b30c000a363dc9d227c9f074d0a76dad9eb024))
+* **dispatcher:** bound model requests by the turn deadline instead of a fixed 45 seconds ([7be438c](https://github.com/sympozium-ai/celln/commit/7be438c08fee16805cfbb1d1a4f4c101db612591))
+
+## [0.5.12](https://github.com/sympozium-ai/celln/compare/v0.5.11...v0.5.12) (2026-09-14)
+
+
+### Bug Fixes
+
+* **dispatcher:** charge exact broker slots per parent so a node holds more than one parent ([a1aa888](https://github.com/sympozium-ai/celln/commit/a1aa88808ad9970f7a48c2e5150ed59a0e763c00))
+* **dispatcher:** charge exact broker slots per parent so a node holds more than one parent ([2341461](https://github.com/sympozium-ai/celln/commit/2341461a3d06b06d38aaca8a71f7fb36a2bca3f2))
+
+## [0.5.11](https://github.com/sympozium-ai/celln/compare/v0.5.10...v0.5.11) (2026-09-14)
+
+
+### Features
+
+* **parents:** provision on the owning dispatcher; router binds affinity at provisioning ([#109](https://github.com/sympozium-ai/celln/issues/109)) ([bd17846](https://github.com/sympozium-ai/celln/commit/bd1784618ba011cddba4f559f80fb45437949539))
+* **router:** re-resolve --backends-srv so owners can join or leave live ([#110](https://github.com/sympozium-ai/celln/issues/110)) ([4c08bcd](https://github.com/sympozium-ai/celln/commit/4c08bcdba1e50df8d0227a8925651367445592a0))
+
 ## [0.5.10](https://github.com/sympozium-ai/celln/compare/v0.5.9...v0.5.10) (2026-09-11)
 
 

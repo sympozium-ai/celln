@@ -9,8 +9,20 @@
 use serde::{Deserialize, Serialize};
 
 pub const VERSION: &str = "celln.parent-turn/v1";
-pub const MAX_REQUEST_BYTES: usize = 8192;
-pub const MAX_TASK_BYTES: usize = 2048;
+/// One user message. Callers (HTTP API, Sympozium's CRD) validate this bound.
+pub const MAX_MESSAGE_BYTES: usize = 2048;
+/// One encoded turn submission (`{"kind":"turn",…}`) as a client sends it and
+/// the host delivers it. Unchanged from the first parent transport, so a
+/// parent built against 8 KiB frames is never handed a turn it must refuse.
+pub const MAX_TURN_INPUT_BYTES: usize = 8192;
+/// One committed worker answer, as raw UTF-8.
+pub const MAX_ANSWER_BYTES: usize = 8192;
+/// The worker task: the JSON `{"history":[…],"message":…}` a parent packs.
+/// A parent trims its oldest exchanges to stay inside it.
+pub const MAX_TASK_BYTES: usize = 16384;
+/// The encoded request. The task is JSON carried as a JSON string, so each
+/// quote or backslash in it doubles: twice the task bound plus the envelope.
+pub const MAX_REQUEST_BYTES: usize = 2 * MAX_TASK_BYTES + 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -134,7 +146,7 @@ mod tests {
             String::new(),
             "\0".into(),
             "x".repeat(MAX_TASK_BYTES + 1),
-            "é".repeat(1025),
+            "é".repeat(MAX_TASK_BYTES / 2 + 1),
         ] {
             assert_eq!(
                 TurnRequest::decode(&serde_json::to_vec(&envelope(&task)).unwrap()),
@@ -143,5 +155,23 @@ mod tests {
         }
         TurnRequest::decode(&serde_json::to_vec(&envelope(&"x".repeat(MAX_TASK_BYTES))).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn the_bounds_are_the_reviewed_contract_and_a_full_task_always_encodes() {
+        assert_eq!(
+            (MAX_MESSAGE_BYTES, MAX_ANSWER_BYTES, MAX_TASK_BYTES),
+            (2048, 8192, 16384)
+        );
+        assert_eq!(MAX_TURN_INPUT_BYTES, 8192);
+        // A task is JSON inside a JSON string: quotes and backslashes double.
+        // The widest such task still fits the encoded request bound.
+        for task in ["\"".repeat(MAX_TASK_BYTES), "\\".repeat(MAX_TASK_BYTES)] {
+            let mut value = envelope(&task);
+            value["turnId"] = serde_json::json!("t".repeat(64));
+            let encoded = serde_json::to_vec(&value).unwrap();
+            assert!(encoded.len() <= MAX_REQUEST_BYTES);
+            TurnRequest::decode(&encoded).unwrap();
+        }
     }
 }

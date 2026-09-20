@@ -60,7 +60,7 @@ fn valid_contract(version: &str, h: &HarnessBinding) -> bool {
                     && !j.system.contains('\0')
                     && (1..=6).contains(&j.max_turns)
                     && j.max_calls <= 16
-            }) && h.borrowed_tools.len() <= 16
+            }) && h.borrowed_tools.len() <= 24
                 && h.borrowed_tools.iter().all(|t| {
                     t.path != "/pilot-fetch"
                         && t.json_stdio.as_ref().is_some_and(|j| {

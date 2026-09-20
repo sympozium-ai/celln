@@ -60,3 +60,86 @@ default = true
 provides = [
   { alias = "/usr/bin/curl", exec = "/usr/bin/curl" },
 ]
+
+# ── Commands for Sympozium starter packages ─────────────────────────────────
+#
+# `commands` are ordinary programs a model may call as borrowed tools through
+# the `celln.argv/v1` binding: validated JSON arguments become argv and stdin,
+# stdout and the exit status come back as data. No shell, no free-form flags.
+# `celln starter-package --tool-image NAME` extracts each command's static
+# executable from the pinned image and lends it in the worker closure; the
+# package records the image digest as the tool's source. Parameters become
+# the JSON schema the model sees (`max` bounds a string's length or an
+# integer's value).
+
+[[image]]
+name = "busybox"
+tag = "docker.io/library/busybox:1.37.0-musl"
+ref = "docker.io/library/busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23"
+about = "BusyBox 1.37, one static musl binary carrying the classic Unix text tools"
+provides = [
+  { alias = "/bin/busybox", exec = "/bin/busybox" },
+]
+commands = [
+  { name = "grep", exec = "/bin/busybox", args = ["{ignore_case?-i}", "{invert?-v}", "{line_numbers?-n}", "-E", "-e", "{pattern}"], stdin = "text", description = "Print the lines of text that match an extended regular expression. Exit 1 means no line matched.", params = [
+    { name = "pattern", type = "string", required = true, max = 512, description = "extended regular expression" },
+    { name = "text", type = "string", required = true, max = 4096, description = "the text to search, one record per line" },
+    { name = "ignore_case", type = "boolean", description = "match case-insensitively" },
+    { name = "invert", type = "boolean", description = "print the lines that do not match" },
+    { name = "line_numbers", type = "boolean", description = "prefix each line with its number" } ] },
+  { name = "sed", exec = "/bin/busybox", args = ["-E", "-e", "{script}"], stdin = "text", description = "Apply a sed script (extended regular expressions) to text, for example s/old/new/g.", params = [
+    { name = "script", type = "string", required = true, max = 1024, description = "sed script" },
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "awk", exec = "/bin/busybox", args = ["{program}"], stdin = "text", description = "Run an awk program over text, one record per line.", params = [
+    { name = "program", type = "string", required = true, max = 2048, description = "awk program" },
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "sort", exec = "/bin/busybox", args = ["{numeric?-n}", "{reverse?-r}", "{unique?-u}"], stdin = "text", description = "Sort the lines of text.", params = [
+    { name = "text", type = "string", required = true, max = 4096 },
+    { name = "numeric", type = "boolean", description = "compare numerically" },
+    { name = "reverse", type = "boolean" },
+    { name = "unique", type = "boolean", description = "drop duplicate lines" } ] },
+  { name = "uniq", exec = "/bin/busybox", args = ["{count?-c}"], stdin = "text", description = "Collapse adjacent duplicate lines; optionally prefix each with its count.", params = [
+    { name = "text", type = "string", required = true, max = 4096 },
+    { name = "count", type = "boolean" } ] },
+  { name = "wc", exec = "/bin/busybox", args = ["-l", "-w", "-c"], stdin = "text", description = "Count the lines, words and bytes of text.", params = [
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "cut", exec = "/bin/busybox", args = ["-d", "{delimiter}", "-f", "{fields}"], stdin = "text", description = "Select delimited fields from each line, e.g. delimiter ',' fields '1,3'.", params = [
+    { name = "delimiter", type = "string", required = true, max = 1 },
+    { name = "fields", type = "string", required = true, max = 64, description = "field list such as 1,3-4" },
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "head", exec = "/bin/busybox", args = ["-n", "{lines}"], stdin = "text", description = "The first N lines of text.", params = [
+    { name = "lines", type = "integer", required = true, max = 4096 },
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "tail", exec = "/bin/busybox", args = ["-n", "{lines}"], stdin = "text", description = "The last N lines of text.", params = [
+    { name = "lines", type = "integer", required = true, max = 4096 },
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "base64", exec = "/bin/busybox", args = ["{decode?-d}"], stdin = "text", description = "Base64-encode text, or decode it with decode=true.", params = [
+    { name = "text", type = "string", required = true, max = 4096 },
+    { name = "decode", type = "boolean" } ] },
+  { name = "sha256sum", exec = "/bin/busybox", args = [], stdin = "text", description = "The SHA-256 hex digest of the text.", params = [
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+  { name = "date", exec = "/bin/busybox", args = ["-u", "{format}"], description = "The current UTC date and time, optionally in a strftime format such as +%Y-%m-%d.", params = [
+    { name = "format", type = "string", max = 64, description = "strftime format starting with +" } ] },
+  { name = "tr", exec = "/bin/busybox", args = ["{delete?-d}", "{squeeze?-s}", "{from}", "{to}"], stdin = "text", description = "Translate characters in text from one set to another, or delete (delete=true) or squeeze repeats (squeeze=true) of the first set.", params = [
+    { name = "from", type = "string", required = true, max = 256 },
+    { name = "to", type = "string", max = 256 },
+    { name = "delete", type = "boolean" },
+    { name = "squeeze", type = "boolean" },
+    { name = "text", type = "string", required = true, max = 4096 } ] },
+]
+
+[[image]]
+name = "jq"
+tag = "ghcr.io/jqlang/jq:1.8.1"
+ref = "ghcr.io/jqlang/jq@sha256:4f34c6d23f4b1372ac789752cc955dc67c2ae177eb1b5860b75cdc5091ce6f91"
+about = "jq 1.8, the JSON processor, as one static binary"
+provides = [
+  { alias = "/usr/bin/jq", exec = "/jq" },
+]
+commands = [
+  { name = "jq", exec = "/jq", args = ["{compact?-c}", "{raw?-r}", "{filter}"], stdin = "input", description = "Run a jq filter over a JSON document, e.g. filter '.items[] | .name'.", params = [
+    { name = "filter", type = "string", required = true, max = 2048, description = "jq filter expression" },
+    { name = "input", type = "string", required = true, max = 4096, description = "the JSON document" },
+    { name = "compact", type = "boolean", description = "compact output" },
+    { name = "raw", type = "boolean", description = "output strings without quotes" } ] },
+]

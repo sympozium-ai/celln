@@ -44,12 +44,24 @@ pub fn child(
     output_limit: usize,
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    let (status, output) = child_status(path, args, input, output_limit, timeout)?;
+    ensure!(status == 0, "lent executable failed");
+    Ok(output)
+}
+
+/// Like `child`, but a nonzero exit is data rather than failure: a real
+/// command-line tool uses its status to answer ("no match", "differs"), so a
+/// borrowed argv tool reports it to the model instead of ending the turn.
+/// Deadline, pipe bounds and teardown are unchanged.
+pub fn child_status(
+    path: &str,
+    args: &[String],
+    input: &[u8],
+    output_limit: usize,
+    timeout: Duration,
+) -> Result<(i32, Vec<u8>)> {
     ensure!(
-        input.len() <= 65536
-            && output_limit > 0
-            && output_limit <= 1_048_576
-            && !timeout.is_zero()
-            && timeout <= Duration::from_secs(45),
+        input.len() <= 65536 && output_limit > 0 && output_limit <= 1_048_576 && !timeout.is_zero(),
         "invalid child budget"
     );
     let mut child = Command::new(path)
@@ -60,7 +72,7 @@ pub fn child(
         .stderr(Stdio::piped())
         .spawn()
         .context("starting lent executable")?;
-    let result = (|| -> Result<Vec<u8>> {
+    let result = (|| -> Result<(i32, Vec<u8>)> {
         let mut stdin = child.stdin.take();
         let mut stdout = child.stdout.take().context("stdout unavailable")?;
         let mut stderr = child.stderr.take().context("stderr unavailable")?;
@@ -95,10 +107,9 @@ pub fn child(
                 drain(&mut stderr, &mut errors, 4096, &mut err_eof)?;
             }
             if let Some(status) = child.try_wait()? {
-                ensure!(status.success(), "lent executable failed");
                 if out_eof && err_eof {
                     ensure!(written == input.len(), "tool exited before input delivery");
-                    return Ok(output);
+                    return Ok((status.code().unwrap_or(-1), output));
                 }
             }
             std::thread::sleep(Duration::from_millis(1));
