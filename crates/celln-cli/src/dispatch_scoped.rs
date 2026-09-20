@@ -628,7 +628,10 @@ fn start(
     ) {
         Ok(v) => v,
         Err(reason) => {
-            let status = terminal_refusal(scoped, &fresh, &request.id, reason);
+            // A parent operation's refusal names its incarnation and turn like
+            // every other status of that operation; a caller that correlates
+            // on them would otherwise never learn why it was refused.
+            let status = prepared_refusal(scoped, &fresh, &prepared, reason);
             return reply(stream, 422, &status);
         }
     };
@@ -2293,7 +2296,8 @@ fn validate_runtime_resources(execution: &Value, profile: &Value) -> Result<(), 
     for (field, maximum) in [
         ("timeoutMillis", 300000),
         ("memoryBytes", 268435456),
-        ("taskBytes", 2048),
+        // The packed task of a native turn (message plus retained history).
+        ("taskBytes", warden::parent_protocol::MAX_TASK_BYTES as u64),
         ("outputBytes", 65536),
     ] {
         bounded_resource(
@@ -2978,6 +2982,25 @@ mod tests {
         validate_runtime_resources(execution, &profile).unwrap();
         execution["runtimeLimits"]["memoryBytes"] = json!(67108865u64);
         assert!(validate_runtime_resources(execution, &profile).is_err());
+    }
+
+    // The starter profile declares the native task bound; a scoped run of it
+    // was refused while this path still capped a task at one message.
+    #[test]
+    fn a_profile_may_declare_the_native_task_bound_and_no_more() {
+        let (mut operation, _) = fixture();
+        let execution = &mut operation["resolution"]["execution"];
+        let bound = warden::parent_protocol::MAX_TASK_BYTES as u64;
+        execution["profileSpec"]["limits"]["taskBytes"] = json!(bound);
+        execution["runtimeLimits"]["taskBytes"] = json!(bound);
+        let profile = execution["profileSpec"].clone();
+        validate_runtime_resources(execution, &profile).unwrap();
+        execution["profileSpec"]["limits"]["taskBytes"] = json!(bound + 1);
+        let profile = execution["profileSpec"].clone();
+        assert_eq!(
+            validate_runtime_resources(execution, &profile).unwrap_err(),
+            "AUTH_LIMIT_OUT_OF_RANGE"
+        );
     }
 
     #[test]
