@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.26](https://github.com/sympozium-ai/celln/compare/v0.5.25...v0.5.26) (2026-09-20)
+
+
+### Features
+
+* **scoped:** per-operation request output tokens and the starter parent request ([3ef76d6](https://github.com/sympozium-ai/celln/commit/3ef76d6113e287337a9ba0285113a8aa71ae7d45))
+* **scoped:** per-operation request output tokens and the starter parent request ([9d7309d](https://github.com/sympozium-ai/celln/commit/9d7309d6c12ee697c7f1163250057af5429a659e))
+
+
+### Bug Fixes
+
+* **tenancy:** sync the authorisation contract bundle with Sympozium ([ef54ec9](https://github.com/sympozium-ai/celln/commit/ef54ec96028408a1360bd5f040c59e1a3d91cabc))
+
 ## [0.5.25](https://github.com/sympozium-ai/celln/compare/v0.5.24...v0.5.25) (2026-09-20)
 
 
