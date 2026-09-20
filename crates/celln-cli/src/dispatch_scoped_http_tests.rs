@@ -1510,6 +1510,10 @@ fn a_prepared_output_cap_is_range_checked_and_affordable_before_anything_is_enro
         (&body["phase"], &body["reason"], &body["cleanupConfirmed"]),
         (&json!("Refused"), &json!(range), &json!(true))
     );
+    // The refusal names the parent it refused: a controller correlates every
+    // status of a parent operation on it, and would otherwise retry forever
+    // without ever learning the reason.
+    assert_eq!(body["parentIncarnation"], decision["parent"]["incarnation"]);
     fs::remove_file(scoped.prepared_path(&id).unwrap()).unwrap();
     no_native_custody(&state);
     assert!(!root.path().join("parent-journal").exists());
