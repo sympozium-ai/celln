@@ -190,7 +190,7 @@ dependencies = [
 
 [[package]]
 name = "celln-assay"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "anyhow",
  "celln-forge",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "celln-cli"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "anyhow",
  "base64",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "celln-control"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "libc",
  "tempfile",
@@ -241,7 +241,7 @@ dependencies = [
 
 [[package]]
 name = "celln-forge"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "celln-control",
  "celln-manifest",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "celln-manifest"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "celln-pilot"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "anyhow",
  "celln-assay",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "celln-spec"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "celln-manifest",
  "serde",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "celln-store"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "blake3",
  "celln-manifest",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "celln-warden"
-version = "0.5.27"
+version = "0.5.28"
 dependencies = [
  "celln-control",
  "celln-manifest",
