@@ -10,4 +10,6 @@ This adapter alone does not enforce per-tool aggregate memory authority. Scoped 
 
 `json_direct_adapter_on_real_kvm` uses the rebuilt, signed native JSON fixture package. It launches two distinct cells, checks confirmed runtime execution grants, validates the actual uppercase tool result, and observes zero broker requests. No standing model grant is created. The strict `make conformance-kvm` target includes this case and rejects skipped or missing cases.
 
-This proves native adapter execution, not scoped HTTP admission, a controller-created run, tenant isolation, or installed acceptance. The controller/receiver integration and genuine enduring lifecycle remain required before presenting a deployed manual walkthrough.
+This proves native adapter execution, not scoped HTTP admission, a controller-created run, tenant isolation, or installed acceptance.
+
+Scoped HTTP admission now exists: the dispatcher's `POST /v1/scoped/{prepare,start,read,cleanup}` receiver builds this direct configuration for a one-shot whose decision route is `provider: "none"` (exactly one tool, no model permit), and the model-loop configuration otherwise. Routes, enabling flags and evidence are in [tenancy-runtime-verifier.md](tenancy-runtime-verifier.md). The KVM conformance case there covers a model-route one-shot and an enduring parent; this model-free adapter has not yet been run through the scoped routes on KVM. Controller integration and installed acceptance remain required before presenting a deployed manual walkthrough.

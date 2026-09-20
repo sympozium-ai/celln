@@ -74,7 +74,7 @@ jobs:
       - name: hardware proofs
         if: steps.kvm.outputs.have == 'yes'
         run: |
-          sudo apt-get update && sudo apt-get install -y gcc cpio e2fsprogs
+          sudo apt-get update && sudo apt-get install -y gcc cpio e2fsprogs curl openssl
           make guest
           cargo test -p celln-warden --features kvm
           cargo run -p celln-cli -- verify --no-json

@@ -1,9 +1,11 @@
 # Namespace admission ownership journal (Sympozium #500)
 
 `celln_cli::tenancy_admission` is a Linux, private-POSIX-storage ownership
-boundary. It does not yet expose an HTTP admission endpoint or replace the
-independent native publisher/closure/schema/ABI/resource checks. No compatible
-installed mediated runtime is advertised by this library.
+boundary. The dispatcher's scoped receiver (`POST /v1/scoped/*`, enabling flags
+in [tenancy-runtime-verifier.md](tenancy-runtime-verifier.md)) opens it at
+`<root>/scoped/admission` and claims through it before any native launch. It
+does not replace the independent native publisher/closure/schema/ABI/resource
+checks. No compatible installed mediated runtime is advertised by this library.
 
 ## Ordering and recovery
 
@@ -58,6 +60,8 @@ cleanup, inode pinning and private storage. The interrupted-publication test
 constructs the exact persisted gap; it is not an OS-crash or native execution
 claim. Run `cargo test -p celln-cli --lib tenancy_admission --locked`.
 
-Remaining: authenticated transport/receiver-context construction, native artifact
-preparation and dispatch, original-owner result/cancel routing, durable controller
-prepared operations, and actual installed native lifecycle/failure testing.
+The receiver now supplies authenticated transport, receiver-context
+construction, native dispatch and original-owner result/cancel routing; its
+HTTP and KVM evidence is listed in tenancy-runtime-verifier.md. Remaining:
+durable controller prepared operations and actual installed native
+lifecycle/failure testing.
