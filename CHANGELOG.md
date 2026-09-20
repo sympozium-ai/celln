@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.28](https://github.com/sympozium-ai/celln/compare/v0.5.27...v0.5.28) (2026-09-20)
+
+
+### Bug Fixes
+
+* package an isolated runtime for scoped starter conversations ([b1e225b](https://github.com/sympozium-ai/celln/commit/b1e225bab2562e3830f33ffd617ade80ae90bd55))
+* package an isolated runtime for scoped starter conversations ([c024eb7](https://github.com/sympozium-ai/celln/commit/c024eb7478e6c317b0ad9a0fcbca018951eac795))
+
 ## [0.5.27](https://github.com/sympozium-ai/celln/compare/v0.5.26...v0.5.27) (2026-09-20)
 
 
