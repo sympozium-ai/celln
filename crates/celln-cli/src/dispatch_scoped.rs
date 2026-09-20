@@ -2012,7 +2012,9 @@ fn access(
             if let Ok(Some(mut status)) = scoped.load_status(&request.id) {
                 if !status.cleanup_confirmed {
                     status.phase = "Uncertain".into();
-                    status.reason = Some("original retained parent owner is unavailable".into());
+                    status.reason.get_or_insert_with(|| {
+                        "original retained parent owner is unavailable".into()
+                    });
                     let _ = persist_status(scoped, &status);
                 }
             }

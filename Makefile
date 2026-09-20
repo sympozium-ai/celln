@@ -79,7 +79,7 @@ fetch-proof: ## prove a real cell fetches HTTPS through pilot (needs /dev/kvm + 
 .PHONY: conformance-kvm
 conformance-kvm: ## production dispatcher HTTP and real guest conformance
 	@$(CARGO) build -p celln-cli
-	@$(CARGO) build --release --locked --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch --bin celln-harness-parent --bin celln-harness-turn --bin celln-harness-json
+	@$(CARGO) build --release --locked --target x86_64-unknown-linux-musl -p celln-pilot --bin celln-pilot --bin pilot-fetch --bin celln-harness-parent --bin celln-harness-turn --bin celln-harness-json --bin celln-workspace-read --bin celln-workspace-write --bin celln-workspace-list --bin celln-workspace-append --bin celln-workspace-search --bin celln-workspace-delete --bin celln-https-fetch --bin celln-https-post-json
 	@CARGO="$(CARGO)" ./scripts/conformance-kvm.sh
 
 acceptance-kvm: ## prove setup, agent cell, output, and ps on real KVM

@@ -466,16 +466,32 @@ pub(super) fn files_beneath(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 
 pub(super) fn assert_never_stored(root: &Path, secrets: &[&str]) {
     for (path, bytes) in files_beneath(root) {
+        // Permits are ASCII. Invalid UTF-8 bytes become non-ASCII replacement
+        // characters, so lossless ASCII substring detection is retained while
+        // the standard string search avoids a debug-mode scan per byte/window
+        // across every full starter image for every permit.
+        let text = String::from_utf8_lossy(&bytes);
         for secret in secrets {
+            assert!(secret.is_ascii());
             assert!(
-                !bytes
-                    .windows(secret.len())
-                    .any(|window| window == secret.as_bytes()),
+                !text.contains(secret),
                 "a permit was written to {}",
                 path.display()
             );
         }
     }
+}
+
+#[test]
+fn stored_ascii_permit_is_detected_inside_binary_artifacts() {
+    let root = tempfile::tempdir().unwrap();
+    let permit = "synthetic-ascii-capability";
+    let mut bytes = vec![0xff, 0xfe];
+    bytes.extend_from_slice(permit.as_bytes());
+    bytes.extend_from_slice(&[0xff, 0xfe]);
+    fs::write(root.path().join("binary"), bytes).unwrap();
+    assert!(std::panic::catch_unwind(|| assert_never_stored(root.path(), &[permit])).is_err());
+    assert_never_stored(root.path(), &["different-ascii-capability"]);
 }
 
 /// Stand-in for the Sympozium model gateway: real TLS (the relay speaks only

@@ -312,7 +312,15 @@ pub(crate) fn prepare(
     }
     publish(&output.join("kernel"), &kernel_bytes)?;
     let mut bundles = Vec::new();
-    let mut plan = vec![("parent", vec!["/parent"]), ("worker", worker_aliases)];
+    // The standing worker contains the configured fleet tools. Catalogue
+    // execution instead starts from a minimal signed runtime and composes only
+    // selected tools. Reusing the standing closure for an empty selection is
+    // correctly refused by the scoped worker's exact-member check.
+    let mut plan = vec![
+        ("parent", vec!["/parent"]),
+        ("worker", worker_aliases),
+        ("runtime", vec!["/worker", "/pilot-fetch"]),
+    ];
     for (name, alias) in STARTER_TOOLS.iter().zip(&starter_aliases) {
         plan.push((name, vec![alias.as_str(), "/pilot-fetch"]));
     }
@@ -486,7 +494,7 @@ mod tests {
     use super::*;
     #[test]
     #[ignore = "explicit cold packaging test: requires kernel, guest binaries, gcc/cpio/mke2fs; no KVM or model"]
-    fn packages_ten_signed_bundles_without_admission() {
+    fn packages_isolated_runtime_and_signed_tools_without_admission() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
@@ -511,12 +519,23 @@ mod tests {
         assert_eq!(report["admitted"], false);
         assert_eq!(report["executionAuthorized"], false);
         assert_eq!(report["harness"]["maxTokensConfigurable"], true);
-        assert_eq!(report["bundles"].as_array().unwrap().len(), 10);
+        assert_eq!(report["bundles"].as_array().unwrap().len(), 11);
         for entry in report["bundles"].as_array().unwrap() {
             let bundle = output.join(entry["name"].as_str().unwrap());
             let raw = fs::read(bundle.join("signed-closure.json")).unwrap();
             let signed: celln_manifest::closure::SignedClosure =
                 serde_json::from_slice(&raw).unwrap();
+            if entry["name"] == "runtime" {
+                assert_eq!(
+                    signed
+                        .closure
+                        .members
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<BTreeSet<_>>(),
+                    BTreeSet::from(["/worker", "/pilot-fetch"])
+                );
+            }
             let expected = signed.closure.clone().sign(&[17u8; 32]).unwrap().publisher;
             signed.verify(&BTreeSet::from([expected.clone()])).unwrap();
             assert_eq!(entry["publisher"], expected);

@@ -5,7 +5,7 @@ use celln_control::Control;
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        mpsc, Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -22,6 +22,7 @@ pub struct ParentOwner {
     control: Control,
     busy: Arc<AtomicBool>,
     initialized: Arc<AtomicBool>,
+    initialization_error: Arc<Mutex<Option<String>>>,
     thread: Option<thread::JoinHandle<()>>,
     children: Option<Arc<crate::parent_child_control::ChildControlSlot>>,
 }
@@ -76,6 +77,8 @@ impl ParentOwner {
         let (sender, receiver) = mpsc::sync_channel::<Command>(1);
         let busy = Arc::new(AtomicBool::new(false));
         let initialized = Arc::new(AtomicBool::new(false));
+        let initialization_error = Arc::new(Mutex::new(None));
+        let owner_initialization_error = initialization_error.clone();
         let owner_initialized = initialized.clone();
         let owner_control = control.clone();
         let owner_busy = busy.clone();
@@ -86,9 +89,24 @@ impl ParentOwner {
                     if owner_control.check().is_err() {
                         return;
                     }
-                    let Ok(mut runtime) = initialize() else {
-                        owner_control.cancel();
-                        return;
+                    let mut runtime = match initialize() {
+                        Ok(runtime) => runtime,
+                        Err(error) => {
+                            // Initialization has not accepted guest input. Keep
+                            // its bounded diagnostic for both already-queued
+                            // and late observers, without allowing a replay.
+                            let reason = format!(
+                                "parent initialization failed: {}",
+                                error.chars().take(512).collect::<String>()
+                            );
+                            *owner_initialization_error.lock().unwrap() = Some(reason.clone());
+                            eprintln!("celln parent: {reason}");
+                            owner_control.cancel();
+                            if let Ok(command) = receiver.try_recv() {
+                                let _ = command.reply.send(Err(reason));
+                            }
+                            return;
+                        }
                     };
                     // The admitted constructor returns only after the native
                     // parent's protected execution acknowledgement. Publish
@@ -148,6 +166,7 @@ impl ParentOwner {
             control,
             busy,
             initialized,
+            initialization_error,
             thread: Some(thread),
             children,
         })
@@ -157,6 +176,9 @@ impl ParentOwner {
     /// The receiver is an acknowledgement, not a retry token: losing it never
     /// authorizes replay. Durable IDs remain the journal/ledger's responsibility.
     pub fn submit(&self, bytes: &[u8]) -> Result<mpsc::Receiver<Reply>, String> {
+        if let Some(error) = self.initialization_error.lock().unwrap().as_ref() {
+            return Err(error.clone());
+        }
         self.control.check().map_err(|e| e.to_string())?;
         if bytes.is_empty() || bytes.len() > crate::parent_mailbox::MAX_FRAME_BYTES {
             return Err("parent input exceeds owner bound".into());
@@ -300,7 +322,35 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             thread::yield_now();
         }
-        assert!(owner.submit(b"turn").is_err());
+        assert_eq!(
+            owner.submit(b"turn").unwrap_err(),
+            "parent initialization failed: admitted runtime failed to start"
+        );
+        owner.stop_and_join().unwrap();
+    }
+
+    #[test]
+    fn queued_turn_observes_initialization_failure_without_replay() {
+        type Handler = fn(&[u8]) -> Reply;
+        let (release, wait) = mpsc::sync_channel(1);
+        let owner = ParentOwner::spawn(
+            Duration::from_secs(2),
+            move || -> Result<Handler, String> {
+                wait.recv().unwrap();
+                Err("worker closure contains unselected executable members".into())
+            },
+        )
+        .unwrap();
+        let response = owner.submit(b"turn").unwrap();
+        release.send(()).unwrap();
+        assert_eq!(
+            response
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap_err(),
+            "parent initialization failed: worker closure contains unselected executable members"
+        );
+        assert!(owner.submit(b"retry").is_err());
         owner.stop_and_join().unwrap();
     }
     struct Resource(mpsc::SyncSender<()>);
