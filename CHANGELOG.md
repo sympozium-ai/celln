@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.27](https://github.com/sympozium-ai/celln/compare/v0.5.26...v0.5.27) (2026-09-20)
+
+
+### Bug Fixes
+
+* **scoped:** run the starter profile, and name the parent in a start refusal ([1d23c1c](https://github.com/sympozium-ai/celln/commit/1d23c1c45e644afd6efd465c2aabd99e8ad117a9))
+* **scoped:** run the starter profile, and name the parent in a start refusal ([4a6c066](https://github.com/sympozium-ai/celln/commit/4a6c066ca77a4f49b4079ce3b425c947651c98a3))
+
 ## [0.5.26](https://github.com/sympozium-ai/celln/compare/v0.5.25...v0.5.26) (2026-09-20)
 
 
