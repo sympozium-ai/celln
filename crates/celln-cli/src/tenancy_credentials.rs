@@ -45,7 +45,7 @@ struct Claims {
     operation: String,
     subject: Subject,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 /// Receiver-owned expected identity. Never populate this solely from the
 /// unverified token/decision submitted by a caller. Replay recovery must be
@@ -219,7 +219,11 @@ impl Verifier {
             return Err("AUTH_TIME_NOT_YET_VALID");
         }
         let deadline = number(&d["budget"]["turnDeadlineUnix"])? as i128;
-        if c.operation == "model.invoke" && now > deadline + 5 {
+        if matches!(
+            c.operation.as_str(),
+            "execution.start" | "execution.turn" | "model.invoke"
+        ) && now > deadline + 5
+        {
             return Err("AUTH_WORK_DEADLINE_EXPIRED");
         }
         if c.exp as i128 <= now - 5 {
@@ -346,15 +350,44 @@ fn validate_decision(d: &Value) -> Result<(), Refusal> {
         }
     }
     if d["lifecycle"] == "one-shot" {
-        if number(&b["maxTurns"])? != 1 || number(&b["parentDeadlineUnix"])? != 0 {
+        if !matches!(
+            d["operation"].as_str(),
+            Some("execution.start" | "execution.read" | "execution.cleanup")
+        ) || !d["parent"].is_null()
+            || number(&b["maxTurns"])? != 1
+            || number(&b["parentDeadlineUnix"])? != 0
+        {
             return Err("AUTH_LIFECYCLE_INVALID");
         }
-    } else if number(&b["maxTurns"])? < 1
-        || number(&b["parentDeadlineUnix"])? < number(&b["turnDeadlineUnix"])?
-    {
-        return Err("AUTH_LIFECYCLE_INVALID");
+    } else {
+        let valid_enduring = match d["lifecycle"].as_str() {
+            Some("enduring-initial") => {
+                matches!(
+                    d["operation"].as_str(),
+                    Some("execution.start" | "execution.read" | "execution.cleanup")
+                ) && d["parent"]["turnId"].is_null()
+            }
+            Some("enduring-turn") => {
+                matches!(
+                    d["operation"].as_str(),
+                    Some("execution.turn" | "execution.read" | "execution.cleanup")
+                ) && d["parent"]["turnId"].as_str().is_some()
+            }
+            _ => false,
+        };
+        if !valid_enduring
+            || d["parent"]["incarnation"].as_str().is_none()
+            || number(&b["maxTurns"])? < 1
+            || number(&b["parentDeadlineUnix"])? < number(&b["turnDeadlineUnix"])?
+        {
+            return Err("AUTH_LIFECYCLE_INVALID");
+        }
     }
-    if number(&b["turnDeadlineUnix"])? as i128 <= issued {
+    if matches!(
+        d["operation"].as_str(),
+        Some("execution.start" | "execution.turn")
+    ) && number(&b["turnDeadlineUnix"])? as i128 <= issued
+    {
         return Err("AUTH_LIFECYCLE_INVALID");
     }
     let tools = match &d["tools"] {

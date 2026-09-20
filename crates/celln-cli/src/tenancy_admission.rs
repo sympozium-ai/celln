@@ -69,6 +69,7 @@ impl Identity {
 }
 
 impl Record {
+    #[allow(dead_code)] // Library API; the binary's copy of this module does not read it.
     pub fn identity(&self) -> &Identity {
         &self.identity
     }
@@ -86,8 +87,14 @@ impl Record {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum Outcome {
-    Receipt { digest: String },
+    Receipt {
+        digest: String,
+    },
     Refused,
+    /// An authenticated cleanup won the admission lock while this exact,
+    /// independently enrolled operation had no admission record. Unlike
+    /// `Refused`, this proves that `claim` never returned a `Fresh` handle.
+    NeverStarted,
 }
 
 /// Non-cloneable fresh ownership handle. Only publication after file+directory
@@ -95,9 +102,25 @@ pub enum Outcome {
 pub struct Fresh {
     record: Record,
 }
+impl Fresh {
+    #[allow(dead_code)] // Library API; the binary's copy of this module does not read it.
+    pub fn record(&self) -> &Record {
+        &self.record
+    }
+}
 pub enum Claim {
     Fresh(Fresh),
     Recovery(Record),
+}
+
+/// The receiver's durable prepared enrollment, supplied to `Journal::access`.
+/// Operator-independent: neither the credential nor the receiver context can
+/// invent it.
+#[derive(Clone, Copy)]
+pub struct Enrollment<'a> {
+    pub decision: &'a [u8],
+    pub request: &'a [u8],
+    pub owner: &'a str,
 }
 
 pub struct Journal {
@@ -126,6 +149,32 @@ fn root_scope(receiver: &Context) -> Result<String, Error> {
             &receiver.namespace_uid,
             &receiver.run_uid,
         ))
+        .map_err(|_| Error::Unavailable)?,
+    ))
+}
+
+fn scope(receiver: &Context) -> Result<(String, String), Error> {
+    let root = root_scope(receiver)?;
+    let scope = match receiver.parent["turnId"].as_str() {
+        Some(turn) if !turn.is_empty() => digest(
+            &serde_json::to_vec(&("celln.admission-turn/v1", &root, turn))
+                .map_err(|_| Error::Unavailable)?,
+        ),
+        Some(_) => return Err(Error::Credential("AUTH_PARENT_TURN_MISMATCH")),
+        None => root.clone(),
+    };
+    Ok((root, scope))
+}
+
+fn run_binding(decision: &serde_json::Value) -> Result<String, Error> {
+    Ok(digest(
+        &serde_json::to_vec(&serde_json::json!({
+            "run":decision["run"], "runtime":decision["runtime"], "agent":decision["agent"],
+            "route":decision["route"], "incarnation":decision["parent"]["incarnation"],
+            "budgetId":decision["budget"]["budgetId"], "runCap":decision["budget"]["runCap"],
+            "maxTurns":decision["budget"]["maxTurns"],
+            "parentDeadlineUnix":decision["budget"]["parentDeadlineUnix"]
+        }))
         .map_err(|_| Error::Unavailable)?,
     ))
 }
@@ -173,6 +222,9 @@ impl Drop for Lock {
 }
 
 impl Journal {
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
     /// Each owner instance gets a fresh, non-restorable identity. Reopening this
     /// directory does not resurrect a former owner's native/model contexts.
     pub fn open(root: &Path, capacity: usize) -> Result<Self, Error> {
@@ -274,9 +326,14 @@ impl Journal {
             .any(|v| !sha(v))
             || record.active_turn.as_ref().is_some_and(|v| !sha(v))
             || matches!(&record.outcome, Some(Outcome::Receipt { digest }) if !blake(digest))
-            || (record.scope != record.run_scope
+            || (record.outcome == Some(Outcome::NeverStarted)
+                && (!record.fenced || record.active_turn.is_some() || record.accepted_turns != 0))
+            || (record.outcome != Some(Outcome::NeverStarted)
+                && record.scope != record.run_scope
                 && (record.active_turn.is_some() || record.accepted_turns != 0))
-            || (record.scope == record.run_scope && !(1..=1024).contains(&record.accepted_turns))
+            || (record.outcome != Some(Outcome::NeverStarted)
+                && record.scope == record.run_scope
+                && !(1..=1024).contains(&record.accepted_turns))
         {
             return Err(Error::Unavailable);
         }
@@ -316,30 +373,12 @@ impl Journal {
             digest(&canonical(decision).map_err(|_| Error::Credential("AUTH_CRED_MALFORMED"))?);
         // JTI and decision digest are deliberately NOT the lookup key: changing
         // a token/window/ceiling cannot purchase a fresh operation identity.
-        let root_scope = root_scope(receiver)?;
+        let (root_scope, scope) = scope(receiver)?;
         let d: serde_json::Value = serde_json::from_slice(decision)
             .map_err(|_| Error::Credential("AUTH_CRED_MALFORMED"))?;
-        let run_binding = digest(&serde_json::to_vec(&serde_json::json!({
-            "run":d["run"], "runtime":d["runtime"], "agent":d["agent"],
-            "route":d["route"], "incarnation":d["parent"]["incarnation"],
-            "budgetId":d["budget"]["budgetId"], "runCap":d["budget"]["runCap"],
-            "maxTurns":d["budget"]["maxTurns"], "parentDeadlineUnix":d["budget"]["parentDeadlineUnix"]
-        })).map_err(|_| Error::Unavailable)?);
-        let scope = if receiver.expected_operation == "execution.turn" {
-            let turn = receiver.parent["turnId"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or(Error::Credential("AUTH_PARENT_TURN_MISMATCH"))?;
-            digest(
-                &serde_json::to_vec(&("celln.admission-turn/v1", &root_scope, turn))
-                    .map_err(|_| Error::Unavailable)?,
-            )
-        } else {
-            if !receiver.parent["turnId"].is_null() {
-                return Err(Error::Credential("AUTH_PARENT_TURN_MISMATCH"));
-            }
-            root_scope.clone()
-        };
+        if (receiver.expected_operation == "execution.turn") != (scope != root_scope) {
+            return Err(Error::Credential("AUTH_PARENT_TURN_MISMATCH"));
+        }
         let candidate = Record {
             version: 1,
             identity: Identity::from_receiver(receiver),
@@ -350,7 +389,7 @@ impl Journal {
             decision_digest,
             authority_digest: authority_digest(decision)?,
             fenced: false,
-            run_binding,
+            run_binding: run_binding(&d)?,
             request_digest,
             owner: self.owner.clone(),
             outcome: None,
@@ -382,6 +421,9 @@ impl Journal {
                 || existing.request_digest != candidate.request_digest
             {
                 return Err(Error::RequestConflict);
+            }
+            if existing.outcome == Some(Outcome::NeverStarted) {
+                return Err(Error::Fenced);
             }
             return Ok(Claim::Recovery(existing));
         }
@@ -438,7 +480,13 @@ impl Journal {
         token: &str,
         decision: &[u8],
         receiver: &Context,
+        enrollment: Enrollment<'_>,
     ) -> Result<Record, Error> {
+        let Enrollment {
+            decision: enrolled_decision,
+            request,
+            owner: enrolled_owner,
+        } = enrollment;
         if receiver.expected_audience != "celln-execution"
             || !matches!(
                 receiver.expected_operation.as_str(),
@@ -450,21 +498,84 @@ impl Journal {
         verifier
             .verify(token, decision, receiver)
             .map_err(Error::Credential)?;
-        let root = root_scope(receiver)?;
-        let scope = match receiver.parent["turnId"].as_str() {
-            Some(turn) => digest(
-                &serde_json::to_vec(&("celln.admission-turn/v1", &root, turn))
-                    .map_err(|_| Error::Unavailable)?,
-            ),
-            None => root,
-        };
+        // Validate the operator-independent durable enrollment before looking
+        // up admission state. The cleanup credential and receiver context are
+        // separately verified above; neither one can invent enrolled material.
+        if !sha(enrolled_owner) {
+            return Err(Error::RequestConflict);
+        }
+        let request_digest = digest(
+            &canonical(request).map_err(|_| Error::Credential("AUTH_REQUEST_BINDING_MISMATCH"))?,
+        );
+        if request_digest != receiver.request_digest {
+            return Err(Error::Credential("AUTH_REQUEST_BINDING_MISMATCH"));
+        }
+        let enrolled_canonical =
+            canonical(enrolled_decision).map_err(|_| Error::Credential("AUTH_CRED_MALFORMED"))?;
+        let enrolled: serde_json::Value = serde_json::from_slice(&enrolled_canonical)
+            .map_err(|_| Error::Credential("AUTH_CRED_MALFORMED"))?;
+        let (root, scope) = scope(receiver)?;
+        let enrolled_operation = enrolled["operation"]
+            .as_str()
+            .ok_or(Error::Credential("AUTH_OPERATION_MISMATCH"))?;
+        if !matches!(enrolled_operation, "execution.start" | "execution.turn")
+            || (enrolled_operation == "execution.turn") != (scope != root)
+            || enrolled["requestDigest"].as_str() != Some(receiver.request_digest.as_str())
+        {
+            return Err(Error::Credential("AUTH_OPERATION_MISMATCH"));
+        }
         let authority = authority_digest(decision)?;
+        if authority_digest(&enrolled_canonical)? != authority {
+            return Err(Error::RequestConflict);
+        }
+        let candidate = Record {
+            version: 1,
+            identity: Identity::from_receiver(receiver),
+            scope: scope.clone(),
+            run_scope: root.clone(),
+            active_turn: None,
+            accepted_turns: 0,
+            decision_digest: digest(&enrolled_canonical),
+            authority_digest: authority.clone(),
+            fenced: true,
+            run_binding: run_binding(&enrolled)?,
+            request_digest,
+            owner: enrolled_owner.to_owned(),
+            outcome: Some(Outcome::NeverStarted),
+        };
         let _lock = self.lock()?;
-        let mut record = self
-            .load(&scope)?
-            .ok_or(Error::Credential("AUTH_CONTEXT_LOST"))?;
+        let mut record = match self.load(&scope)? {
+            Some(record) => record,
+            None if receiver.expected_operation == "execution.read" => {
+                return Err(Error::Credential("AUTH_CONTEXT_LOST"))
+            }
+            None => {
+                // A parent pointing at a missing child is an interrupted
+                // parent/child publication. Do not turn partial durable state
+                // into a claim that no admission handle escaped.
+                if scope != root
+                    && self
+                        .load(&root)?
+                        .is_some_and(|parent| parent.active_turn.as_deref() == Some(&scope))
+                {
+                    return Err(Error::Credential("AUTH_CONTEXT_LOST"));
+                }
+                // Execution-record capacity must not make finalization
+                // impossible after admission itself was refused for capacity.
+                // The receiver has already supplied an exact durable prepared
+                // enrollment; this record only subtracts future authority.
+                self.publish(&candidate, true)?;
+                return Ok(candidate);
+            }
+        };
         if record.authority_digest != authority
             || record.identity != Identity::from_receiver(receiver)
+            || record.scope != candidate.scope
+            || record.run_scope != candidate.run_scope
+            || record.decision_digest != candidate.decision_digest
+            || record.run_binding != candidate.run_binding
+            || record.request_digest != candidate.request_digest
+            || record.owner != candidate.owner
         {
             return Err(Error::RequestConflict);
         }

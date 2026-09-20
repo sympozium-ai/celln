@@ -7,6 +7,7 @@ use celln_store::Store;
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    os::unix::fs::PermissionsExt,
     path::Path,
     process::Command,
 };
@@ -51,6 +52,7 @@ fn signed_closure_on_real_kvm() {
     let rootfs = work.path().join("rootfs");
     for dir in ["bin", "lib64", "tmp", "etc"] {
         std::fs::create_dir_all(rootfs.join(dir)).unwrap();
+        std::fs::set_permissions(rootfs.join(dir), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let program = rootfs.join("bin/program");
     command(
@@ -60,6 +62,10 @@ fn signed_closure_on_real_kvm() {
             .arg("-o")
             .arg(&program),
     );
+    // Guest image modes are explicit, independent of an operator's restrictive
+    // host umask. These paths are beneath the private temporary fixture root.
+    std::fs::set_permissions(&rootfs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
     // Packaging-only inspection of our freshly compiled fixture. Dispatch
     // never runs ldd or opens host libraries; it consumes signed sealed bytes.
     let linked = command(Command::new("ldd").arg(&program));
@@ -73,6 +79,14 @@ fn signed_closure_on_real_kvm() {
         let bytes = std::fs::read(path).unwrap();
         let target = rootfs.join(word.trim_start_matches('/'));
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        for directory in target
+            .parent()
+            .unwrap()
+            .ancestors()
+            .take_while(|p| p.starts_with(&rootfs))
+        {
+            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         std::fs::copy(path, target).unwrap();
         members.insert(
             word.to_owned(),

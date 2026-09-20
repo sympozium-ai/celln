@@ -12,7 +12,7 @@ The unmodified fixture bundle is vendored from Sympozium's #496/#499 stack at
 Sympozium source commit `8b69b03` (accepted tool-free decisions corrected to
 use the schema-required empty array rather than null). External bundle pin:
 
-`sha256:e5a26a8a31d388072067c9d239ff2908fb962effd08b234f152dc5a0ad3dad34`
+`sha256:f95cb70646986fe581aedd2dfd24e8f7055bbe25fec1fe598dd8efc4c0d92e0e`
 
 Tests check the external pin, normative file checksums, eight decision digests,
 exact canonical bytes and their external-request digests. No new protocol or

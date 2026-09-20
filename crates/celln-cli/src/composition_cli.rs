@@ -237,6 +237,17 @@ fn build(
         remaining -= data.len();
         let target = staging.path().join(path.trim_start_matches('/'));
         fs::create_dir_all(target.parent().unwrap())?;
+        // The host output directory remains 0700. Directories *inside* the
+        // guest image must be searchable by the confined guest regardless of
+        // the operator's umask; inheriting 0700 silently breaks sealed exec.
+        for directory in target
+            .parent()
+            .unwrap()
+            .ancestors()
+            .take_while(|p| p.starts_with(staging.path()))
+        {
+            fs::set_permissions(directory, fs::Permissions::from_mode(0o755))?;
+        }
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)

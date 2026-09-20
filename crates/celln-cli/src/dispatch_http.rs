@@ -19,6 +19,9 @@ mod parents;
 pub(crate) use parents::prove_parent_http;
 #[path = "dispatch_prewarm.rs"]
 mod prewarm;
+#[cfg(target_os = "linux")]
+#[path = "dispatch_scoped.rs"]
+mod scoped;
 use anyhow::{bail, Context, Result};
 use celln_spec::{
     ExecutionOutput, ExecutionPhase, ExecutionReceipt, ExecutionRequest, ResolvedExecution,
@@ -75,11 +78,22 @@ pub(crate) fn read_bounded_line(reader: &mut impl BufRead, cap: usize) -> Result
 /// Read and discard headers, enforcing a cap on both line length and count.
 /// Returns the parsed `Content-Length`, and the raw `Authorization` header
 /// value if the caller wants it.
-fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>, bool)> {
-    let mut length = 0usize;
+struct RequestHeaders {
+    length: usize,
+    authorization: Option<String>,
+    respond_async: bool,
+    execution_permit: Option<String>,
+    model_permit: Option<String>,
+}
+
+fn read_headers(reader: &mut impl BufRead) -> Result<RequestHeaders> {
+    let mut length = None;
     let mut authorization = None;
+    let mut authorization_seen = false;
     let mut count = 0usize;
     let mut respond_async = false;
+    let mut execution_permit = None;
+    let mut model_permit = None;
     loop {
         let header = read_bounded_line(reader, MAX_HEADER_LINE)?;
         let header = header.trim_end();
@@ -95,14 +109,39 @@ fn read_headers(reader: &mut impl BufRead) -> Result<(usize, Option<String>, boo
         if count > MAX_HEADER_COUNT {
             bail!("too many headers (max {MAX_HEADER_COUNT})");
         }
-        if let Some(value) = header.strip_prefix("Authorization: Bearer ") {
-            authorization = Some(value.to_owned());
-        }
-        if let Some(value) = header.strip_prefix("Content-Length: ") {
-            length = value.parse().context("invalid Content-Length")?;
+        if let Some((name, value)) = header.split_once(':') {
+            let value = value.trim();
+            if name.eq_ignore_ascii_case("Authorization") {
+                if authorization_seen {
+                    bail!("duplicate Authorization header");
+                }
+                authorization_seen = true;
+                authorization = value.strip_prefix("Bearer ").map(str::to_owned);
+            } else if name.eq_ignore_ascii_case("Content-Length") {
+                if length.is_some() {
+                    bail!("duplicate Content-Length header");
+                }
+                length = Some(value.parse().context("invalid Content-Length")?);
+            } else if name.eq_ignore_ascii_case("X-Celln-Execution-Permit") {
+                if execution_permit.is_some() {
+                    bail!("duplicate execution permit header");
+                }
+                execution_permit = Some(value.to_owned());
+            } else if name.eq_ignore_ascii_case("X-Celln-Model-Permit") {
+                if model_permit.is_some() {
+                    bail!("duplicate model permit header");
+                }
+                model_permit = Some(value.to_owned());
+            }
         }
     }
-    Ok((length, authorization, respond_async))
+    Ok(RequestHeaders {
+        length: length.unwrap_or(0),
+        authorization,
+        respond_async,
+        execution_permit,
+        model_permit,
+    })
 }
 
 /// A registry entry with terminal cache age. Admission sweeps expired terminal
@@ -255,6 +294,17 @@ struct State {
     probe: NodeProbeArgs,
     executions: Executions,
     prewarm: Mutex<Option<Reservation>>,
+    #[cfg(target_os = "linux")]
+    scoped: Option<Arc<scoped::ScopedState>>,
+}
+
+pub struct ScopedOptions<'a> {
+    pub operator_token_file: Option<&'a Path>,
+    pub jwks_file: Option<&'a Path>,
+    pub issuer: Option<&'a str>,
+    pub gateway_origin: Option<&'a str>,
+    pub gateway_ca: Option<&'a Path>,
+    pub parent_request_file: Option<&'a Path>,
 }
 
 /// Reopen the path each time: projected Secrets replace symlinks during rotation.
@@ -362,6 +412,7 @@ pub fn serve(
     unsafe_non_loopback: bool,
     token_file: &Path,
     allow_egress_hosts: &[String],
+    scoped_options: ScopedOptions<'_>,
     root: PathBuf,
     probe: &NodeProbeArgs,
 ) -> Result<u8> {
@@ -372,6 +423,8 @@ pub fn serve(
     // advertise the same state root's capacity while neither has a cell yet.
     let _ownership = own_dispatch_root(&root)?;
     journal::prepare(&root)?;
+    #[cfg(target_os = "linux")]
+    let scoped = scoped::ScopedState::configure(&root, scoped_options, probe)?;
     let listener = TcpListener::bind(listen_address)
         .with_context(|| format!("binding dispatcher {listen_address}"))?;
     let state = Arc::new(State {
@@ -385,6 +438,8 @@ pub fn serve(
         probe: probe.clone(),
         executions: Arc::new(Mutex::new(HashMap::new())),
         prewarm: Mutex::new(None),
+        #[cfg(target_os = "linux")]
+        scoped,
     });
     // Expired/failed owners must release capacity even without another HTTP
     // request. Weak ownership lets this maintenance thread exit with the server.
@@ -462,7 +517,34 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
         .unwrap_or_default()
         .to_owned();
     let method = method.to_owned();
-    let (length, authorization, respond_async) = read_headers(&mut reader)?;
+    let headers = read_headers(&mut reader)?;
+    let length = headers.length;
+    let authorization = headers.authorization;
+    let respond_async = headers.respond_async;
+    #[cfg(target_os = "linux")]
+    if path.starts_with("/v1/scoped/") {
+        return match &state.scoped {
+            Some(scoped) => scoped::handle(
+                state,
+                scoped,
+                &mut stream,
+                &mut reader,
+                &method,
+                &path,
+                scoped::RequestMetadata {
+                    length,
+                    bearer: authorization.as_deref(),
+                    execution_permit: headers.execution_permit.as_deref(),
+                    model_permit: headers.model_permit.as_deref(),
+                },
+            ),
+            None => reply(
+                &mut stream,
+                404,
+                &serde_json::json!({"error":"scoped receiver disabled"}),
+            ),
+        };
+    }
     if path == "/v1/parents" || path.starts_with("/v1/parents/") {
         return parents::handle(
             state,
@@ -1129,6 +1211,7 @@ mod tests {
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
             prewarm: Mutex::new(None),
+            scoped: None,
         }
     }
 
@@ -1961,6 +2044,7 @@ mod tests {
             },
             executions: Arc::new(Mutex::new(HashMap::new())),
             prewarm: Mutex::new(None),
+            scoped: None,
         };
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -2112,13 +2196,32 @@ mod tests {
     #[test]
     fn read_headers_extracts_content_length_and_authorization() {
         let mut cursor = Cursor::new(
-            b"Content-Length: 42\r\nAuthorization: Bearer secret-token\r\n\r\n".to_vec(),
+            b"Content-Length: 42\r\nAuthorization: Bearer secret-token\r\nX-Celln-Execution-Permit: exec.jwt\r\nX-Celln-Model-Permit: model.jwt\r\n\r\n".to_vec(),
         );
-        let (length, authorization, respond_async) =
-            read_headers(&mut cursor).expect("parses headers");
-        assert!(!respond_async);
-        assert_eq!(length, 42);
-        assert_eq!(authorization.as_deref(), Some("secret-token"));
+        let headers = read_headers(&mut cursor).expect("parses headers");
+        assert!(!headers.respond_async);
+        assert_eq!(headers.length, 42);
+        assert_eq!(headers.authorization.as_deref(), Some("secret-token"));
+        assert_eq!(headers.execution_permit.as_deref(), Some("exec.jwt"));
+        assert_eq!(headers.model_permit.as_deref(), Some("model.jwt"));
+    }
+
+    #[test]
+    fn duplicate_scoped_permit_headers_are_ambiguous_and_refused() {
+        let mut cursor = Cursor::new(
+            b"X-Celln-Execution-Permit: first\r\nx-celln-execution-permit: second\r\n\r\n".to_vec(),
+        );
+        assert!(read_headers(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn duplicate_framing_or_transport_auth_headers_are_refused() {
+        for raw in [
+            b"Content-Length: 0\r\ncontent-length: 0\r\n\r\n".as_slice(),
+            b"Authorization: Basic ignored\r\nauthorization: Bearer accepted\r\n\r\n".as_slice(),
+        ] {
+            assert!(read_headers(&mut Cursor::new(raw)).is_err());
+        }
     }
 
     fn empty_record(id: &str) -> ExecutionRecord {

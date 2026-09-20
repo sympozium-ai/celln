@@ -381,6 +381,53 @@ pub fn list_parents(root: &Path, max_parents: usize, max_turns: usize) -> Vec<Pa
         .collect()
 }
 
+/// Atomically foreclose an uncreated incarnation. The caller must independently
+/// authenticate a terminally refused admission and fence further starts first.
+/// Directory creation races with ParentJournal::create, which MUST precede any
+/// parent factory or VM launch. Existing/partial owner journals stay uncertain.
+/// This proves no parent launch, not teardown of an existing VM.
+pub fn fence_uncreated(root: &Path, parent: &Hash, principal: &str) -> io::Result<bool> {
+    if !valid_principal(principal) {
+        return Err(invalid());
+    }
+    fs::create_dir_all(root)?;
+    let directory = parent_directory(root, parent);
+    let proof =
+        serde_json::json!({"version":1,"parent":parent,"principal":principal,"neverCreated":true});
+    match fs::create_dir(&directory) {
+        Ok(()) => {
+            publish(&directory, "never-created.json", &proof)?;
+            fs::File::open(root)?.sync_all()?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            if !fs::symlink_metadata(&directory)?.file_type().is_dir() {
+                return Ok(false);
+            }
+            let mut options = fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+            }
+            let file = match options.open(directory.join("never-created.json")) {
+                Ok(file) if file.metadata()?.is_file() => file,
+                _ => return Ok(false),
+            };
+            let mut bytes = Vec::new();
+            file.take(16385).read_to_end(&mut bytes)?;
+            if bytes.len() > 16384 {
+                return Ok(false);
+            }
+            let existing: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+            Ok(existing == proof)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn invalid() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -607,6 +654,41 @@ impl ParentJournal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncreated_parent_fence_is_bound_and_excludes_native_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = Hash::of(b"never-created");
+        assert!(fence_uncreated(root.path(), &parent, "review-owner").unwrap());
+        assert!(fence_uncreated(root.path(), &parent, "review-owner").unwrap());
+        assert!(!fence_uncreated(root.path(), &parent, "other-owner").unwrap());
+        assert!(ParentJournal::create(root.path(), parent.clone()).is_err());
+        let existing = Hash::of(b"existing-owner");
+        ParentJournal::create(root.path(), existing.clone()).unwrap();
+        assert!(!fence_uncreated(root.path(), &existing, "review-owner").unwrap());
+        assert!(!parent_directory(root.path(), &existing)
+            .join("never-created.json")
+            .exists());
+    }
+
+    #[test]
+    fn uncreated_fence_and_parent_factory_claim_cannot_both_win() {
+        for iteration in 0..8 {
+            let root = tempfile::tempdir().unwrap();
+            let parent = Hash::of(format!("race-{iteration}").as_bytes());
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let path = root.path().to_owned();
+            let other = parent.clone();
+            let ready = gate.clone();
+            let creating = std::thread::spawn(move || {
+                ready.wait();
+                ParentJournal::create(&path, other).is_ok()
+            });
+            gate.wait();
+            let fenced = fence_uncreated(root.path(), &parent, "review-owner").unwrap();
+            assert_ne!(fenced, creating.join().unwrap());
+        }
+    }
     #[test]
     #[cfg(target_os = "linux")]
     fn process_identity_helper() {

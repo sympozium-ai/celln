@@ -383,7 +383,10 @@ pub(crate) fn prove(base: ExecutionRequest, motes: &Path, tools: &Path, root: &P
         assert!(started.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(20));
     }
-    std::thread::sleep(Duration::from_millis(300));
+    // Capacity reservation becomes visible before guest boot/resume. Give a
+    // cold guest time to enter the timeout fixture; the receipt assertion below,
+    // not this delay or live_count, proves guest execution before cancellation.
+    std::thread::sleep(Duration::from_secs(5));
     let (_, busy) = server.http("GET", "/v1/node", None, TOKEN);
     assert_eq!(busy["node"]["live_cells"], 1);
     assert_eq!(busy["node"]["memory_bytes"], 0);

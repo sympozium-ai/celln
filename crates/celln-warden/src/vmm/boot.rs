@@ -233,6 +233,27 @@ pub enum BootEnd {
     Parked,
 }
 
+// Place only in mapped high RAM, never in a sealed tool slot or over the
+// kernel. Refuse oversized images without arithmetic wrapping or widening RAM.
+fn initrd_address(memory: usize, window: u64, size: usize) -> Result<u64, VmmError> {
+    let top = (memory as u64)
+        .checked_add(window)
+        .ok_or_else(|| VmmError::Backend("initrd memory bound overflow".into()))?;
+    let start = top
+        .checked_sub(size as u64)
+        .ok_or_else(|| VmmError::Backend("initrd exceeds guest RAM".into()))?
+        & !((PAGE as u64) - 1);
+    let hole_end = TOOL_WINDOW_GPA
+        .checked_add(window)
+        .ok_or_else(|| VmmError::Backend("tool window overflow".into()))?;
+    if size == 0 || start < hole_end || top > (1u64 << 32) || size > u32::MAX as usize {
+        return Err(VmmError::Backend(
+            "initrd does not fit in mapped high RAM below 4 GiB".into(),
+        ));
+    }
+    Ok(start)
+}
+
 /// What a boot run produced.
 #[derive(Debug)]
 pub struct BootReport {
@@ -947,8 +968,10 @@ impl LinuxCell {
             Some(p) => {
                 let bytes = std::fs::read(p)
                     .map_err(|e| VmmError::Backend(format!("reading {}: {e}", p.display())))?;
-                // Park it high, below the 4 GiB line and page-aligned.
-                let addr = ((cfg.mem_size - bytes.len()) & !(PAGE - 1)) as u64;
+                // mem_size counts RAM, not the sealed pmem hole. Addressing
+                // from mem_size alone can put initrd inside that tool window
+                // (e.g. 128 MiB RAM with a 32 MiB window at 96 MiB).
+                let addr = initrd_address(cfg.mem_size, window, bytes.len())?;
                 mem.write(addr, &bytes)?;
                 Some((addr as u32, bytes.len() as u32))
             }
@@ -1048,6 +1071,20 @@ impl LinuxCell {
         self.http = Some(HttpBroker::new(policy));
     }
 
+    /// Move an already-admitted host broker into this cell. In particular a
+    /// mediated broker must not be reconstructed from its policy: that would
+    /// discard its scoped relay and restore the legacy credential-file path.
+    /// Refuse replacement so a second attachment cannot reset local counters.
+    pub fn enable_http_broker(&mut self, broker: HttpBroker) -> Result<(), VmmError> {
+        if self.http.is_some() {
+            return Err(VmmError::Backend(
+                "cell HTTP broker already installed".into(),
+            ));
+        }
+        self.http = Some(broker);
+        Ok(())
+    }
+
     /// Deliver bounded data to pilot after a warm fork. Port 0x510 returns
     /// little-endian u32 length followed by opaque JSON bytes, once only.
     pub fn set_invocation(&mut self, bytes: &[u8]) -> Result<(), VmmError> {
@@ -1115,6 +1152,23 @@ impl LinuxCell {
             }
             Err(e) => {
                 self.fetch_activity.1 = self.fetch_activity.1.saturating_add(1);
+                // Constant diagnostic categories only: never print URLs, request
+                // bodies, provider errors, headers or transport credentials.
+                let code = match &e {
+                    crate::egress::FetchDenied::Fetch(reason) => match reason.as_str() {
+                        "JSON POST endpoint not granted" => "ENDPOINT",
+                        "model not granted" => "MODEL",
+                        "model output token limit exceeded"
+                        | "model cumulative output budget exhausted" => "OUTPUT_BUDGET",
+                        "mediated model invocation failed" => "GATEWAY",
+                        "mediated model invocation cancelled" => "CANCELLED",
+                        "unsupported model request parameters" => "PARAMETERS",
+                        _ => "REQUEST",
+                    },
+                    crate::egress::FetchDenied::Budget => "REQUEST_BUDGET",
+                    _ => "POLICY",
+                };
+                eprintln!("CELLN_BROKER_REFUSAL {code}");
                 format!("CELLN_FETCH_ERROR:{e}").into_bytes()
             }
         };
@@ -1812,6 +1866,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn initrd_stays_above_sealed_tool_window_with_small_ram() {
+        let memory = 128 << 20;
+        let window = 32 << 20;
+        let size = 3 << 20;
+        let address = initrd_address(memory, window, size).unwrap();
+        assert_eq!(address, 157 << 20);
+        assert!(address >= TOOL_WINDOW_GPA + window);
+        assert!(address + size as u64 <= memory as u64 + window);
+        assert!(initrd_address(memory, window, 33 << 20).is_err());
+        assert!(initrd_address(memory, window, usize::MAX).is_err());
+        assert!(initrd_address(memory, u64::MAX, size).is_err());
+        assert!(initrd_address(memory, 1u64 << 32, size).is_err());
+    }
+
+    #[test]
     fn parent_owner_cancels_real_guest_and_joins_vm_owner() {
         let Some(kernel) = kernel_or_skip() else {
             return;
@@ -2029,6 +2098,52 @@ mod tests {
                 .collect::<Vec<_>>(),
             b"\x02\x00\x00\x00{}"
         );
+    }
+
+    #[test]
+    fn owned_broker_cannot_be_replaced_and_drops_with_vm() {
+        let Some(kernel) = kernel_or_skip() else {
+            return;
+        };
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct Relay(Arc<AtomicUsize>);
+        impl crate::egress::ModelRelay for Relay {
+            fn invoke(&mut self, _: &[u8]) -> Result<Vec<u8>, crate::egress::FetchDenied> {
+                panic!("attachment must not perform model I/O")
+            }
+        }
+        impl Drop for Relay {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut policy = HttpPolicy::new(vec![]);
+        policy.json_posts.push(crate::egress::JsonPostGrant {
+            protocol: Default::default(),
+            url: "https://model.invalid/invoke".into(),
+            bearer_token_file: Default::default(),
+            model: "fixture".into(),
+            max_output_tokens: 1,
+            max_total_output_tokens: 1,
+            parameters: Default::default(),
+        });
+        let original = Arc::new(AtomicUsize::new(0));
+        let replacement = Arc::new(AtomicUsize::new(0));
+        let first =
+            HttpBroker::new_mediated(policy.clone(), Box::new(Relay(original.clone()))).unwrap();
+        let second =
+            HttpBroker::new_mediated(policy, Box::new(Relay(replacement.clone()))).unwrap();
+        let mut cell = LinuxCell::boot(BootConfig::new(kernel)).unwrap();
+        cell.enable_http_broker(first).unwrap();
+        assert!(cell.enable_http_broker(second).is_err());
+        assert_eq!(replacement.load(Ordering::SeqCst), 1);
+        assert_eq!(original.load(Ordering::SeqCst), 0);
+        drop(cell);
+        assert_eq!(original.load(Ordering::SeqCst), 1);
+        // This proves VM-object ownership, not guest execution or isolation.
     }
 
     fn kernel_or_skip() -> Option<PathBuf> {

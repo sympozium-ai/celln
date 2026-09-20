@@ -110,6 +110,10 @@ path = "src/harness_parent.rs"
 name = "celln-harness-turn"
 path = "src/harness_turn.rs"
 
+[[bin]]
+name = "celln-uppercase"
+path = "src/uppercase.rs"
+
 [dependencies]
 celln-manifest.workspace = true
 celln-store.workspace = true

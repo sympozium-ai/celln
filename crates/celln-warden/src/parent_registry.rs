@@ -196,6 +196,30 @@ impl ParentRegistry {
         )
     }
 
+    /// Scoped owners have one serialized child and one owned model broker.
+    /// The serving layer holds its shared node-admission lock through insertion.
+    /// The charge remains until the owner and descendants are joined.
+    pub fn spawn_admitted_with_child_broker<F, H>(
+        &self,
+        principal: &str,
+        incarnation: &Hash,
+        lifetime: Duration,
+        reserved_bytes: u64,
+        initialize: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(
+                std::sync::Arc<crate::parent_child_control::ChildControlSlot>,
+            ) -> Result<H, String>
+            + Send
+            + 'static,
+        H: FnMut(&[u8]) -> Result<Vec<u8>, String> + 'static,
+    {
+        self.insert_admitted(principal, incarnation, reserved_bytes, 1, || {
+            ParentOwner::spawn_with_children(incarnation.clone(), lifetime, initialize)
+        })
+    }
+
     fn insert_admitted(
         &self,
         principal: &str,
@@ -546,6 +570,58 @@ mod tests {
             b"still alive"
         );
         registry.stop("tenant-one", &live).unwrap();
+    }
+
+    #[test]
+    fn scoped_brokers_are_charged_until_join_and_legacy_is_charged_exactly() {
+        let registry = ParentRegistry::new(4, 400).unwrap();
+        let one = Hash::of(b"broker-one");
+        let two = Hash::of(b"broker-two");
+        for id in [&one, &two] {
+            registry
+                .spawn_admitted_with_child_broker(
+                    "tenant",
+                    id,
+                    Duration::from_secs(10),
+                    100,
+                    |_| Ok(|input: &[u8]| Ok(input.to_vec())),
+                )
+                .unwrap();
+        }
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 2);
+        registry.stop("tenant", &one).unwrap();
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 1);
+        // Since main's exact per-owner accounting, a legacy owner cannot be
+        // admitted without a charge, so there is no unknown total to fence:
+        // its charge is summed with the scoped owner's.
+        let legacy = Hash::of(b"legacy");
+        registry
+            .spawn_admitted("tenant", &legacy, Duration::from_secs(10), 100, 2, || {
+                Ok(|input: &[u8]| Ok(input.to_vec()))
+            })
+            .unwrap();
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 3);
+        registry.stop("tenant", &legacy).unwrap();
+        registry.stop("tenant", &two).unwrap();
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 0);
+    }
+
+    #[test]
+    fn uncertain_scoped_broker_remains_charged() {
+        let registry = ParentRegistry::new(2, 200).unwrap();
+        let id = Hash::of(b"broker-panic");
+        registry
+            .spawn_admitted_with_child_broker("tenant", &id, Duration::from_secs(10), 100, |_| {
+                Ok(|_: &[u8]| -> Result<Vec<u8>, String> { panic!("test panic") })
+            })
+            .unwrap();
+        assert!(registry
+            .submit("tenant", &id, b"fail")
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .is_err());
+        assert!(registry.stop("tenant", &id).is_err());
+        assert_eq!(registry.reserved_capacity().unwrap().egress_slots, 1);
     }
 
     #[test]

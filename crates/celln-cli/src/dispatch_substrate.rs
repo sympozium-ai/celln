@@ -434,6 +434,62 @@ pub(crate) fn launch_declared(
     }
 }
 
+/// Native launch for an independently admitted scoped operation. The caller
+/// must own its durable admission and install its original cancellation control
+/// before entering here. This is not a transport admission API.
+#[cfg(target_os = "linux")]
+#[allow(dead_code)] // Native entry point; authenticated receiver integration follows.
+pub(crate) fn launch_scoped_declared(
+    request: &ExecutionRequest,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    broker: Option<warden::egress::HttpBroker>,
+) -> Result<(LaunchOutcome, ResolvedBundle), String> {
+    // No standing Harness grants, forge, input providers or direct GET route
+    // can sneak through the scoped path. A model route needs the actual owned
+    // relay, not a policy reconstructed after admission.
+    if request.forge.is_some()
+        || request.harness.is_some()
+        || !request.inputs.is_empty()
+        || request.tools.len() != 1
+        || request.tools[0].closure.is_none()
+        || request.capabilities.workspace != celln_spec::WorkspaceAccess::None
+        || request.execution.lane != celln_spec::RequestedLane::Agent
+        || !request.execution.require_hardware_isolation
+        || !request.problems().is_empty()
+        || broker.as_ref().is_some_and(|b| !b.is_mediated())
+        || !request.capabilities.egress.is_empty()
+    {
+        return Err("AUTH_PROTOCOL_UNSUPPORTED".into());
+    }
+    let prepared = prepare_declared_mode(
+        request,
+        mote_root,
+        tool_root,
+        state_root,
+        true,
+        broker.is_some(),
+    )?;
+    celln_control::check().map_err(|e| e.to_string())?;
+    if request.configuration_binding(celln_spec::ConfigurationRole::OneShot)?
+        != prepared.request_binding
+    {
+        return Err("prepared execution configuration mismatch".into());
+    }
+    authorize(request, state_root)?;
+    super::closure::resolve(request, &prepared.resolved, state_root)?;
+    let mut cell = prepared.mote.fork()?;
+    cell.set_invocation(&prepared.invocation)
+        .map_err(|e| e.to_string())?;
+    let invocation = request.invocation.as_ref().ok_or("invocation required")?;
+    let mut outcome =
+        super::run_cell_with_broker(request, &invocation.alias, cell, state_root, broker)?;
+    outcome.substrate = Some(prepared.identity);
+    super::validate_executed_tool(&mut outcome, &prepared.resolved.program_hash);
+    Ok((outcome, prepared.resolved))
+}
+
 /// Preparation may boot only an authority-free template. The returned pinned
 /// handle performs fork-only execution and contains no model credential.
 /// It is private until enduring admission binds it to an owner and lease.
@@ -443,7 +499,22 @@ fn prepare_declared(
     tool_root: &Path,
     state_root: &Path,
 ) -> Result<PreparedDeclared, String> {
-    super::check_supported_authority(request)?;
+    prepare_declared_mode(request, mote_root, tool_root, state_root, false, false)
+}
+
+fn prepare_declared_mode(
+    request: &ExecutionRequest,
+    mote_root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
+    scoped: bool,
+    mediated: bool,
+) -> Result<PreparedDeclared, String> {
+    if !scoped {
+        super::check_supported_authority(request)?;
+    } else {
+        celln_control::check().map_err(|e| e.to_string())?;
+    }
     authorize(request, state_root)?;
     let inputs = super::inputs::resolve(request, state_root)?;
     let resolved = super::resolve_bundle(request, mote_root, tool_root)?;
@@ -487,7 +558,7 @@ fn prepare_declared(
             "args": harness.as_ref().map_or(&invocation.args, |h|&h.args), "expected_hash": resolved.program_hash,
             "agent_authored_input": request.execution.lane == celln_spec::RequestedLane::Agent,
             "force_agent_lane": force_agent,
-            "allow_fetch": !request.capabilities.egress.is_empty(),
+            "allow_fetch": mediated || !request.capabilities.egress.is_empty(),
             "report_output_limit": request.capabilities.output_bytes,
             "workspace_access": request.capabilities.workspace,
             "inputs": inputs,
