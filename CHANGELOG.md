@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.25](https://github.com/sympozium-ai/celln/compare/v0.5.24...v0.5.25) (2026-09-20)
+
+
+### Bug Fixes
+
+* **starter:** scale the worker turn lifetime with the backend's output-token cap ([97c87bb](https://github.com/sympozium-ai/celln/commit/97c87bb43987371a7b023ecd6e19513289462573))
+* **starter:** scale the worker turn lifetime with the backend's output-token cap ([cdd0c0f](https://github.com/sympozium-ai/celln/commit/cdd0c0f481e1d5b036f6ac2c14e940b3ffe57fc3))
+
 ## [0.5.24](https://github.com/sympozium-ai/celln/compare/v0.5.23...v0.5.24) (2026-09-19)
 
 
