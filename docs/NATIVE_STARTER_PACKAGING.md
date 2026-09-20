@@ -243,7 +243,13 @@ from this revision on; with an older package the host holds answers to the
 2048 bytes that package's parent accepts.
 
 Output `catalogue.json`, `native-template.json` and `configured.json` pins exact
-package/configuration hashes. A hash-addressed model profile is installed in
+package/configuration hashes. `scoped-parent-request.json` is the same reviewed
+`parent` request and `reservedMemoryBytes` of `native-template.json` in the
+shape `celln dispatcher --scoped-parent-request-file` reads
+(`celln.scoped-parent-template/v1`), with the per-run `$parent`/`$principal`
+placeholders in place of the request id and principal; it names no model
+endpoint, egress or credential, and `configured.json` does not pin it, so the
+other three files keep the bytes and hashes they had before it existed. A hash-addressed model profile is installed in
 the authority root. No per-run permit, parent or Kubernetes resource is created.
 Sympozium's `celln-tool install-native` binds actual installed Kubernetes UIDs
 and the three grant layers; do not copy fixture identities. Partial output is

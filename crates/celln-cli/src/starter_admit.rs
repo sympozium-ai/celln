@@ -229,6 +229,28 @@ mod tests {
         );
         assert!(!root.join("trusted-parent-permits").exists());
         assert!(crate::starter_configure::run(&config_plan, &root).is_err());
+        // The reviewed parent is also written as the scoped receiver's parent
+        // request, which `--scoped-parent-request-file` accepts as it stands.
+        let scoped_parent = fs::read(configured.join("scoped-parent-request.json")).unwrap();
+        let template: Value = serde_json::from_slice(&scoped_parent).unwrap();
+        let reviewed: Value =
+            serde_json::from_slice(&fs::read(configured.join("native-template.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            template,
+            crate::starter_configure::scoped_parent_request(
+                &serde_json::from_value(reviewed["parent"].clone()).unwrap()
+            )
+        );
+        assert_eq!(
+            template["reservedMemoryBytes"],
+            reviewed["reservedMemoryBytes"]
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            crate::dispatch_http::parent_request_file_accepted(dir.path(), &scoped_parent),
+            Ok(())
+        );
         // Reviewed defaults are published as the host ceilings.
         let receipt: Value =
             serde_json::from_slice(&fs::read(configured.join("configured.json")).unwrap()).unwrap();

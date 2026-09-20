@@ -151,9 +151,39 @@ pub(super) struct Shape<'a> {
     pub parent_deadline: i64,
 }
 
+/// What the operator prepared about model requests, and the budget signed
+/// for them. The default is the corpus: no named cap, one request per turn.
+#[derive(Clone, Copy)]
+pub(super) struct Requests {
+    /// `resolution.execution.requestOutputTokens`, when the operation names it.
+    pub output_tokens: Option<u64>,
+    /// The runtime profile's `json.maxTurns`.
+    pub per_turn: u64,
+    /// Signed `(turnCap, runCap)` requests and output tokens, when not the corpus's.
+    pub budget: Option<((u64, u64), (u64, u64))>,
+}
+
+impl Default for Requests {
+    fn default() -> Self {
+        Self {
+            output_tokens: None,
+            per_turn: 1,
+            budget: None,
+        }
+    }
+}
+
 /// A prepared operation plus the final decision Sympozium would sign for it,
 /// derived from the shared schema-valid corpus and re-timed to `shape.issued`.
 pub(super) fn compose(artifacts: &Artifacts, shape: Shape<'_>) -> (Value, Value) {
+    compose_requests(artifacts, shape, Requests::default())
+}
+
+pub(super) fn compose_requests(
+    artifacts: &Artifacts,
+    shape: Shape<'_>,
+    requests: Requests,
+) -> (Value, Value) {
     let enduring = shape.lifecycle != "one-shot";
     let mut decision = corpus_decision(match shape.lifecycle {
         "one-shot" => "harness-one-shot",
@@ -164,6 +194,10 @@ pub(super) fn compose(artifacts: &Artifacts, shape: Shape<'_>) -> (Value, Value)
         decision["route"] = corpus_decision("direct-one-shot")["route"].clone();
         decision["budget"]["runCap"] = json!({"requests":0,"outputTokens":0});
         decision["budget"]["turnCap"] = json!({"requests":0,"outputTokens":0});
+    }
+    if let Some((turn, run)) = requests.budget {
+        decision["budget"]["turnCap"] = json!({"requests":turn.0,"outputTokens":turn.1});
+        decision["budget"]["runCap"] = json!({"requests":run.0,"outputTokens":run.1});
     }
     decision["lifecycle"] = json!(shape.lifecycle);
     decision["operation"] = json!(if shape.turn_id.is_some() {
@@ -205,7 +239,7 @@ pub(super) fn compose(artifacts: &Artifacts, shape: Shape<'_>) -> (Value, Value)
         "limits":{"timeoutMillis":60000,"memoryBytes":268435456,"taskBytes":2048,"outputBytes":65536,"workspace":"none"},
         // One model request per turn: a worker template reserves
         // maxTurns * 512 output tokens and the corpus turn cap is 512.
-        "json":{"maxTurns":1,"maxCalls":0}
+        "json":{"maxTurns":requests.per_turn,"maxCalls":0}
     });
     let wrapper = json!({"cellnProfileRef":{"name":"runtime","revision":"r1"},"image":"","contractVersion":"v1"});
     decision["runtime"]["specSha256"] = json!(digest_value(&json!({
@@ -227,6 +261,9 @@ pub(super) fn compose(artifacts: &Artifacts, shape: Shape<'_>) -> (Value, Value)
     });
     if let Some(turn) = shape.turn_id {
         material["turnUid"] = json!(turn);
+    }
+    if let Some(cap) = requests.output_tokens {
+        material["requestOutputTokens"] = json!(cap);
     }
     let mut operation = json!({"apiVersion":"sympozium.ai/celln-prepared-operation-v1",
         "resolution":{"execution":material,"decision":Value::Null,"readSet":[]},"resolveRequest":{}});
@@ -694,6 +731,84 @@ fn gateway_and_parent_template_flags_require_the_receiver_and_each_other() {
     credential["request"]["credentialFile"] = json!("/etc/provider-key");
     fs::write(&parent, credential.to_string()).unwrap();
     assert!(configure(true, Some(GATEWAY), None, Some(&parent)).is_err());
+}
+
+/// What `--scoped-parent-request-file <file holding raw>` answers on an
+/// otherwise fully configured mediated receiver rooted at `root`.
+pub(crate) fn parent_request_file_accepted(root: &Path, raw: &[u8]) -> Result<(), String> {
+    let probe = super::super::tests::lifecycle_state(root).probe;
+    let (token, jwks, parent) = (
+        root.join("operator-token"),
+        root.join("jwks.json"),
+        root.join("scoped-parent-request.json"),
+    );
+    fs::write(&token, OPERATOR).unwrap();
+    fs::write(&jwks, JWKS).unwrap();
+    fs::write(&parent, raw).unwrap();
+    ScopedState::configure(
+        root,
+        ScopedOptions {
+            operator_token_file: Some(&token),
+            jwks_file: Some(&jwks),
+            issuer: Some(ISSUER),
+            gateway_origin: Some(GATEWAY),
+            gateway_ca: None,
+            parent_request_file: Some(&parent),
+        },
+        &probe,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[test]
+fn the_starter_parent_request_is_the_scoped_parent_template_and_stays_credential_free() {
+    let root = tempfile::tempdir().unwrap();
+    let artifacts = synthetic_artifacts(root.path());
+    // The parent request `starter-configure` builds for its reviewed package.
+    let parent: ExecutionRequest = serde_json::from_value(json!({
+        "apiVersion":"celln.dev/v1alpha1","id":"native-parent",
+        "workload":{"id":"native-parent","caller":"operator:native-test"},
+        "mote":{"hash":artifacts.mote},
+        "tools":[{"alias":"/parent","hash":artifacts.executable,"closure":{"hash":artifacts.closure}}],
+        "invocation":{"alias":"/parent","args":[]},
+        "capabilities":{"workspace":"none","timeoutMs":3600000,"memoryBytes":268435456u64,"outputBytes":65536},
+        "execution":{"lane":"agent","requireHardwareIsolation":true}
+    }))
+    .unwrap();
+    let template = crate::starter_configure::scoped_parent_request(&parent);
+    assert_eq!(template["apiVersion"], "celln.scoped-parent-template/v1");
+    assert_eq!(
+        template["request"]["workload"],
+        json!({"id":"$parent","caller":"$principal"})
+    );
+    // Nothing but the per-run placeholders differs from the reviewed request.
+    let mut restored = template["request"].clone();
+    restored["id"] = json!("native-parent");
+    restored["workload"] = json!({"id":"native-parent","caller":"operator:native-test"});
+    assert_eq!(restored, serde_json::to_value(&parent).unwrap());
+    // It reserves room for the parent, one worker and their substrate overhead.
+    assert!(template["reservedMemoryBytes"].as_u64().unwrap() > 4 * 268435456);
+    let accepted = |template: &Value| {
+        parent_request_file_accepted(root.path(), &serde_json::to_vec_pretty(template).unwrap())
+    };
+    assert_eq!(accepted(&template), Ok(()));
+    // The operator's principal is never a standing template identity…
+    let mut named = template.clone();
+    named["request"]["workload"]["caller"] = json!("operator:native-test");
+    assert!(accepted(&named).is_err());
+    // …and the file is refused with egress or a credential reference in it,
+    // as a native-template.json (parent + worker + model profile) is outright.
+    let mut egress = template.clone();
+    egress["request"]["capabilities"]["egress"] = json!(["https://model.example"]);
+    assert!(accepted(&egress).is_err());
+    let mut credential = template.clone();
+    credential["credentialFile"] = json!("/etc/celln-native/provider-key");
+    assert!(accepted(&credential).is_err());
+    assert!(
+        accepted(&json!({"parent":template["request"],"reservedMemoryBytes":1342177280u64}))
+            .is_err()
+    );
 }
 
 #[test]
@@ -1226,6 +1341,300 @@ fn a_one_shot_model_route_is_brokered_only_through_the_gateway_with_the_model_pe
     assert_never_stored(root.path(), &[&execution, &model]);
 }
 
+/// Signed room for `per_turn` requests of `cap` tokens per turn, six per run.
+fn roomy(cap: u64, per_turn: u64) -> Option<((u64, u64), (u64, u64))> {
+    Some(((per_turn, per_turn * cap), (6, 6 * cap)))
+}
+
+#[test]
+fn a_prepared_output_cap_is_range_checked_and_affordable_before_anything_is_enrolled() {
+    let root = tempfile::tempdir().unwrap();
+    let artifacts = synthetic_artifacts(root.path());
+    let parent = template(&artifacts);
+    let state = node(
+        root.path(),
+        NodeOptions {
+            max_cells: 2,
+            egress_slots: 1,
+            gateway: Some((GATEWAY, Path::new("/nonexistent-ca"))),
+            parent_template: Some(&parent),
+        },
+    );
+    let issued = unix_now();
+    let enrol = |shape: Shape<'_>, requests: Requests| {
+        let (operation, decision) = compose_requests(&artifacts, shape, requests);
+        post(
+            &state,
+            "prepare",
+            Headers::operator(),
+            &json!({"operation":operation,"decision":decision}),
+        )
+    };
+    let refused = |shape: Shape<'_>, requests: Requests, reason: &str| {
+        let (status, body) = enrol(shape, requests);
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (422, Some(reason)),
+            "{body}"
+        );
+    };
+    let range = "AUTH_LIMIT_OUT_OF_RANGE";
+    // Outside 256..=4096 is refused however much the budget would afford.
+    for cap in [0, 255, 4097, u64::MAX >> 11] {
+        let requests = Requests {
+            output_tokens: Some(cap),
+            budget: roomy(8192, 1),
+            ..Requests::default()
+        };
+        refused(one_shot("ranged-one-shot", true, issued), requests, range);
+        refused(
+            enduring("ranged-parent", None, true, issued),
+            requests,
+            range,
+        );
+    }
+    // Only an integer names a cap: no string, null or fraction is coerced.
+    for cap in [json!("2048"), Value::Null, json!(-2048), json!([2048])] {
+        let (mut operation, decision) =
+            compose(&artifacts, one_shot("typed-one-shot", true, issued));
+        operation["resolution"]["execution"]["requestOutputTokens"] = cap;
+        let (status, body) = post(
+            &state,
+            "prepare",
+            Headers::operator(),
+            &json!({"operation":operation,"decision":decision}),
+        );
+        assert_eq!(
+            (status, body["reason"].as_str()),
+            (422, Some(range)),
+            "{body}"
+        );
+    }
+    // A model-free operation makes no model request for a cap to shape.
+    refused(
+        one_shot("model-free-capped", false, issued),
+        Requests {
+            output_tokens: Some(2048),
+            ..Requests::default()
+        },
+        "AUTH_ROUTE_MISMATCH",
+    );
+
+    // A one-shot must afford its first request from the turn and the run.
+    let raised = Requests {
+        output_tokens: Some(2048),
+        ..Requests::default()
+    };
+    // (the corpus turn cap is 512)
+    refused(
+        one_shot("unaffordable-one-shot", true, issued),
+        raised,
+        range,
+    );
+    for budget in [((2, 2047), (6, 12288)), ((2, 2048), (6, 2047))] {
+        refused(
+            one_shot("unaffordable-one-shot", true, issued),
+            Requests {
+                budget: Some(budget),
+                ..raised
+            },
+            range,
+        );
+    }
+    // A retained worker reserves its whole model loop each turn, so the loop
+    // at the cap must fit: at the default cap too, where it used to fail at
+    // the first turn with the parent VM already running.
+    let looped = Requests {
+        per_turn: 2,
+        ..Requests::default()
+    };
+    refused(
+        enduring("unaffordable-parent", None, true, issued),
+        looped,
+        range,
+    );
+    refused(
+        enduring("unaffordable-parent", Some("turn-1"), true, issued),
+        looped,
+        range,
+    );
+    for budget in [((2, 4095), (6, 12288)), ((2, 4096), (6, 4095))] {
+        refused(
+            enduring("unaffordable-parent", None, true, issued),
+            Requests {
+                output_tokens: Some(2048),
+                per_turn: 2,
+                budget: Some(budget),
+            },
+            range,
+        );
+    }
+    // None of that enrolled an operation, claimed a run or touched a parent.
+    assert_eq!(
+        fs::read_dir(root.path().join("scoped/prepared"))
+            .unwrap()
+            .count(),
+        0
+    );
+    // The same shape enrolled by a receiver that predates the check is refused
+    // when started: durably, before any parent permit, owner or VM exists.
+    let scoped = state.scoped.as_ref().unwrap();
+    let (operation, decision) = compose_requests(
+        &artifacts,
+        enduring("enrolled-parent", None, true, issued),
+        looped,
+    );
+    let id = operation_id(&operation, &decision).unwrap();
+    let record = PreparedRecord {
+        version: 1,
+        id: id.clone(),
+        owner: scoped.admission.owner().to_owned(),
+        operation,
+        decision: decision.clone(),
+    };
+    write_new(
+        &scoped.prepared_path(&id).unwrap(),
+        &serde_json::to_vec(&record).unwrap(),
+    )
+    .unwrap();
+    let execution = Permit::execution(&decision, "enrolled-parent").sign(&decision);
+    let model = Permit::model(&decision, "enrolled-parent").sign(&decision);
+    let (status, body) = post(
+        &state,
+        "start",
+        Headers::permits(&execution, Some(&model)),
+        &json!({"id":id,"owner":record.owner}),
+    );
+    assert_eq!(status, 422, "{body}");
+    assert_eq!(
+        (&body["phase"], &body["reason"], &body["cleanupConfirmed"]),
+        (&json!("Refused"), &json!(range), &json!(true))
+    );
+    fs::remove_file(scoped.prepared_path(&id).unwrap()).unwrap();
+    no_native_custody(&state);
+    assert!(!root.path().join("parent-journal").exists());
+    assert_eq!(
+        fs::read_dir(root.path().join("trusted-parent-permits"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    // The same shapes are enrolled once the signed budget covers them.
+    for (shape, requests) in [
+        (
+            one_shot("affordable-one-shot", true, issued),
+            Requests {
+                budget: roomy(2048, 1),
+                ..raised
+            },
+        ),
+        (
+            // Two requests of 2048 signed; the one-shot needs only the first.
+            one_shot("looping-one-shot", true, issued),
+            Requests {
+                per_turn: 6,
+                budget: roomy(2048, 2),
+                ..raised
+            },
+        ),
+        (
+            enduring("affordable-parent", None, true, issued),
+            Requests {
+                budget: Some(((2, 1024), (6, 3072))),
+                ..looped
+            },
+        ),
+        (
+            enduring("affordable-roomy-parent", None, true, issued),
+            Requests {
+                output_tokens: Some(4096),
+                per_turn: 2,
+                budget: roomy(4096, 2),
+            },
+        ),
+    ] {
+        let (status, body) = enrol(shape, requests);
+        assert_eq!(status, 200, "{body}");
+    }
+}
+
+#[test]
+fn the_prepared_output_cap_shapes_the_worker_request_and_bounds_its_broker() {
+    let root = tempfile::tempdir().unwrap();
+    let artifacts = synthetic_artifacts(root.path());
+    let gateway = Gateway::serve(root.path(), vec!["CELLN".into(), "CELLN".into()]);
+    let state = node(
+        root.path(),
+        NodeOptions {
+            max_cells: 1,
+            egress_slots: 1,
+            gateway: Some((&gateway.origin, &gateway.ca)),
+            parent_template: None,
+        },
+    );
+    let scoped = state.scoped.as_ref().unwrap();
+    let built = |run: &str, requests: Requests| {
+        let (operation, decision) =
+            compose_requests(&artifacts, one_shot(run, true, unix_now()), requests);
+        let (id, _) = prepare(&state, &operation, &decision);
+        let prepared = scoped.load_prepared(&id).unwrap();
+        let execution = Permit::execution(&decision, run).sign(&decision);
+        let model = Permit::model(&decision, run).sign(&decision);
+        let receiver = receiver_context(&operation, &decision, "execution.start").unwrap();
+        let control = operation_control(&prepared).unwrap();
+        let (native, broker) = build_native(
+            scoped,
+            &prepared,
+            &receiver,
+            &execution,
+            Some(&model),
+            &control,
+        )
+        .unwrap();
+        let config: Value =
+            serde_json::from_str(&native.invocation.as_ref().unwrap().args[0]).unwrap();
+        (config, broker.unwrap(), decision)
+    };
+    let wire = |model: &Value, tokens: u64| {
+        json!({"apiVersion":"celln.fetch/v1","method":"POST","url":MODEL_ALIAS,
+            "body":{"model":model,"stream":false,"max_tokens":tokens,
+                "messages":[{"role":"user","content":"Reply with CELLN."}]}})
+        .to_string()
+    };
+
+    // Unnamed: the guest asks for the default and may not ask for more, even
+    // though the signed turn would afford it.
+    let (config, mut broker, decision) = built(
+        "default-cap-run",
+        Requests {
+            budget: roomy(2048, 1),
+            ..Requests::default()
+        },
+    );
+    assert!(config.get("max_tokens").is_none(), "{config}");
+    let model = &decision["route"]["model"];
+    assert!(broker.fetch(&wire(model, 513)).is_err());
+    assert!(gateway.seen().is_empty());
+    assert!(broker.fetch(&wire(model, 512)).is_ok());
+    assert_eq!(gateway.seen()[0].1["request"]["max_tokens"], 512);
+
+    // Named: it is the worker's `max_tokens` and the broker's per-request bound.
+    let (config, mut broker, _) = built(
+        "raised-cap-run",
+        Requests {
+            output_tokens: Some(2048),
+            budget: roomy(2048, 1),
+            ..Requests::default()
+        },
+    );
+    assert_eq!(config["max_tokens"], 2048);
+    assert!(broker.fetch(&wire(model, 2049)).is_err());
+    assert_eq!(gateway.seen().len(), 1);
+    assert!(broker.fetch(&wire(model, 2048)).is_ok());
+    assert_eq!(gateway.seen()[1].1["request"]["max_tokens"], 2048);
+}
+
 fn enduring<'a>(run_uid: &'a str, turn_id: Option<&'a str>, model: bool, issued: i64) -> Shape<'a> {
     Shape {
         lifecycle: if turn_id.is_some() {
@@ -1703,6 +2112,8 @@ pub(crate) fn prove_scoped_on_kvm(
         format!("POST /v1/invoke HTTP/1.1 Bearer {model}")
     );
     assert_eq!(seen[0].1["decision"], decision);
+    // No cap was prepared, so the guest asked for the default.
+    assert_eq!(seen[0].1["request"]["max_tokens"], 512);
     let cleanup_decision = access_decision(&decision, "execution.cleanup");
     let cleanup = Permit::access(&cleanup_decision, "kvm-one-shot-cleanup").sign(&cleanup_decision);
     assert_eq!(
@@ -1734,7 +2145,13 @@ pub(crate) fn prove_scoped_on_kvm(
         parent_deadline: created + 600,
         ..enduring("kvm-enduring-run", None, true, created)
     };
-    let (initial_operation, initial) = compose(&worker_artifacts, initial_shape);
+    // …whose worker asks for the operator-prepared cap on every model request.
+    let capped = Requests {
+        output_tokens: Some(2048),
+        budget: roomy(2048, 1),
+        ..Requests::default()
+    };
+    let (initial_operation, initial) = compose_requests(&worker_artifacts, initial_shape, capped);
     let incarnation = initial["parent"]["incarnation"].clone();
     let (initial_id, owner) = prepare(&state, &initial_operation, &initial);
     let execution = Permit::execution(&initial, "kvm-initial-execution").sign(&initial);
@@ -1780,8 +2197,45 @@ pub(crate) fn prove_scoped_on_kvm(
     assert_eq!(first["parentId"], incarnation);
     permits.extend([execution, initial_model.clone()]);
 
+    // A follow-up turn under the same signed budget but prepared without the
+    // cap is another worker: refused against the retained parent's binding,
+    // with no model call and no turn.
+    let (drift_operation, drift) = compose_requests(
+        &worker_artifacts,
+        Shape {
+            turn_id: Some("turn-drift"),
+            lifecycle: "enduring-turn",
+            issued: unix_now(),
+            ..initial_shape
+        },
+        Requests {
+            output_tokens: None,
+            ..capped
+        },
+    );
+    let (drift_id, owner) = prepare(&state, &drift_operation, &drift);
+    let execution = Permit::execution(&drift, "kvm-drift-execution").sign(&drift);
+    let drift_model = Permit::model(&drift, "kvm-drift-model").sign(&drift);
+    let (status, refused) = post(
+        &state,
+        "start",
+        Headers::permits(&execution, Some(&drift_model)),
+        &json!({"id":drift_id,"owner":owner}),
+    );
+    assert_eq!(
+        (
+            status,
+            refused["phase"].as_str(),
+            refused["reason"].as_str()
+        ),
+        (409, Some("Refused"), Some("AUTH_REQUEST_BINDING_MISMATCH")),
+        "{refused}"
+    );
+    assert_eq!(gateway.seen().len(), 2);
+    permits.extend([execution, drift_model]);
+
     // …and a follow-up turn reaches THAT parent with its own fresh permits.
-    let (turn_operation, turn) = compose(
+    let (turn_operation, turn) = compose_requests(
         &worker_artifacts,
         Shape {
             payload: "What was my original value? Reply with that value only.",
@@ -1792,6 +2246,7 @@ pub(crate) fn prove_scoped_on_kvm(
                 ..initial_shape
             }
         },
+        capped,
     );
     let (turn_id, owner) = prepare(&state, &turn_operation, &turn);
     let execution = Permit::execution(&turn, "kvm-turn-execution").sign(&turn);
@@ -1838,6 +2293,9 @@ pub(crate) fn prove_scoped_on_kvm(
         format!("POST /v1/invoke HTTP/1.1 Bearer {turn_model}")
     );
     assert_eq!(seen[2].1["decision"], turn);
+    for request in &seen[1..] {
+        assert_eq!(request.1["request"]["max_tokens"], 2048, "{}", request.1);
+    }
     assert!(
         seen[2].1["request"]["messages"]
             .to_string()
@@ -1861,7 +2319,7 @@ pub(crate) fn prove_scoped_on_kvm(
     assert_eq!(stopped["phase"], "Cancelled");
     assert_eq!(stopped["cleanupConfirmed"], true);
     assert_eq!(listed_parent(&state, &incarnation)["status"], "Stopped");
-    let (late_operation, late) = compose(
+    let (late_operation, late) = compose_requests(
         &worker_artifacts,
         Shape {
             turn_id: Some("turn-3"),
@@ -1869,6 +2327,7 @@ pub(crate) fn prove_scoped_on_kvm(
             issued: unix_now(),
             ..initial_shape
         },
+        capped,
     );
     let (late_id, owner) = prepare(&state, &late_operation, &late);
     let execution = Permit::execution(&late, "kvm-late-execution").sign(&late);
