@@ -16,6 +16,10 @@ mod credential;
 #[path = "dispatch_starter_live_tests.rs"]
 mod starter;
 
+#[path = "dispatch_artifact_fixture_tests.rs"]
+mod artifact_package;
+use artifact_package::artifact_fixture;
+
 fn bundle(
     state: &Path,
     runtime: &Path,
@@ -127,6 +131,16 @@ fn bundle(
 #[test]
 #[ignore = "requires real KVM, kernel, static native parent/turn/JSON harness, initramfs tools, curl and openssl; no model calls"]
 fn scoped_mediated_lifecycles_on_real_kvm() {
+    prove_scoped_fixture(false);
+}
+
+#[test]
+#[ignore = "requires real KVM, kernel and static starter binaries; deterministic local gateway only"]
+fn scoped_brokered_artifacts_three_turns_on_real_kvm() {
+    prove_scoped_fixture(true);
+}
+
+fn prove_scoped_fixture(artifacts: bool) {
     let _proof = crate::dispatch::warm::PROOF_LOCK.lock().unwrap();
     if !Path::new("/dev/kvm").exists() {
         eprintln!("SKIP: no KVM");
@@ -163,7 +177,12 @@ fn scoped_mediated_lifecycles_on_real_kvm() {
         }
     }
     let work = tempfile::tempdir().unwrap();
-    let root = work.path();
+    let root_path = work.path().to_owned();
+    if artifacts && std::env::var_os("CELLN_RETAIN_SCOPED_PROOF").is_some() {
+        eprintln!("SCOPED_PROOF_ROOT {}", root_path.display());
+        std::mem::forget(work);
+    }
+    let root = root_path.as_path();
     let runtime = crate::dispatch::tests::test_runtime_root(root).unwrap();
     // Exercise the installed package, not a hand-built two-member worker that
     // hid the monolithic starter closure's empty-selection refusal.
@@ -199,7 +218,7 @@ fn scoped_mediated_lifecycles_on_real_kvm() {
     };
     let mut parent = packaged_request("parent");
     parent.capabilities.timeout_ms = 180000;
-    let worker = packaged_request("runtime");
+    let mut worker = packaged_request("runtime");
     let one_shot = bundle(
         root,
         &runtime,
@@ -212,6 +231,13 @@ fn scoped_mediated_lifecycles_on_real_kvm() {
     );
     let package_hash = Hash::of(&std::fs::read(package.join("package.json")).unwrap());
     crate::starter_admit::run(&package, &package_hash.0, root).unwrap();
+    let tools = if artifacts {
+        let (composed, tools) = artifact_fixture(root, &runtime, &kernel, &binaries, &report);
+        worker = composed;
+        tools
+    } else {
+        serde_json::Value::Null
+    };
     let motes: Vec<_> = [&parent, &worker, &one_shot]
         .iter()
         .map(|request| request.mote.as_ref().unwrap().hash.clone())
@@ -225,13 +251,23 @@ fn scoped_mediated_lifecycles_on_real_kvm() {
     let policy: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.join("trusted-closures.json")).unwrap())
             .unwrap();
-    crate::dispatch_http::prove_scoped_on_kvm(
-        root,
-        policy["publishers"][0].as_str().unwrap(),
-        &one_shot,
-        &parent,
-        &worker,
-    );
+    if artifacts {
+        crate::dispatch_http::prove_scoped_artifacts_on_kvm(
+            root,
+            policy["publishers"][0].as_str().unwrap(),
+            &parent,
+            &worker,
+            tools,
+        );
+    } else {
+        crate::dispatch_http::prove_scoped_on_kvm(
+            root,
+            policy["publishers"][0].as_str().unwrap(),
+            &one_shot,
+            &parent,
+            &worker,
+        );
+    }
 }
 
 #[test]

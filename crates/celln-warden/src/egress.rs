@@ -171,6 +171,26 @@ impl HttpBroker {
         self.model_relay.is_some()
     }
 
+    /// Attach independently admitted, child-bound artifact authority only
+    /// after validating the model-only transfer. No network grant is added.
+    pub fn with_scoped_artifacts(
+        mut self,
+        grant: crate::workspace_broker::Grant,
+    ) -> Result<Self, FetchDenied> {
+        if !self.is_mediated()
+            || self.policy.workspace.is_some()
+            || !self.policy.allow_hosts.is_empty()
+            || self.policy.get.is_some()
+            || self.policy.post.is_some()
+        {
+            return Err(FetchDenied::Fetch(
+                "invalid scoped artifact transport".into(),
+            ));
+        }
+        self.policy.workspace = Some(grant);
+        Ok(self)
+    }
+
     /// Check a model-only transfer against an already reserved native turn.
     /// This cannot establish tenant identity; the supplying owner must bind the
     /// relay to that turn's independently verified capability context.
@@ -178,6 +198,8 @@ impl HttpBroker {
         self.is_mediated()
             && self.policy.allow_hosts.is_empty()
             && self.policy.workspace.is_none()
+            && self.policy.get.is_none()
+            && self.policy.post.is_none()
             && (self.policy.max_requests as u128) <= u128::from(requests)
             && self.policy.json_posts.len() == 1
             && self.policy.json_posts[0].max_total_output_tokens <= output_tokens
