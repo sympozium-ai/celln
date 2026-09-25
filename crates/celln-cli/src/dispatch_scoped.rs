@@ -231,7 +231,7 @@ impl ScopedState {
         })))
     }
 
-    fn authenticate(&self, bearer: Option<&str>) -> Result<(), u16> {
+    pub(super) fn authenticate(&self, bearer: Option<&str>) -> Result<(), u16> {
         let expected = super::read_bearer_token(&self.operator_token_file).map_err(|_| 503u16)?;
         if !bearer.is_some_and(|got| super::constant_time_eq(got.as_bytes(), expected.as_bytes())) {
             return Err(401);

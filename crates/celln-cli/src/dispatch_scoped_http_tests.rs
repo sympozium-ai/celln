@@ -376,6 +376,44 @@ impl<'a> Headers<'a> {
     }
 }
 
+#[test]
+fn scoped_transport_discovers_capabilities_without_dispatcher_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = node(
+        temp.path(),
+        NodeOptions {
+            max_cells: 4,
+            egress_slots: 0,
+            gateway: None,
+            parent_template: None,
+        },
+    );
+    let (status, body) = send(&state, "GET", "/v1/capabilities", Headers::operator(), "");
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["scopedArtifactContracts"],
+        json!(["celln.scoped-artifacts/v1"])
+    );
+    for (method, path, body) in [
+        ("POST", "/v1/capabilities", ""),
+        ("GET", "/v1/node", ""),
+        ("GET", "/v1/cells", ""),
+        ("POST", "/v1/drain", ""),
+        ("POST", "/v1/artifacts/prewarm", ""),
+    ] {
+        assert_eq!(send(&state, method, path, Headers::operator(), body).0, 401);
+    }
+    fs::write(
+        temp.path().join("operator-token"),
+        "rotated-scoped-token-0123456789",
+    )
+    .unwrap();
+    assert_eq!(
+        send(&state, "GET", "/v1/capabilities", Headers::operator(), "").0,
+        401
+    );
+}
+
 /// One real request through the dispatcher's socket handler.
 pub(super) fn send(
     state: &State,

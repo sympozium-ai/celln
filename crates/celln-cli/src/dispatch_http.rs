@@ -575,8 +575,21 @@ fn handle(mut stream: TcpStream, state: &State) -> Result<()> {
                 );
             }
         };
-        let authorized =
-            authorization.is_some_and(|value| constant_time_eq(value.as_bytes(), token.as_bytes()));
+        let authorized = authorization
+            .as_deref()
+            .is_some_and(|value| constant_time_eq(value.as_bytes(), token.as_bytes()));
+        // Scoped controllers may discover compatibility without receiving the
+        // dispatcher-wide execution credential. This exception is GET-only and
+        // never covers inventory, drain, parent, prewarm or execution routes.
+        #[cfg(target_os = "linux")]
+        let authorized = authorized
+            || (method == "GET"
+                && path == "/v1/capabilities"
+                && length == 0
+                && state
+                    .scoped
+                    .as_ref()
+                    .is_some_and(|scoped| scoped.authenticate(authorization.as_deref()).is_ok()));
         if !authorized {
             return reply(
                 &mut stream,
