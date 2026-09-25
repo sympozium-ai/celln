@@ -21,6 +21,11 @@ pub(super) type ScopedTurnBrokers =
 
 pub(crate) struct ScopedTurnBroker {
     pub broker: warden::egress::HttpBroker,
+    /// Separately admitted data capability; lease retained through VM teardown.
+    pub artifacts: Option<(
+        warden::workspace_broker::Lease,
+        warden::workspace_broker::Grant,
+    )>,
     /// Independently admitted operation control, already bounded by the
     /// original absolute turn deadline. It is nested under the live parent's
     /// exact child control while the VM runs.
@@ -280,7 +285,17 @@ impl PreparedWorker {
                         "scoped worker transport exceeds the reserved model-only turn".into(),
                     );
                 }
-                (supplied.broker, Some(supplied.control), None, Vec::new())
+                let (broker, lease) = match supplied.artifacts {
+                    Some((lease, grant)) => (
+                        supplied
+                            .broker
+                            .with_scoped_artifacts(grant)
+                            .map_err(|e| e.to_string())?,
+                        Some(lease),
+                    ),
+                    None => (supplied.broker, None),
+                };
+                (broker, Some(supplied.control), lease, Vec::new())
             }
         };
         let mut invocation: serde_json::Value =

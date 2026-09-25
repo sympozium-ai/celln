@@ -84,6 +84,7 @@ struct EnduringContext {
     principal: String,
     incarnation: Hash,
     worker_binding: Hash,
+    artifacts: Option<artifacts::Policy>,
     pending: Arc<Mutex<BTreeMap<String, PendingTurn>>>,
     active: Arc<Mutex<BTreeMap<String, celln_control::Control>>>,
     results: Arc<Mutex<BTreeMap<String, NativeProvenance>>>,
@@ -230,7 +231,7 @@ impl ScopedState {
         })))
     }
 
-    fn authenticate(&self, bearer: Option<&str>) -> Result<(), u16> {
+    pub(super) fn authenticate(&self, bearer: Option<&str>) -> Result<(), u16> {
         let expected = super::read_bearer_token(&self.operator_token_file).map_err(|_| 503u16)?;
         if !bearer.is_some_and(|got| super::constant_time_eq(got.as_bytes(), expected.as_bytes())) {
             return Err(401);
@@ -926,6 +927,25 @@ fn start_enduring(
     let worker_binding =
         crate::dispatch::parent_create::scoped::worker_binding(&worker, &worker_config)
             .map_err(anyhow::Error::msg)?;
+    let artifacts = artifacts::derive(
+        &prepared.operation["resolution"]["execution"],
+        &prepared.decision,
+    )
+    .map_err(anyhow::Error::msg)?;
+    // Check the run UID as well as namespace and incarnation on EVERY turn.
+    let source = &prepared.operation["resolution"]["execution"]["source"];
+    let scope = parent_scope(&prepared).map_err(anyhow::Error::msg)?;
+    let expected =
+        warden::parent_permit::run_incarnation(&scope, text(&source["runUid"], "run UID")?)?;
+    if expected != incarnation {
+        let status = prepared_refusal(
+            scoped,
+            &fresh,
+            &prepared,
+            "AUTH_PARENT_TURN_MISMATCH".into(),
+        );
+        return reply(stream, 409, &status);
+    }
 
     if lifecycle == "enduring-turn" {
         let context = scoped
@@ -939,7 +959,10 @@ fn start_enduring(
             let _ = persist_status(scoped, &status);
             return reply(stream, 409, &status);
         };
-        if context.principal != principal || context.worker_binding != worker_binding {
+        if context.principal != principal
+            || context.worker_binding != worker_binding
+            || context.artifacts != artifacts
+        {
             let status = prepared_refusal(
                 scoped,
                 &fresh,
@@ -968,19 +991,7 @@ fn start_enduring(
             return reply(stream, 503, &status);
         }
     };
-    let source = &prepared.operation["resolution"]["execution"]["source"];
-    let scope = parent_scope(&prepared).map_err(anyhow::Error::msg)?;
-    let expected =
-        warden::parent_permit::run_incarnation(&scope, text(&source["runUid"], "run UID")?)?;
-    if expected != incarnation {
-        let status = prepared_refusal(
-            scoped,
-            &fresh,
-            &prepared,
-            "AUTH_PARENT_TURN_MISMATCH".into(),
-        );
-        return reply(stream, 409, &status);
-    }
+
     let parent_deadline = prepared.decision["budget"]["parentDeadlineUnix"]
         .as_i64()
         .ok_or_else(|| anyhow::anyhow!("invalid parent deadline"))?;
@@ -1129,6 +1140,14 @@ fn start_enduring(
     let result_sink = Arc::clone(&results);
     let supply_incarnation = incarnation.clone();
     let result_incarnation = incarnation.clone();
+    // Owned by the retained worker factory, not the metadata registry. Dropping
+    // the parent destroys the store and revokes outstanding grants.
+    let mut workspace = artifacts
+        .as_ref()
+        .map(|p| p.owner(incarnation.clone()))
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
+    let artifact_policy = artifacts.clone();
     let brokers: crate::dispatch::parent_create::scoped::Brokers = Box::new(move |turn| {
         if turn.parent != supply_incarnation {
             return Err("reserved turn belongs to another parent".into());
@@ -1148,12 +1167,22 @@ fn start_enduring(
         let child_control = parent_control
             .child(remaining)
             .map_err(|_| "invalid absolute turn deadline")?;
+        let artifacts = match (&artifact_policy, &mut workspace) {
+            (Some(policy), Some(owner)) => {
+                let (lease, grant) = policy.begin(owner, turn, child_control.clone())?;
+                grant.constrain(pending.control.clone())?;
+                Some((lease, grant))
+            }
+            (None, None) => None,
+            _ => return Err("scoped artifact owner unavailable".into()),
+        };
         supply_active
             .lock()
             .map_err(|_| "scoped active turn registry unavailable")?
             .insert(turn.request.turn_id.clone(), pending.control);
         Ok(crate::dispatch::parent_create::scoped::ScopedTurnBroker {
             broker: pending.broker,
+            artifacts,
             control: child_control,
         })
     });
@@ -1226,6 +1255,7 @@ fn start_enduring(
         principal: principal.clone(),
         incarnation: incarnation.clone(),
         worker_binding,
+        artifacts,
         pending,
         active,
         results,
@@ -2212,10 +2242,12 @@ fn validate_artifacts(
             .as_array()
             .is_some_and(|v| v.iter().any(|item| item == required_lifecycle))
         || execution["runtimeLimits"]["workspace"] != "none"
+        || profile["limits"]["workspace"] != "none"
     {
         return Err("AUTH_PROTOCOL_UNSUPPORTED".into());
     }
     validate_runtime_resources(execution, profile)?;
+    artifacts::derive(execution, decision)?;
     let decision_tools = decision["tools"]
         .as_array()
         .ok_or("decision tools missing")?;
@@ -2228,8 +2260,8 @@ fn validate_artifacts(
     for (tool, binding) in materials.iter().zip(decision_tools) {
         let limits = &tool["spec"]["limits"];
         if limits["workspace"] != "none"
-            || limits.get("artifacts").is_some_and(|v| !v.is_null())
             || limits.get("https").is_some_and(|v| !v.is_null())
+            || binding["limits"].get("https").is_some_and(|v| !v.is_null())
             || limits["egress"].as_array().is_some_and(|v| !v.is_empty())
             || limits["inputs"].as_array().is_some_and(|v| !v.is_empty())
         {
@@ -2411,6 +2443,7 @@ fn validate_prepared(operation: &Value, final_decision: &Value) -> Result<()> {
     }
     let execution = &operation["resolution"]["execution"];
     let base = &operation["resolution"]["decision"];
+    artifacts::derive(execution, final_decision).map_err(anyhow::Error::msg)?;
     if !execution.is_object()
         || base["apiVersion"] != "celln.sympozium.ai/authorisation-decision-v1"
         || final_decision["apiVersion"] != base["apiVersion"]
@@ -2845,6 +2878,9 @@ fn reject_secret_material(value: &Value) -> Result<()> {
 }
 
 use std::os::unix::fs::PermissionsExt;
+
+#[path = "dispatch_scoped_artifacts.rs"]
+mod artifacts;
 
 #[cfg(test)]
 #[path = "dispatch_scoped_http_tests.rs"]

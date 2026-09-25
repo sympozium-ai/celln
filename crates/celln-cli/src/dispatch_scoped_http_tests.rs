@@ -22,6 +22,10 @@ pub(super) fn unix_now() -> i64 {
     now()
 }
 
+#[path = "dispatch_scoped_artifacts_kvm_tests.rs"]
+mod artifacts_kvm;
+pub(crate) use artifacts_kvm::prove_scoped_artifacts_on_kvm;
+
 /// Immutable runtime identity a prepared operation names. The hermetic cases
 /// sign a synthetic closure; the hardware cases pass real sealed artifacts.
 pub(super) struct Artifacts {
@@ -372,6 +376,44 @@ impl<'a> Headers<'a> {
     }
 }
 
+#[test]
+fn scoped_transport_discovers_capabilities_without_dispatcher_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = node(
+        temp.path(),
+        NodeOptions {
+            max_cells: 4,
+            egress_slots: 0,
+            gateway: None,
+            parent_template: None,
+        },
+    );
+    let (status, body) = send(&state, "GET", "/v1/capabilities", Headers::operator(), "");
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["scopedArtifactContracts"],
+        json!(["celln.scoped-artifacts/v1"])
+    );
+    for (method, path, body) in [
+        ("POST", "/v1/capabilities", ""),
+        ("GET", "/v1/node", ""),
+        ("GET", "/v1/cells", ""),
+        ("POST", "/v1/drain", ""),
+        ("POST", "/v1/artifacts/prewarm", ""),
+    ] {
+        assert_eq!(send(&state, method, path, Headers::operator(), body).0, 401);
+    }
+    fs::write(
+        temp.path().join("operator-token"),
+        "rotated-scoped-token-0123456789",
+    )
+    .unwrap();
+    assert_eq!(
+        send(&state, "GET", "/v1/capabilities", Headers::operator(), "").0,
+        401
+    );
+}
+
 /// One real request through the dispatcher's socket handler.
 pub(super) fn send(
     state: &State,
@@ -514,6 +556,16 @@ impl Drop for Gateway {
 impl Gateway {
     /// `answers[n]` is the assistant text of the n-th invocation.
     pub fn serve(directory: &Path, answers: Vec<String>) -> Self {
+        Self::serve_messages(
+            directory,
+            answers
+                .into_iter()
+                .map(|answer| json!({"role":"assistant","content":answer}))
+                .collect(),
+        )
+    }
+
+    pub fn serve_messages(directory: &Path, answers: Vec<Value>) -> Self {
         let run = |command: &mut Command| {
             let output = command
                 .output()
@@ -600,9 +652,11 @@ impl Gateway {
                     format!("{} {authorization}", target.unwrap_or_default()),
                     envelope,
                 ));
-                let answer = answers.next().unwrap_or_else(|| "unscripted".into());
+                let answer = answers
+                    .next()
+                    .unwrap_or_else(|| json!({"role":"assistant","content":"unscripted"}));
                 let body = json!({"choices":[{"index":0,"finish_reason":"stop",
-                    "message":{"role":"assistant","content":answer}}],
+                    "message":answer}],
                     "usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}})
                 .to_string();
                 if write!(reply, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).and_then(|()| reply.flush()).is_err() {
@@ -2018,6 +2072,17 @@ fn read_until(
             Headers::permits(&permit, None),
             &json!({"id":id,"decision":read_decision}),
         );
+        // Journal reads may contend with the completing child (LOCK_NB).
+        // Retry only this read-only observation, never start/model work.
+        if status == 503 && body["reason"] == "AUTH_CONTEXT_LOST" {
+            assert!(
+                Instant::now() < deadline,
+                "scoped read remained unavailable: {body}"
+            );
+            eprintln!("scoped read temporarily unavailable; observing original operation again");
+            thread::sleep(Duration::from_millis(100));
+            continue;
+        }
         assert!(matches!(status, 200 | 202), "{status} {body}");
         if done.contains(&body["phase"].as_str().unwrap()) {
             return (status, body);
