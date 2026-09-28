@@ -43,7 +43,7 @@
 [[image]]
 name = "python"
 tag = "docker.io/library/python:3.12-slim"
-ref = "docker.io/library/python@sha256:2f17fc044b579bab302c2e8054d3a686e2cb9a83de48e70534b94cd8ebbe06a9"
+ref = "docker.io/library/python@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f"
 about = "CPython 3.12 with its own OpenSSL, sqlite and glibc"
 default = true
 provides = [
@@ -75,7 +75,7 @@ provides = [
 [[image]]
 name = "busybox"
 tag = "docker.io/library/busybox:1.37.0-musl"
-ref = "docker.io/library/busybox@sha256:fc6dddc4c44b1bfe37f41cae8e67d1693828e8f42a91862816d7953e2c9d3f23"
+ref = "docker.io/library/busybox@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092"
 about = "BusyBox 1.37, one static musl binary carrying the classic Unix text tools"
 provides = [
   { alias = "/bin/busybox", exec = "/bin/busybox" },
