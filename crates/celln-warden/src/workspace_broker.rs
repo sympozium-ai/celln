@@ -28,10 +28,12 @@ impl Drop for Owner {
 
 struct Authority {
     active: bool,
+    artifacts_only: bool,
     remaining: usize,
     read: bool,
     write: bool,
     control: Control,
+    operation_control: Option<Control>,
 }
 
 /// Host-only lease: keep alive until the child VM has been joined/destroyed.
@@ -64,6 +66,25 @@ impl PartialEq for Grant {
 impl Eq for Grant {}
 
 impl Owner {
+    /// Narrow scoped v1 capability: only exact read/write operations. Unlike
+    /// legacy workspace grants this never implies list/search/append/delete.
+    pub fn begin_artifacts(
+        &mut self,
+        turn: &ReservedTurn,
+        read: bool,
+        write: bool,
+        max_operations: usize,
+        control: Control,
+    ) -> Result<(Lease, Grant), String> {
+        let (lease, grant) = self.begin(turn, read, write, max_operations, control)?;
+        grant
+            .authority
+            .lock()
+            .map_err(|_| "workspace authority unavailable")?
+            .artifacts_only = true;
+        Ok((lease, grant))
+    }
+
     pub fn new(parent: Hash, limits: Limits) -> Result<Self, String> {
         let data = Workspace::new(parent.clone(), limits).map_err(|e| e.to_string())?;
         Ok(Self {
@@ -110,10 +131,12 @@ impl Owner {
         self.claimed.insert(turn.child.0.clone());
         let authority = Arc::new(Mutex::new(Authority {
             active: true,
+            artifacts_only: false,
             remaining: max_operations,
             read,
             write,
             control,
+            operation_control: None,
         }));
         self.active = Arc::downgrade(&authority);
         Ok((
@@ -172,12 +195,30 @@ struct Request {
 }
 
 impl Grant {
+    /// Add an independent cancellation/deadline fence; never replace the
+    /// reserved child's parent-bound control. Host custody only.
+    pub fn constrain(&self, control: Control) -> Result<(), String> {
+        let mut authority = self
+            .authority
+            .lock()
+            .map_err(|_| "workspace authority unavailable")?;
+        if authority.operation_control.is_some() {
+            return Err("workspace operation control already bound".into());
+        }
+        control.check().map_err(|e| e.to_string())?;
+        authority.operation_control = Some(control);
+        Ok(())
+    }
+
     pub(crate) fn request(&self, raw: &str) -> Result<Vec<u8>, String> {
         let mut authority = self
             .authority
             .lock()
             .map_err(|_| "workspace authority unavailable")?;
         authority.control.check().map_err(|e| e.to_string())?;
+        if let Some(control) = &authority.operation_control {
+            control.check().map_err(|e| e.to_string())?;
+        }
         if !authority.active || authority.remaining == 0 {
             return Err("workspace grant revoked or exhausted".into());
         }
@@ -190,6 +231,14 @@ impl Grant {
             serde_json::from_str(raw).map_err(|_| "invalid workspace request")?;
         if request.api_version != "celln.workspace/v1" {
             return Err("unsupported workspace request version".into());
+        }
+        if authority.artifacts_only
+            && !matches!(
+                request.body,
+                Operation::Read { .. } | Operation::Write { .. }
+            )
+        {
+            return Err("workspace operation not granted".into());
         }
         let mut data = self.data.lock().map_err(|_| "workspace unavailable")?;
         let response = match request.body {
@@ -251,6 +300,10 @@ impl Grant {
 }
 
 #[cfg(test)]
+#[path = "workspace_broker_scoped_tests.rs"]
+mod scoped_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::egress::{HttpBroker, HttpPolicy};
@@ -258,7 +311,7 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
-    fn turn(parent: &Hash, id: &str) -> ReservedTurn {
+    pub(super) fn turn(parent: &Hash, id: &str) -> ReservedTurn {
         ReservedTurn {
             parent: parent.clone(),
             child: Hash::of(&serde_json::to_vec(&(&parent.0, id)).unwrap()),
@@ -275,10 +328,10 @@ mod tests {
             },
         }
     }
-    fn control() -> Control {
+    pub(super) fn control() -> Control {
         Control::new(Duration::from_secs(30)).unwrap()
     }
-    fn owner(parent: &Hash) -> Owner {
+    pub(super) fn owner(parent: &Hash) -> Owner {
         Owner::new(
             parent.clone(),
             Limits {
@@ -289,10 +342,10 @@ mod tests {
         )
         .unwrap()
     }
-    fn wire(body: serde_json::Value) -> String {
+    pub(super) fn wire(body: serde_json::Value) -> String {
         json!({"apiVersion":"celln.workspace/v1", "body":body}).to_string()
     }
-    fn broker(grant: Grant) -> HttpBroker {
+    pub(super) fn broker(grant: Grant) -> HttpBroker {
         let mut policy = HttpPolicy::new(vec![]);
         policy.workspace = Some(grant);
         HttpBroker::new(policy)
