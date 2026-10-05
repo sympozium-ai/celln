@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.33](https://github.com/sympozium-ai/celln/compare/v0.5.32...v0.5.33) (2026-10-05)
+
+
+### Bug Fixes
+
+* **contract:** a decision may carry 24 tools, the worker's own cap ([#164](https://github.com/sympozium-ai/celln/issues/164)) ([b653d07](https://github.com/sympozium-ai/celln/commit/b653d077962b6efb24512a6818a98d25d97f691d))
+
 ## [0.5.32](https://github.com/sympozium-ai/celln/compare/v0.5.31...v0.5.32) (2026-10-05)
 
 
