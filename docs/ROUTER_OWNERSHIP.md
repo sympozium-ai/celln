@@ -71,12 +71,32 @@ The file holds the same bearer as each dispatcher's
 capability and parent credentials (startup fails, or the routes answer 503
 after a bad rotation). The router compares the inbound bearer in constant time
 and forwards it unchanged; the client credential is refused on these routes
-and the scoped bearer opens no other route. Only `Authorization`,
+and the scoped bearer opens no other route except scoped capability
+discovery (below). Only `Authorization`,
 `Content-Type`, `X-Celln-Execution-Permit` and `X-Celln-Model-Permit` reach
 the node; duplicate or non-printable permit headers are refused with 400. The
 body is bounded at 256 KiB and must be I-JSON; its canonical form is what is
 bound and forwarded. The dispatcher remains the only verifier of the bearer and
 of every permit.
+
+The scoped bearer also opens one read: `GET /v1/capabilities` (scoped
+capability discovery, used to preflight a mediated run). The router fans out to
+the current nodes exactly as for aggregate discovery (at most 32, one probe in
+flight, backend credential, same timeouts; `503` otherwise) and answers only
+
+```json
+{"apiVersion":"celln.dev/capabilities-v1alpha1",
+ "scopedArtifactContracts":["celln.scoped-artifacts/v1","celln.scoped-artifacts/v2"],
+ "scopedHttpsContracts":["celln.scoped-https/v1"],
+ "eligibleNodes":2}
+```
+
+Each `scoped*Contracts` list is the sorted intersection over every reachable,
+compatible, preflight-eligible node, since an operation may be placed on any of
+them; with no eligible node every list is empty, so the caller fails closed.
+No per-node detail is returned. The client and capability credentials still get
+the aggregate per-node report; with forwarding disabled the scoped bearer is
+refused (`401`) like any unknown token.
 
 Prepared material, the admission journal and retained parents live on one
 node, and permits are not node-bound, so an operation id is bound to exactly

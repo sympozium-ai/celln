@@ -531,11 +531,17 @@ mod tests {
         for (method, path) in [
             ("GET", "/v1/executions/x"),
             ("POST", "/v1/executions/x/cancel"),
-            ("GET", "/v1/capabilities"),
             ("GET", "/v1/cells"),
+            ("POST", "/v1/capabilities"),
+            ("GET", "/v1/node"),
         ] {
             assert_eq!(parse_status(&request(&state, method, path, &auth, "")), 401);
         }
+        // Except scoped capability discovery, which reveals no node detail.
+        assert_eq!(
+            parse_status(&request(&state, "GET", "/v1/capabilities", &auth, "")),
+            200
+        );
         assert_eq!(
             parse_status(&request(&state, "GET", "/v1/scoped/prepare", &auth, "")),
             404
@@ -924,5 +930,197 @@ mod tests {
             .iter()
             .filter(|n| n.url != owner)
             .all(|n| n.paths().is_empty()));
+    }
+
+    /// A dispatcher answering only `/v1/capabilities` with `report` after
+    /// checking it was asked with the backend credential.
+    fn capability_node(report: Value) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let line = read_bounded_line(&mut reader, MAX_REQUEST_LINE).unwrap();
+                assert_eq!(line, "GET /v1/capabilities HTTP/1.1\r\n");
+                let mut authorized = false;
+                loop {
+                    let h = read_bounded_line(&mut reader, MAX_HEADER_LINE).unwrap();
+                    if h.trim().is_empty() {
+                        break;
+                    }
+                    authorized |= h == format!("Authorization: Bearer {BACKEND_TOKEN}\r\n");
+                }
+                assert!(authorized);
+                reply(&mut stream, 200, &report).unwrap();
+            }
+        });
+        url
+    }
+
+    fn capabilities(artifacts: &[&str], https: &[&str], eligible: bool) -> Value {
+        let mut report = serde_json::to_value(crate::capabilities::DispatcherCapabilities::new(
+            crate::node::NodeEligibility {
+                node_name: "fixture".into(),
+                kvm: true,
+                cpu_virtualization: true,
+                guest_kernel: true,
+                mote_store: true,
+                tool_store: true,
+                live_cells: 0,
+                max_cells: 4,
+                memory_bytes: 1 << 30,
+                egress_slots: 1,
+            },
+        ))
+        .unwrap();
+        report["scopedArtifactContracts"] = json!(artifacts);
+        report["scopedHttpsContracts"] = json!(https);
+        report["node"]["kvm"] = eligible.into();
+        report
+    }
+
+    fn scoped_capabilities(state: &RouterState) -> Value {
+        let response = request(
+            state,
+            "GET",
+            "/v1/capabilities",
+            &format!("Authorization: Bearer {SCOPED}\r\n"),
+            "",
+        );
+        assert_eq!(parse_status(&response), 200, "{response}");
+        serde_json::from_str(extract_body(&response)).unwrap()
+    }
+
+    #[test]
+    fn scoped_capabilities_are_the_common_contracts_of_eligible_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = scoped_state(dir.path());
+        let v1 = "celln.scoped-artifacts/v1";
+        let v2 = "celln.scoped-artifacts/v2";
+        let web = "celln.scoped-https/v1";
+        let dead = {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", listener.local_addr().unwrap())
+        };
+        let mut incompatible = capabilities(&[], &[], true);
+        incompatible["apiVersion"] = "future/unknown".into();
+        state.backends = vec![
+            capability_node(capabilities(&[v2, v1, v2], &[web], true)),
+            capability_node(capabilities(&[v1], &[web], true)),
+            // Neither ineligible, unreachable nor incompatible nodes narrow it.
+            capability_node(capabilities(&[], &[], false)),
+            dead,
+            capability_node(incompatible),
+        ];
+        let body = scoped_capabilities(&state);
+        assert_eq!(
+            body,
+            json!({
+                "apiVersion": crate::capabilities::VERSION,
+                "scopedArtifactContracts": [v1],
+                "scopedHttpsContracts": [web],
+                "eligibleNodes": 2,
+            })
+        );
+        // Sorted and deduplicated on a single node.
+        state.backends = vec![capability_node(capabilities(&[v2, v1, v2], &[web], true))];
+        assert_eq!(
+            scoped_capabilities(&state)["scopedArtifactContracts"],
+            json!([v1, v2])
+        );
+        // A node without web tools removes them from the fleet's answer.
+        state
+            .backends
+            .push(capability_node(capabilities(&[v1, v2], &[], true)));
+        let body = scoped_capabilities(&state);
+        assert_eq!(body["scopedArtifactContracts"], json!([v1, v2]));
+        assert_eq!(body["scopedHttpsContracts"], json!([]));
+        // The same probe gate as aggregate discovery.
+        state.capability_probe_active.store(true, Ordering::Release);
+        let response = request(
+            &state,
+            "GET",
+            "/v1/capabilities",
+            &format!("Authorization: Bearer {SCOPED}\r\n"),
+            "",
+        );
+        assert_eq!(parse_status(&response), 503);
+    }
+
+    #[test]
+    fn scoped_capabilities_fail_closed_without_an_eligible_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = scoped_state(dir.path());
+        let empty = json!({
+            "apiVersion": crate::capabilities::VERSION,
+            "scopedArtifactContracts": [],
+            "scopedHttpsContracts": [],
+            "eligibleNodes": 0,
+        });
+        assert_eq!(scoped_capabilities(&state), empty);
+        let full = {
+            let mut report = capabilities(&["celln.scoped-artifacts/v1"], &[], true);
+            report["node"]["live_cells"] = 4.into();
+            report
+        };
+        state.backends = vec![
+            capability_node(capabilities(&["celln.scoped-artifacts/v1"], &[], false)),
+            capability_node(full),
+        ];
+        assert_eq!(scoped_capabilities(&state), empty);
+    }
+
+    #[test]
+    fn capability_discovery_needs_a_known_bearer_and_keeps_node_detail_from_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = state(dir.path());
+        state.backends = vec![capability_node(capabilities(
+            &["celln.scoped-artifacts/v1"],
+            &["celln.scoped-https/v1"],
+            true,
+        ))];
+        // Scoped forwarding disabled: the scoped bearer is just a wrong token.
+        let scoped = format!("Authorization: Bearer {SCOPED}\r\n");
+        for header in [
+            String::new(),
+            "Authorization: Bearer wrong\r\n".into(),
+            scoped.clone(),
+        ] {
+            let response = request(&state, "GET", "/v1/capabilities", &header, "");
+            assert_eq!(parse_status(&response), 401, "{header}");
+        }
+        let file = dir.path().join("scoped");
+        std::fs::write(&file, SCOPED).unwrap();
+        state.scoped_token_file = Some(file);
+        for header in [String::new(), "Authorization: Bearer wrong\r\n".into()] {
+            let response = request(&state, "GET", "/v1/capabilities", &header, "");
+            assert_eq!(parse_status(&response), 401, "{header}");
+        }
+        let body = scoped_capabilities(&state);
+        let mut fields: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [
+                "apiVersion",
+                "eligibleNodes",
+                "scopedArtifactContracts",
+                "scopedHttpsContracts"
+            ]
+        );
+        let raw = request(&state, "GET", "/v1/capabilities", &scoped, "");
+        assert!(!raw.contains("fixture") && !raw.contains(BACKEND_TOKEN));
+        // The client credential still gets the aggregate per-node report.
+        let response = request(
+            &state,
+            "GET",
+            "/v1/capabilities",
+            &format!("Authorization: Bearer {CLIENT_TOKEN}\r\n"),
+            "",
+        );
+        assert_eq!(parse_status(&response), 200);
+        let report: Value = serde_json::from_str(extract_body(&response)).unwrap();
+        assert_eq!(report["nodes"][0]["report"]["node"]["node_name"], "fixture");
+        assert_eq!(report["eligibleNodes"], 1);
     }
 }
