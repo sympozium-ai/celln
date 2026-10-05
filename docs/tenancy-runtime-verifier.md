@@ -28,8 +28,10 @@ All shared verifier dispositions continue to pass after this correction.
 
 The verifier is a library, and the dispatcher now consumes it: `celln dispatcher`
 serves `POST /v1/scoped/{prepare,start,read,cleanup}`
-(`crates/celln-cli/src/dispatch_scoped.rs`). The router does not proxy these
-routes. Every request carries the scoped operator bearer in `Authorization`
+(`crates/celln-cli/src/dispatch_scoped.rs`). Scoped state is node-local; on a
+multi-node fleet send these routes to `celln route --scoped-token-file`, which
+forwards each operation to the one node that owns it (see
+[Router ownership](ROUTER_OWNERSHIP.md#scoped-receiver-forwarding)). Every request carries the scoped operator bearer in `Authorization`
 (a separate credential from `--token-file`, which these routes refuse);
 `start`/`read`/`cleanup` carry the signed capability in
 `X-Celln-Execution-Permit`, and a `start` on a model route additionally carries

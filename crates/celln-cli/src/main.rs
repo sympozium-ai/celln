@@ -248,6 +248,12 @@ enum Cmd {
         /// Optional operator parent principal credential for enduring routes.
         #[arg(long)]
         parent_token_file: Option<PathBuf>,
+        /// Optional scoped operator bearer. When set, POST /v1/scoped/{prepare,
+        /// start,read,cleanup} is forwarded to the one node owning each
+        /// operation; this bearer and the permit headers pass through unchanged
+        /// for that dispatcher to verify. Must differ from every other token.
+        #[arg(long)]
+        scoped_token_file: Option<PathBuf>,
         /// Durable owner ledger shared by all router replicas (coherent POSIX locks required).
         #[arg(long)]
         ownership_dir: PathBuf,
@@ -878,6 +884,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             client_token_file,
             capability_token_file,
             parent_token_file,
+            scoped_token_file,
             ownership_dir,
         } => router::serve(
             listen,
@@ -888,6 +895,7 @@ fn dispatch(cli: &Cli, o: &Out) -> Result<u8> {
             client_token_file,
             capability_token_file.as_deref(),
             parent_token_file.as_deref(),
+            scoped_token_file.as_deref(),
             ownership_dir,
         ),
         Cmd::Node(NodeCmd::Probe { probe }) => node::probe(probe, &root),

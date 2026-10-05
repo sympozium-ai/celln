@@ -107,6 +107,28 @@ pub(super) fn digest(raw: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(raw))
 }
 
+/// Durable identity of a scoped operation: the hash of
+/// `[clusterId, namespaceUid, runUid, parent.incarnation, parent.turnId]`.
+/// The dispatcher keys prepared material by it and the router binds it to the
+/// one node allowed to see it, so both must derive it from this function.
+#[allow(dead_code)] // Library API; only the binary's router and receiver call it.
+pub(super) fn scoped_operation_id(
+    operation: &Value,
+    decision: &Value,
+) -> Result<String, &'static str> {
+    let source = &operation["resolution"]["execution"]["source"];
+    let tuple = serde_json::json!([
+        "celln.scoped-operation/v1",
+        source["clusterId"],
+        source["namespaceUid"],
+        source["runUid"],
+        decision["parent"]["incarnation"],
+        decision["parent"]["turnId"]
+    ]);
+    let raw = serde_json::to_vec(&tuple).map_err(|_| "invalid scoped operation identity")?;
+    Ok(digest(&canonical(&raw)?))
+}
+
 #[test]
 fn vendored_contract_bundle_matches_external_pin() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -179,5 +201,21 @@ fn strict_parser_refuses_ambiguous_and_unbounded_inputs() {
     assert_eq!(
         canonical("{\"\u{e000}\":1,\"\u{10000}\":2}".as_bytes()).unwrap(),
         "{\"\u{10000}\":2,\"\u{e000}\":1}".as_bytes()
+    );
+}
+
+#[test]
+fn scoped_operation_id_hashes_the_canonical_identity_tuple() {
+    let operation = serde_json::json!({"resolution":{"execution":{"source":{
+        "runUid":"run","namespaceUid":"ns","clusterId":"c","ignored":"x"}}}});
+    let one_shot = serde_json::json!({"parent":null,"lifecycle":"one-shot"});
+    assert_eq!(
+        scoped_operation_id(&operation, &one_shot).unwrap(),
+        digest(br#"["celln.scoped-operation/v1","c","ns","run",null,null]"#)
+    );
+    let turn = serde_json::json!({"parent":{"incarnation":"blake3:p","turnId":"t1"}});
+    assert_eq!(
+        scoped_operation_id(&operation, &turn).unwrap(),
+        digest(br#"["celln.scoped-operation/v1","c","ns","run","blake3:p","t1"]"#)
     );
 }

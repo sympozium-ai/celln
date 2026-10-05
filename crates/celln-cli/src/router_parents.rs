@@ -60,9 +60,14 @@ pub(super) fn forward(
     };
     // The capability bearer must never acquire a parent principal via reuse.
     let (client, backend, capability) = credentials(state)?;
+    let scoped = state
+        .scoped_token_file
+        .as_deref()
+        .and_then(|path| read_token(path).ok());
     if [&client, &backend]
         .into_iter()
         .chain(capability.iter())
+        .chain(scoped.iter())
         .any(|other| constant_time_eq(token.as_bytes(), other.as_bytes()))
     {
         return reply(

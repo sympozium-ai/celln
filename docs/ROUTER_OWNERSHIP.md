@@ -61,6 +61,52 @@ Storage-driver qualification, a chart/PVC topology, verifiable rollout/rollback,
 terminal retention and distributed node-loss tests remain M0 work. This CLI
 change requires coordinated chart arguments/volumes before deployment.
 
+## Scoped receiver forwarding
+
+`celln route --scoped-token-file <file>` forwards
+`POST /v1/scoped/{prepare,start,read,cleanup}` on the router's listen port.
+Without the flag these routes answer `404 {"error":"scoped receiver disabled"}`.
+The file holds the same bearer as each dispatcher's
+`--scoped-operator-token-file`; it must differ from the client, backend,
+capability and parent credentials (startup fails, or the routes answer 503
+after a bad rotation). The router compares the inbound bearer in constant time
+and forwards it unchanged; the client credential is refused on these routes
+and the scoped bearer opens no other route. Only `Authorization`,
+`Content-Type`, `X-Celln-Execution-Permit` and `X-Celln-Model-Permit` reach
+the node; duplicate or non-printable permit headers are refused with 400. The
+body is bounded at 256 KiB and must be I-JSON; its canonical form is what is
+bound and forwarded. The dispatcher remains the only verifier of the bearer and
+of every permit.
+
+Prepared material, the admission journal and retained parents live on one
+node, and permits are not node-bound, so an operation id is bound to exactly
+one node in the shared ledger **before** its first forward:
+
+| Request | Binding |
+|---|---|
+| `prepare`, `one-shot` | `scoped-ops/`: operation id (the dispatcher's own hash of cluster, namespace UID, run UID, parent incarnation and turn) → node chosen like parents (most spare cells, then memory). |
+| `prepare`, `enduring-initial` | `scoped-parents/`: incarnation → chosen node, then the operation follows it. |
+| `prepare`, `enduring-turn` | Follows the parent binding only. No binding → `409` `AUTH_CONTEXT_LOST`; a turn never places a parent. |
+| Same id, same canonical body | Same node (the dispatcher re-prepare is idempotent). |
+| Same id, changed body | `409 {"error":"operation identity already has different prepared material"}`, no node contacted. |
+| `start` / `read` / `cleanup` | Route by `id`. Unknown id → `404 {"error":"unknown prepared operation"}`, as the dispatcher answers. |
+
+A bound node that has left discovery, or that refuses the connection, answers
+`409 {"error":"scoped admission refused","reason":"AUTH_CONTEXT_LOST"}` — the
+dispatcher's own refusal shape — and is never replaced. A failure after the
+request was sent answers `502` (outcome uncertain); retrying the same request
+reaches the same node. Note that a headless Service drops not-ready pods, so a
+node that is briefly unready also reads as lost.
+
+When cleanup returns `200` with `cleanupConfirmed: true`, the operation's
+binding retires, and so does the parent binding for an `enduring-initial`
+cleanup. A retired binding is removed only after a 10-minute quarantine from
+its claim, longer than any start permit for it can be admitted (≤ 65 s after
+issuance), so no id can reach a second node while a permit for it is live.
+Younger retirements are marked and swept when the ledger next fills. A `202`
+cleanup (teardown pending) retires nothing. The execution, parent and
+provision ledgers are unchanged and still never delete.
+
 ## Evidence (2026-09-07)
 
 Actual TCP protocol tests deliberately accept an execution at a backend and
