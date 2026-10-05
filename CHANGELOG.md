@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.34](https://github.com/sympozium-ai/celln/compare/v0.5.33...v0.5.34) (2026-10-05)
+
+
+### Features
+
+* **scoped:** a toolbox closure lends the whole starter toolbox to mediated runs ([#166](https://github.com/sympozium-ai/celln/issues/166)) ([e1ced66](https://github.com/sympozium-ai/celln/commit/e1ced66ece0f3fb6e964a8f3bd198dcf42c88052))
+
 ## [0.5.33](https://github.com/sympozium-ai/celln/compare/v0.5.32...v0.5.33) (2026-10-05)
 
 
