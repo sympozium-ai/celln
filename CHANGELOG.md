@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.31](https://github.com/sympozium-ai/celln/compare/v0.5.30...v0.5.31) (2026-10-05)
+
+
+### Features
+
+* **scoped:** full starter toolbox on the mediated path ([#160](https://github.com/sympozium-ai/celln/issues/160)) ([6550f74](https://github.com/sympozium-ai/celln/commit/6550f7406d3b4db9872e86fc7898b0ba6d504ea7))
+
 ## [0.5.30](https://github.com/sympozium-ai/celln/compare/v0.5.29...v0.5.30) (2026-10-05)
 
 
