@@ -12,7 +12,7 @@ use celln_spec::{ExecutionProblem, ExecutionRequest};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeEligibility {
     pub node_name: String,
     pub kvm: bool,

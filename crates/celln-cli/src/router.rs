@@ -530,6 +530,19 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
             pinned_backend.is_some(),
         );
     }
+    // The scoped bearer also opens scoped capability discovery: the fleet's
+    // common scoped contracts, nothing per node.
+    if method == "GET" && path == "/v1/capabilities" {
+        if let (Some(got), Ok(Some(scoped)), Ok((_, backend, _))) = (
+            presented,
+            scoped::scoped_credential(state),
+            credentials(state),
+        ) {
+            if constant_time_eq(got.as_bytes(), scoped.as_bytes()) {
+                return scoped_capability_report(state, stream, &Some(backend));
+            }
+        }
+    }
     let Ok((client_token, backend_token, read_token)) = credentials(state) else {
         return reply(
             stream,
@@ -628,20 +641,21 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
     Ok(())
 }
 
-fn capability_report(
-    state: &RouterState,
-    stream: &mut TcpStream,
-    token: &Option<String>,
-) -> Result<()> {
-    // Bound fanout and permit only one probe at a time per router. No request or
-    // owner ledger is mutated by discovery; failures never trigger execution.
+/// One node's answer to a capability probe.
+enum Probe {
+    Report(Box<crate::capabilities::DispatcherCapabilities>),
+    Refused,
+    Panicked,
+}
+
+/// Bounded fan-out of `GET /v1/capabilities` to every current backend, at most
+/// one in flight per router. `None` when the fleet is too large or another
+/// probe is running. No request or owner ledger is mutated; failures never
+/// trigger execution.
+fn probe_capabilities(state: &RouterState, token: &Option<String>) -> Option<Vec<Probe>> {
     let backends = state.backends();
     if backends.len() > 32 || state.capability_probe_active.swap(true, Ordering::AcqRel) {
-        return reply(
-            stream,
-            503,
-            &serde_json::json!({"error":"capability probe unavailable"}),
-        );
+        return None;
     }
     struct ProbeGuard<'a>(&'a AtomicBool);
     impl Drop for ProbeGuard<'_> {
@@ -650,8 +664,8 @@ fn capability_report(
         }
     }
     let _guard = ProbeGuard(&state.capability_probe_active);
-    let nodes = std::thread::scope(|scope| {
-        let probes: Vec<_> = backends.iter().enumerate().map(|(index, backend)| {
+    Some(std::thread::scope(|scope| {
+        let probes: Vec<_> = backends.iter().map(|backend| {
             scope.spawn(move || {
                 let report = (|| -> Result<crate::capabilities::DispatcherCapabilities> {
                     let addr = backend_to_addr(backend)?;
@@ -665,20 +679,43 @@ fn capability_report(
                     Ok(report)
                 })();
                 match report {
-                    Ok(report) => serde_json::json!({"index":index,"preflightEligible":report.node.eligible(),"report":report}),
-                    Err(_) => serde_json::json!({"index":index,"preflightEligible":false,"reason":"unreachable_unauthorized_or_incompatible"}),
+                    Ok(report) => Probe::Report(Box::new(report)),
+                    Err(_) => Probe::Refused,
                 }
             })
         }).collect();
         probes
             .into_iter()
-            .map(|probe| {
-                probe.join().unwrap_or_else(
-                    |_| serde_json::json!({"preflightEligible":false,"reason":"probe_failed"}),
-                )
-            })
-            .collect::<Vec<_>>()
-    });
+            .map(|probe| probe.join().unwrap_or(Probe::Panicked))
+            .collect()
+    }))
+}
+
+fn probe_unavailable(stream: &mut TcpStream) -> Result<()> {
+    reply(
+        stream,
+        503,
+        &serde_json::json!({"error":"capability probe unavailable"}),
+    )
+}
+
+fn capability_report(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    token: &Option<String>,
+) -> Result<()> {
+    let Some(probes) = probe_capabilities(state, token) else {
+        return probe_unavailable(stream);
+    };
+    let nodes: Vec<_> = probes
+        .into_iter()
+        .enumerate()
+        .map(|(index, probe)| match probe {
+            Probe::Report(report) => serde_json::json!({"index":index,"preflightEligible":report.node.eligible(),"report":report}),
+            Probe::Refused => serde_json::json!({"index":index,"preflightEligible":false,"reason":"unreachable_unauthorized_or_incompatible"}),
+            Probe::Panicked => serde_json::json!({"preflightEligible":false,"reason":"probe_failed"}),
+        })
+        .collect();
     let eligible = nodes
         .iter()
         .filter(|node| node["preflightEligible"] == true)
@@ -695,6 +732,53 @@ fn capability_report(
             "nodes":nodes,
         }),
     )
+}
+
+/// Scoped capability discovery: what the scoped operator may rely on wherever
+/// the router places an operation. Each `scoped*Contracts` list is the
+/// intersection over every reachable, compatible, preflight-eligible node
+/// (empty when none is), so a caller fails closed. No per-node detail.
+fn scoped_capability_report(
+    state: &RouterState,
+    stream: &mut TcpStream,
+    token: &Option<String>,
+) -> Result<()> {
+    let Some(probes) = probe_capabilities(state, token) else {
+        return probe_unavailable(stream);
+    };
+    let eligible: Vec<serde_json::Value> = probes
+        .into_iter()
+        .filter_map(|probe| match probe {
+            Probe::Report(report) if report.node.eligible() => serde_json::to_value(report).ok(),
+            _ => None,
+        })
+        .collect();
+    let mut body = serde_json::Map::new();
+    body.insert("apiVersion".into(), crate::capabilities::VERSION.into());
+    // The field set comes from this binary's own report type, so the shape is
+    // fixed regardless of what any node sends.
+    let template = serde_json::to_value(crate::capabilities::DispatcherCapabilities::new(
+        crate::node::NodeEligibility::default(),
+    ))?;
+    for field in template.as_object().into_iter().flat_map(|o| o.keys()) {
+        if !(field.starts_with("scoped") && field.ends_with("Contracts")) {
+            continue;
+        }
+        let lists = eligible.iter().map(|node| {
+            node[field]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+        let common = lists
+            .reduce(|acc, next| acc.intersection(&next).cloned().collect())
+            .unwrap_or_default();
+        body.insert(field.clone(), common.into_iter().collect::<Vec<_>>().into());
+    }
+    body.insert("eligibleNodes".into(), eligible.len().into());
+    reply(stream, 200, &serde_json::Value::Object(body))
 }
 
 /// `GET /v1/cells[?all=&limit=]`: every backend's `celln ps`-style listing.
