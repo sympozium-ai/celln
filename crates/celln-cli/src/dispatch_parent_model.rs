@@ -58,7 +58,14 @@ struct PostProfile {
 const WORKSPACE_READERS: [&str; 3] = ["workspace-read", "workspace-list", "workspace-search"];
 const WORKSPACE_WRITERS: [&str; 3] = ["workspace-write", "workspace-append", "workspace-delete"];
 
+/// A web tool allowlist: exactly `["*"]` (any public HTTPS host; the broker
+/// still refuses private, reserved and non-HTTPS reach), or 1..=16 exact
+/// lowercase DNS names. `"*"` combined with anything else is refused, and an
+/// empty list is refused rather than read as "any".
 fn valid_hosts(hosts: &[String]) -> bool {
+    if hosts.len() == 1 && hosts[0] == warden::egress::ANY_PUBLIC_HOST {
+        return true;
+    }
     !hosts.is_empty()
         && hosts.len() <= 16
         && hosts.iter().all(|host| {
@@ -287,6 +294,9 @@ impl ChildBrokers {
             return Err("model profile exceeds child reservation".into());
         }
         let target = warden::egress::model_endpoint_target(&profile.url, profile.allow_insecure)?;
+        // The shared list names only the model origin. Tool hosts live in
+        // their own GET/POST grants, which the broker enforces as public-only
+        // HTTPS; `allow_insecure` below applies to the model origin alone.
         let mut policy = warden::egress::HttpPolicy::new(vec![target.host.clone()]);
         // A model request may use the whole turn: slow local models are
         // legitimate, and the turn deadline is the enforced bound.
@@ -308,10 +318,8 @@ impl ChildBrokers {
                 timeout: std::time::Duration::from_secs(1),
             },
         };
-        policy.allow_hosts.extend(get.allow_hosts.iter().cloned());
         policy.get = Some(get);
         if let Some(post) = profile.post {
-            policy.allow_hosts.extend(post.allow_hosts.iter().cloned());
             policy.post = Some(warden::egress::PostGrant {
                 allow_hosts: post.allow_hosts,
                 max_requests: post.max_requests,
@@ -716,6 +724,41 @@ mod tests {
             })
         )
         .is_err());
+        // Exactly ["*"] is any public host; "*" never combines with names.
+        assert!(attempt(
+            vec![tool("https-post-json")],
+            None,
+            Some(PostProfile {
+                allow_hosts: vec!["*".into()],
+                ..post().unwrap()
+            })
+        )
+        .is_ok());
+        assert!(attempt(
+            vec![tool("https-post-json")],
+            None,
+            Some(PostProfile {
+                allow_hosts: vec!["*".into(), "hooks.example".into()],
+                ..post().unwrap()
+            })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn valid_hosts_accepts_exact_names_or_the_lone_wildcard() {
+        let v =
+            |hosts: &[&str]| valid_hosts(&hosts.iter().map(|h| (*h).into()).collect::<Vec<_>>());
+        assert!(v(&["*"]));
+        assert!(v(&["example.com"]));
+        assert!(v(&["example.com", "hooks.example"]));
+        assert!(!v(&[]));
+        assert!(!v(&["*", "a.com"]));
+        assert!(!v(&["a.com", "*"]));
+        assert!(!v(&["*", "*"]));
+        assert!(!v(&["*.example.com"]));
+        assert!(!v(&["**"]));
+        assert!(!v(&["Example.com"]));
     }
     #[test]
     fn live_profile_revocation_consumes_claim_without_retry_or_refund() {

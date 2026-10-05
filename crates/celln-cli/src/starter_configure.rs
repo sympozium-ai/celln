@@ -27,14 +27,20 @@ struct Plan {
     /// it may spend over its life. Absent fields keep the reviewed defaults.
     #[serde(default)]
     host_limits: Option<HostLimits>,
-    /// Exact hosts the fetch and JSON POST tools may reach; the reviewed
-    /// default is example.com. Lowercase DNS names, at most 16.
+    /// Hosts the fetch and JSON POST tools may reach. The default is `["*"]`:
+    /// any public HTTPS host (the broker refuses private, reserved, non-443
+    /// and plaintext reach whatever this says). Otherwise 1..=16 exact
+    /// lowercase DNS names; `"*"` cannot be combined with names.
     #[serde(default)]
     https_hosts: Option<Vec<String>>,
 }
 
 fn resolve_hosts(hosts: Option<&Vec<String>>) -> Result<Vec<String>> {
-    let hosts = hosts.cloned().unwrap_or_else(|| vec!["example.com".into()]);
+    let any = warden::egress::ANY_PUBLIC_HOST;
+    let hosts = hosts.cloned().unwrap_or_else(|| vec![any.into()]);
+    if hosts.len() == 1 && hosts[0] == any {
+        return Ok(hosts);
+    }
     ensure!(
         !hosts.is_empty()
             && hosts.len() <= 16
@@ -51,7 +57,7 @@ fn resolve_hosts(hosts: Option<&Vec<String>>) -> Result<Vec<String>> {
                                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
                     })
             }),
-        "httpsHosts must be 1..=16 lowercase DNS names"
+        "httpsHosts must be [\"*\"] (any public host) or 1..=16 lowercase DNS names"
     );
     Ok(hosts)
 }
@@ -527,6 +533,26 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_hosts_default_to_any_public_host_and_explicit_lists_stay_exact() {
+        assert_eq!(resolve_hosts(None).unwrap(), vec!["*"]);
+        let given = |hosts: &[&str]| -> Vec<String> { hosts.iter().map(|h| (*h).into()).collect() };
+        assert_eq!(resolve_hosts(Some(&given(&["*"]))).unwrap(), vec!["*"]);
+        assert_eq!(
+            resolve_hosts(Some(&given(&["example.com", "hooks.example"]))).unwrap(),
+            vec!["example.com", "hooks.example"]
+        );
+        for refused in [
+            &[][..],
+            &["*", "example.com"][..],
+            &["example.com", "*"][..],
+            &["*.example.com"][..],
+            &["Example.com"][..],
+        ] {
+            assert!(resolve_hosts(Some(&given(refused))).is_err(), "{refused:?}");
+        }
+    }
 
     #[test]
     fn a_turn_affords_the_template_loop_and_totals_afford_every_turn() {

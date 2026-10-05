@@ -2,7 +2,7 @@
 //! The wire contains no headers, credential reference, redirects or proxy
 //! options. Only the host chooses a credential and the permitted endpoint.
 
-use super::{response_status_and_location, FetchDenied, HttpBroker};
+use super::{response_status_and_location, FetchDenied, HttpBroker, Reach};
 use serde::Deserialize;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -486,7 +486,7 @@ impl HttpBroker {
             }
             return Ok(response);
         }
-        let authorized = self.authorize(&request.url)?;
+        let authorized = self.authorize(&request.url, Reach::Model)?;
         self.used += 1;
         self.post_output_reserved.insert(request.url.clone(), next);
         let credential = credential_header(&grant.bearer_token_file, grant.protocol)?;
@@ -565,10 +565,13 @@ impl HttpBroker {
         Ok(normalized)
     }
 
-    /// A credential-free JSON POST under the starter post grant: exact host,
-    /// bounded body and response, no headers beyond the content type, no
-    /// redirect. The HTTP status is data for the tool, not a refusal, so a
-    /// receiver's 4xx reaches the model verbatim.
+    /// A credential-free JSON POST under the starter post grant: an exact
+    /// host or `["*"]` (any public host), bounded body and response, no
+    /// headers beyond the content type, no redirect. Always HTTPS on 443 to a
+    /// public IPv4 address with a verified certificate: the model profile's
+    /// `allow_insecure` never reaches this agent-selected URL. The HTTP status
+    /// is data for the tool, not a refusal, so a receiver's 4xx reaches the
+    /// model verbatim.
     fn post_plain(&mut self, request: Request) -> Result<Vec<u8>, FetchDenied> {
         let grant = self
             .policy
@@ -576,11 +579,7 @@ impl HttpBroker {
             .clone()
             .ok_or_else(|| refused("JSON POST endpoint not granted"))?;
         let host = super::url_host(&request.url).ok_or(FetchDenied::Authority)?;
-        if !grant
-            .allow_hosts
-            .iter()
-            .any(|allowed| allowed.eq_ignore_ascii_case(&host))
-        {
+        if !super::host_allowed(&grant.allow_hosts, &host) {
             return Err(FetchDenied::Host(host));
         }
         if self.post_used >= grant.max_requests {
@@ -591,7 +590,7 @@ impl HttpBroker {
         if body_bytes.len() > grant.max_body_bytes {
             return Err(refused("POST body exceeds byte budget"));
         }
-        let authorized = self.authorize(&request.url)?;
+        let authorized = self.authorize(&request.url, Reach::Tool(&grant.allow_hosts))?;
         self.post_used += 1;
         let mut body =
             tempfile::NamedTempFile::new().map_err(|_| refused("request staging failed"))?;
@@ -609,11 +608,7 @@ impl HttpBroker {
                 "--noproxy",
                 "*",
                 "--proto",
-                if self.policy.allow_insecure {
-                    "=http,https"
-                } else {
-                    "=https"
-                },
+                "=https",
                 "--max-redirs",
                 "0",
                 "--request",
@@ -627,9 +622,6 @@ impl HttpBroker {
             .arg(grant.timeout.as_secs().max(1).to_string())
             .arg("--max-filesize")
             .arg(grant.max_response_bytes.to_string());
-        if self.policy.allow_insecure && authorized.scheme == "https" {
-            command.arg("--insecure");
-        }
         command
             .arg("--resolve")
             .arg(format!(
@@ -704,6 +696,67 @@ mod tests {
         ] {
             assert!(broker.fetch(&raw).is_err());
         }
+    }
+
+    #[test]
+    fn tool_posts_are_public_https_only_even_with_insecure_model_and_wildcard() {
+        use serde_json::json;
+        let wire = |url: &str| {
+            json!({"apiVersion":"celln.fetch/v1","method":"POST","url":url,"body":{"event":"done"}})
+                .to_string()
+        };
+        let mut policy = HttpPolicy::new(vec!["192.168.1.237".into()]);
+        policy.allow_insecure = true;
+        policy.post = Some(PostGrant {
+            allow_hosts: vec!["*".into()],
+            max_requests: 8,
+            max_body_bytes: 4096,
+            max_response_bytes: 4096,
+            timeout: std::time::Duration::from_secs(1),
+        });
+        let mut broker = HttpBroker::new(policy);
+        for url in [
+            "https://10.0.0.1/in",
+            "https://127.0.0.1/in",
+            "https://169.254.169.254/latest/api/token",
+            "https://192.168.1.237/v1/chat/completions",
+            "https://203.0.113.9/in",
+        ] {
+            assert_eq!(
+                broker.fetch(&wire(url)).unwrap_err(),
+                FetchDenied::Address,
+                "{url}"
+            );
+        }
+        assert_eq!(
+            broker
+                .fetch(&wire("http://192.168.1.237:8080/in"))
+                .unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert_eq!(
+            broker.fetch(&wire("http://1.1.1.1/in")).unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert_eq!(
+            broker.fetch(&wire("https://1.1.1.1:8443/in")).unwrap_err(),
+            FetchDenied::Authority
+        );
+        assert_eq!(broker.post_used, 0);
+        // An explicit list keeps working and stays exact.
+        let mut policy = HttpPolicy::new(vec![]);
+        policy.post = Some(PostGrant {
+            allow_hosts: vec!["hooks.example".into()],
+            max_requests: 8,
+            max_body_bytes: 4096,
+            max_response_bytes: 4096,
+            timeout: std::time::Duration::from_secs(1),
+        });
+        let mut explicit = HttpBroker::new(policy);
+        assert!(matches!(
+            explicit.fetch(&wire("https://1.1.1.1/in")).unwrap_err(),
+            FetchDenied::Host(_)
+        ));
     }
 
     #[test]
