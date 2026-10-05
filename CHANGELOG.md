@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.30](https://github.com/sympozium-ai/celln/compare/v0.5.29...v0.5.30) (2026-10-05)
+
+
+### Features
+
+* **broker:** any public HTTPS host for web tools, never private ([#157](https://github.com/sympozium-ai/celln/issues/157)) ([a7c8110](https://github.com/sympozium-ai/celln/commit/a7c8110f709349b6c05b0b4a7fc1acca7c5aefa2))
+
 ## [0.5.29](https://github.com/sympozium-ai/celln/compare/v0.5.28...v0.5.29) (2026-10-05)
 
 
