@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 mod ownership;
 #[path = "router_parents.rs"]
 mod parents;
+#[path = "router_scoped.rs"]
+mod scoped;
 
 // Credentials are bounded and never echoed in errors. Reload on each request
 // to support atomic file/Secret rotation; an unreadable file fails closed.
@@ -161,6 +163,7 @@ pub fn serve(
     client_token_file: &Path,
     capability_token_file: Option<&Path>,
     parent_token_file: Option<&Path>,
+    scoped_token_file: Option<&Path>,
     ownership_dir: &Path,
 ) -> Result<u8> {
     let (urls, discovery) = initial_backends(backends, backends_srv)?;
@@ -172,7 +175,10 @@ pub fn serve(
         executions: ownership::Ledger::open(ownership_dir, 100_000)?,
         parents: ownership::Ledger::open(&ownership_dir.join("parents"), 100_000)?,
         provisions: ownership::Ledger::open(&ownership_dir.join("provisions"), 100_000)?,
+        scoped_parents: ownership::Ledger::open(&ownership_dir.join("scoped-parents"), 100_000)?,
+        scoped_ops: ownership::Ledger::open(&ownership_dir.join("scoped-ops"), 100_000)?,
         parent_token_file: parent_token_file.map(Path::to_owned),
+        scoped_token_file: scoped_token_file.map(Path::to_owned),
         token_file: token_file.to_owned(),
         client_token_file: client_token_file.to_owned(),
         capability_token_file: capability_token_file.map(Path::to_owned),
@@ -180,6 +186,8 @@ pub fn serve(
         cells_probe_active: AtomicBool::new(false),
     });
     credentials(&state).context("router credentials are missing, invalid or not distinct")?;
+    scoped::scoped_credential(&state)
+        .context("scoped credential is missing, invalid or not distinct")?;
     let listener = TcpListener::bind(listen).with_context(|| format!("binding router {listen}"))?;
     eprintln!(
         "celln route listening on {listen} ({} backends, {mode:?})",
@@ -310,7 +318,13 @@ struct RouterState {
     parents: ownership::Ledger,
     /// Owner chosen at provisioning; creation must follow it, never re-pick.
     provisions: ownership::Ledger,
+    /// Scoped parent incarnation -> the node holding its retained parent.
+    scoped_parents: ownership::Ledger,
+    /// Scoped operation id -> the only node that may ever see it.
+    scoped_ops: ownership::Ledger,
     parent_token_file: Option<PathBuf>,
+    /// Scoped operator bearer; `/v1/scoped/*` is disabled (404) without it.
+    scoped_token_file: Option<PathBuf>,
     token_file: PathBuf,
     client_token_file: PathBuf,
     capability_token_file: Option<PathBuf>,
@@ -396,6 +410,7 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
     let mut pinned_backend = None;
     let mut parent_incarnation = None;
     let mut respond_async = false;
+    let mut permits = scoped::Permits::default();
     let mut header_count = 0usize;
     loop {
         let header = read_bounded_line(&mut reader, MAX_HEADER_LINE)?;
@@ -442,6 +457,25 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
                     &serde_json::json!({"error":"duplicate parent identity"}),
                 );
             }
+        } else if name.eq_ignore_ascii_case("x-celln-execution-permit")
+            || name.eq_ignore_ascii_case("x-celln-model-permit")
+        {
+            // Only these two pass to a scoped receiver. Refuse anything that
+            // is ambiguous or could split the forwarded header block.
+            let value = value.trim();
+            let slot = if name.eq_ignore_ascii_case("x-celln-execution-permit") {
+                &mut permits.execution
+            } else {
+                &mut permits.model
+            };
+            if slot.is_some() || value.is_empty() || !value.bytes().all(|b| b.is_ascii_graphic()) {
+                return reply(
+                    stream,
+                    400,
+                    &serde_json::json!({"error":"invalid or duplicate permit header"}),
+                );
+            }
+            *slot = Some(zeroize::Zeroizing::new(value.to_owned()));
         } else if name.eq_ignore_ascii_case("prefer") {
             if value.trim() != "respond-async" || respond_async {
                 return reply(
@@ -477,6 +511,25 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
         }
     }
 
+    let presented = authorization.as_deref().and_then(|value| {
+        let (scheme, token) = value.split_once(' ')?;
+        scheme.eq_ignore_ascii_case("bearer").then_some(token)
+    });
+    // Scoped routes carry their own operator bearer (never the client one)
+    // and are forwarded by operation ownership, not execution ownership.
+    if path.starts_with("/v1/scoped/") {
+        return scoped::forward(
+            state,
+            stream,
+            &mut reader,
+            &method,
+            &path,
+            length,
+            presented,
+            &permits,
+            pinned_backend.is_some(),
+        );
+    }
     let Ok((client_token, backend_token, read_token)) = credentials(state) else {
         return reply(
             stream,
@@ -484,10 +537,6 @@ fn handle_request(stream: &mut TcpStream, state: &RouterState) -> Result<()> {
             &serde_json::json!({"error":"router credentials unavailable"}),
         );
     };
-    let presented = authorization.as_deref().and_then(|value| {
-        let (scheme, token) = value.split_once(' ')?;
-        scheme.eq_ignore_ascii_case("bearer").then_some(token)
-    });
     // The optional capability credential is a read-only *discovery* token. It
     // opens exactly two GET routes, both aggregate fan-outs that mutate no
     // ledger and return no tenant content: `/v1/capabilities` and `/v1/cells`
@@ -1227,8 +1276,8 @@ mod tests {
         assert!(backend_to_addr("http://user:password@node1").is_err());
     }
 
-    const CLIENT_TOKEN: &str = "client-test-credential-at-least-24";
-    const BACKEND_TOKEN: &str = "backend-test-credential-at-least-24";
+    pub(super) const CLIENT_TOKEN: &str = "client-test-credential-at-least-24";
+    pub(super) const BACKEND_TOKEN: &str = "backend-test-credential-at-least-24";
 
     #[test]
     fn capability_token_is_read_only_distinct_and_rotatable() {
@@ -2134,7 +2183,7 @@ mod tests {
         );
     }
 
-    fn state(dir: &Path) -> RouterState {
+    pub(super) fn state(dir: &Path) -> RouterState {
         let client_token_file = dir.join("client");
         let token_file = dir.join("backend");
         std::fs::write(&client_token_file, CLIENT_TOKEN).unwrap();
@@ -2147,7 +2196,11 @@ mod tests {
             executions: ownership::Ledger::open(&dir.join("ownership"), 100).unwrap(),
             parents: ownership::Ledger::open(&dir.join("ownership/parents"), 100).unwrap(),
             provisions: ownership::Ledger::open(&dir.join("ownership/provisions"), 100).unwrap(),
+            scoped_parents: ownership::Ledger::open(&dir.join("ownership/scoped-parents"), 100)
+                .unwrap(),
+            scoped_ops: ownership::Ledger::open(&dir.join("ownership/scoped-ops"), 100).unwrap(),
             parent_token_file: None,
+            scoped_token_file: None,
             token_file,
             client_token_file,
             capability_token_file: None,
@@ -2375,7 +2428,13 @@ mod tests {
 
     // Actual TCP request parsing/forwarding; backend is a protocol fixture,
     // deliberately not a KVM/isolation proof.
-    fn request(state: &RouterState, method: &str, path: &str, headers: &str, body: &str) -> String {
+    pub(super) fn request(
+        state: &RouterState,
+        method: &str,
+        path: &str,
+        headers: &str,
+        body: &str,
+    ) -> String {
         std::thread::scope(|scope| {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();

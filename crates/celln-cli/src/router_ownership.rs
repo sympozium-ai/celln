@@ -46,7 +46,7 @@ impl Ledger {
             capacity,
         })
     }
-    fn path(&self, id: &str) -> PathBuf {
+    pub(super) fn path(&self, id: &str) -> PathBuf {
         self.dir.join(format!(
             "{}.json",
             Hash::of(id.as_bytes()).0.trim_start_matches("blake3:")
@@ -116,6 +116,65 @@ impl Ledger {
         // the following gap is ambiguous and must not authorize replay.
         Ok(Claim::New(owner))
     }
+    fn retired_path(&self, id: &str) -> PathBuf {
+        self.path(id).with_extension("retired")
+    }
+    /// Deletes a record and its retirement marker; callers hold the lock.
+    fn remove_locked(&self, record: &Path) -> Result<bool> {
+        let removed = match std::fs::remove_file(record) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.into()),
+        };
+        match std::fs::remove_file(record.with_extension("retired")) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        std::fs::File::open(&self.dir)?.sync_all()?;
+        Ok(removed)
+    }
+    /// Retires a record whose work is finished. Only callers whose protocol
+    /// proves the id can never again authorize a side effect may use this;
+    /// the execution, parent and provision ledgers never do. A record claimed at least
+    /// `quarantine` ago is removed now; a younger one is only marked, and
+    /// [`Ledger::sweep_retired`] removes it once it has aged. The quarantine
+    /// outlives any credential that could have been presented for the id.
+    pub fn retire(&self, id: &str, quarantine: std::time::Duration) -> Result<bool> {
+        let _lock = self.lock()?;
+        let record = self.path(id);
+        match aged(&record, quarantine) {
+            Ok(true) => self.remove_locked(&record),
+            Ok(false) => {
+                std::fs::File::create(self.retired_path(id))?.sync_all()?;
+                std::fs::File::open(&self.dir)?.sync_all()?;
+                Ok(false)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+    /// Removes every retired record that has completed its quarantine.
+    pub fn sweep_retired(&self, quarantine: std::time::Duration) -> Result<usize> {
+        let _lock = self.lock()?;
+        let mut removed = 0;
+        for entry in std::fs::read_dir(&self.dir)? {
+            let marker = entry?.path();
+            if marker.extension().map_or(true, |e| e != "retired") {
+                continue;
+            }
+            let record = marker.with_extension("json");
+            match aged(&record, quarantine) {
+                Ok(false) => continue,
+                Ok(true) => removed += usize::from(self.remove_locked(&record)?),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    self.remove_locked(&record)?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(removed)
+    }
     #[cfg(target_os = "linux")]
     fn lock(&self) -> Result<std::fs::File> {
         use std::os::fd::AsRawFd;
@@ -134,6 +193,12 @@ impl Ledger {
     fn lock(&self) -> Result<std::fs::File> {
         bail!("Unsupported: router ownership requires Linux flock");
     }
+}
+
+fn aged(record: &Path, quarantine: std::time::Duration) -> std::io::Result<bool> {
+    let claimed = std::fs::metadata(record)?.modified()?;
+    // A clock that moved backwards leaves the record in quarantine.
+    Ok(claimed.elapsed().is_ok_and(|elapsed| elapsed >= quarantine))
 }
 
 #[cfg(test)]
@@ -191,5 +256,67 @@ mod tests {
         assert!(a
             .claim("x", b"x", || panic!("corrupt owner cannot be replaced"))
             .is_err());
+    }
+    #[test]
+    fn quarantined_retirement_frees_capacity_and_never_touches_live_records() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(dir.path(), 2).unwrap();
+        let node = || Ok("http://node-a:8787".to_string());
+        assert!(matches!(
+            ledger.claim("a", b"a", node).unwrap(),
+            Claim::New(_)
+        ));
+        assert!(matches!(
+            ledger.claim("b", b"b", node).unwrap(),
+            Claim::New(_)
+        ));
+        assert!(matches!(
+            ledger.claim("c", b"c", node).unwrap(),
+            Claim::Full
+        ));
+        let quarantine = Duration::from_secs(600);
+        let old = SystemTime::now() - Duration::from_secs(601);
+        let age = |id: &str| {
+            std::fs::File::options()
+                .write(true)
+                .open(ledger.path(id))
+                .unwrap()
+                .set_modified(old)
+                .unwrap()
+        };
+        // An aged record retires immediately; an unknown id is a no-op.
+        age("a");
+        assert!(ledger.retire("a", quarantine).unwrap());
+        assert!(!ledger.retire("a", quarantine).unwrap());
+        assert!(ledger.lookup("a").unwrap().is_none());
+        assert!(!ledger.retired_path("a").exists());
+        assert!(matches!(
+            ledger.claim("c", b"c", node).unwrap(),
+            Claim::New(_)
+        ));
+        // A young record is only marked; it stays routable and counted.
+        assert!(!ledger.retire("b", quarantine).unwrap());
+        assert!(ledger.lookup("b").unwrap().is_some());
+        assert!(ledger.retired_path("b").exists());
+        assert_eq!(ledger.sweep_retired(quarantine).unwrap(), 0);
+        assert!(matches!(
+            ledger.claim("d", b"d", node).unwrap(),
+            Claim::Full
+        ));
+        // Once aged past the quarantine the sweep removes record and marker.
+        age("b");
+        assert_eq!(ledger.sweep_retired(quarantine).unwrap(), 1);
+        assert!(ledger.lookup("b").unwrap().is_none());
+        assert!(!ledger.retired_path("b").exists());
+        // Unretired records are never swept, however old.
+        age("c");
+        assert_eq!(ledger.sweep_retired(quarantine).unwrap(), 0);
+        assert!(ledger.lookup("c").unwrap().is_some());
+        // Markers are not records: they never consume capacity.
+        assert!(matches!(
+            ledger.claim("d", b"d", node).unwrap(),
+            Claim::New(_)
+        ));
     }
 }

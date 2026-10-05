@@ -2575,19 +2575,7 @@ fn external_request(operation: &Value, decision: &Value) -> Result<Vec<u8>> {
 }
 
 fn operation_id(operation: &Value, decision: &Value) -> Result<String> {
-    let source = &operation["resolution"]["execution"]["source"];
-    let tuple = json!([
-        "celln.scoped-operation/v1",
-        source["clusterId"],
-        source["namespaceUid"],
-        source["runUid"],
-        decision["parent"]["incarnation"],
-        decision["parent"]["turnId"]
-    ]);
-    Ok(crate::tenancy_contract::digest(
-        &crate::tenancy_contract::canonical(&serde_json::to_vec(&tuple)?)
-            .map_err(anyhow::Error::msg)?,
-    ))
+    crate::tenancy_contract::scoped_operation_id(operation, decision).map_err(anyhow::Error::msg)
 }
 
 fn digest_value(value: &Value) -> Result<String> {
