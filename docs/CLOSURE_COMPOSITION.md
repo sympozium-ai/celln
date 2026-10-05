@@ -38,8 +38,10 @@ signed source descriptors. Verification independently checks source publishers
 and source descriptor/filesystem revocations, as well as final image, member
 and descriptor revocations. A composer signature cannot replace source trust.
 Original v1 signature encoding remains unchanged. Nested composition is not
-accepted: source count is bounded to one runtime plus at most 16 tools, the
-combined graph to 256 members, and the signed descriptor to 256 KiB.
+accepted: a signed graph retains one runtime plus at most 24 tools (the worker
+template's own tool cap, which the starter package's toolbox closure uses), the
+combined graph is bounded to 256 members, and the signed descriptor to 256 KiB.
+An operator composition plan (`celln compose`) still names at most 16 tools.
 
 Image size is 32–512 MiB, aligned to 2 MiB. The builder has a 45-second deadline
 and bounded output. Source bytes have an aggregate image-size-minus-8-MiB cap;

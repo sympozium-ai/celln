@@ -324,7 +324,7 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
                 .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
         "model credential path must be absolute and outside controller-mounted state"
     );
-    crate::starter_admit::verified(&plan.package, &plan.package_hash, root)?;
+    let candidates = crate::starter_admit::verified(&plan.package, &plan.package_hash, root)?;
     let raw = crate::starter_package::regular(&plan.package.join("package.json"), 65536)?;
     ensure!(
         Hash::of(&raw).0 == plan.package_hash,
@@ -455,13 +455,32 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         parameters,
     ))?;
     let profile_hash = Hash::of(&profile);
+    // A package with a toolbox lends each catalogue tool as its own signed
+    // source of that closure, in catalogue order; a borrowed command's
+    // catalogue entry names its own source rather than the standing worker.
+    let toolbox = match candidates.iter().find(|c| c.name() == "toolbox") {
+        Some(candidate) => Some(toolbox_sources(
+            candidate.descriptor(),
+            &template.policy().tools,
+            |name| entry(name)["closure"].as_str().map(str::to_owned),
+        )?),
+        None => None,
+    };
+    // The scoped receiver builds a mediated run's worker template from
+    // catalogue material: it reads the schemas from this node's store and a
+    // borrowed command's argv binding from this node's reviewed record.
+    publish_tool_material(root, &template.policy().tools)?;
     let mut catalogue_tools = Vec::new();
     for tool in &template.policy().tools {
         if let Some(packaged) = commands.iter().find(|c| c.command.name == tool.name) {
             // A borrowed command: no broker effects, provenance is the image.
             let limits = json!({"timeoutMillis":30000,"memoryBytes":268435456u64,"argumentBytes":8192,"outputBytes":32768,"workspace":"none","effects":"none"});
             let worker = entry("worker");
-            catalogue_tools.push(json!({"name":tool.name,"spec":{"revision":"v1","description":tool.description,"supportOwner":"native-starter-operator","publisherKey":worker["publisher"],"executable":{"hash":tool.hash},"closure":{"hash":worker["closure"]},"entryPoint":tool.path,"invocationABI":"celln.argv/v1","argumentsSchema":{"hash":tool.input_schema.hash},"resultSchema":{"hash":tool.output_schema.hash},"platform":"linux/amd64","lane":"tool","sourceImage":packaged.source_image,"limits":limits}}));
+            let closure = toolbox
+                .as_ref()
+                .and_then(|sources| sources.get(&tool.path).cloned())
+                .map_or_else(|| worker["closure"].clone(), Value::String);
+            catalogue_tools.push(json!({"name":tool.name,"spec":{"revision":"v1","description":tool.description,"supportOwner":"native-starter-operator","publisherKey":worker["publisher"],"executable":{"hash":tool.hash},"closure":{"hash":closure},"entryPoint":tool.path,"invocationABI":"celln.argv/v1","argumentsSchema":{"hash":tool.input_schema.hash},"resultSchema":{"hash":tool.output_schema.hash},"platform":"linux/amd64","lane":"tool","sourceImage":packaged.source_image,"limits":limits}}));
             continue;
         }
         let bundle = entry(&tool.name);
@@ -487,7 +506,13 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
         .iter()
         .find(|entry| entry["name"] == "runtime")
         .unwrap_or_else(|| entry("worker"));
-    let catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":{"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":TEMPLATE_MAX_TURNS,"maxCalls":TEMPLATE_MAX_CALLS},"limits":{"timeoutMillis":worker_timeout_ms(request_output_tokens),"memoryBytes":268435456u64,"taskBytes":warden::parent_protocol::MAX_TASK_BYTES,"outputBytes":65536,"workspace":"none"}}});
+    let runtime = |bundle: &Value| json!({"revision":"v1","contractVersion":"celln.json-tools/v1","publisherKey":bundle["publisher"],"executable":{"hash":bundle["executable"]},"closure":{"hash":bundle["closure"]},"mote":{"hash":bundle["mote"]},"entryPoint":"/worker","platform":"linux/amd64","lane":"agent","lifecycle":"disposable-one-shot","json":{"maxTurns":TEMPLATE_MAX_TURNS,"maxCalls":TEMPLATE_MAX_CALLS},"limits":{"timeoutMillis":worker_timeout_ms(request_output_tokens),"memoryBytes":268435456u64,"taskBytes":warden::parent_protocol::MAX_TASK_BYTES,"outputBytes":65536,"workspace":"none"}});
+    let mut catalogue = json!({"systemPrompt":template.policy().system,"tools":catalogue_tools,"worker":runtime(bundle)});
+    if toolbox.is_some() {
+        // The runtime a mediated run lending the whole toolbox executes on:
+        // it serves exactly `tools`, every one, in this order.
+        catalogue["toolbox"] = runtime(entry("toolbox"));
+    }
     let native = json!({"admissionWindowMs":120000,"parent":parent,"worker":worker,"template":template.policy(),"modelProfile":profile_hash,"reservedMemoryBytes":RESERVED_MEMORY_BYTES,"maxTurns":limits.max_turns,"turnModelRequests":TURN_MODEL_REQUESTS,"turnOutputTokens":turn_tokens,"totalModelRequests":limits.max_model_requests,"totalOutputTokens":limits.max_output_tokens});
     let catalogue_bytes = serde_json::to_vec_pretty(&catalogue)?;
     let native_bytes = serde_json::to_vec_pretty(&native)?;
@@ -530,9 +555,179 @@ pub fn run(plan: &Path, root: &Path) -> Result<u8> {
     Ok(0)
 }
 
+/// The toolbox closure's tool sources by entry point, after checking that it
+/// composes the isolated runtime with exactly the catalogue's tools in
+/// catalogue order, each starter tool by its own packaged closure.
+fn toolbox_sources(
+    descriptor: &[u8],
+    tools: &[pilot::json_harness::Tool],
+    bundle_closure: impl Fn(&str) -> Option<String>,
+) -> Result<std::collections::BTreeMap<String, String>> {
+    let signed: celln_manifest::closure::SignedClosure = serde_json::from_slice(descriptor)?;
+    let sources = &signed.closure.sources;
+    ensure!(
+        sources.len() == tools.len() + 1
+            && Some(&sources[0].hash) == bundle_closure("runtime").as_ref(),
+        "toolbox closure does not compose the runtime with every catalogue tool"
+    );
+    let mut by_path = std::collections::BTreeMap::new();
+    for (source, tool) in sources[1..].iter().zip(tools) {
+        let lent = source.parse().map_err(anyhow::Error::msg)?.closure;
+        ensure!(
+            lent.entrypoint == tool.path
+                && lent.members[&lent.entrypoint].hash == tool.hash
+                && (tool.argv.is_some()
+                    || Some(&source.hash) == bundle_closure(&tool.name).as_ref()),
+            "toolbox closure does not lend {} in catalogue order",
+            tool.name
+        );
+        by_path.insert(tool.path.clone(), source.hash.clone());
+    }
+    Ok(by_path)
+}
+
+/// Public schema bytes into this node's schema store (selected by exact hash
+/// only), and each borrowed command's reviewed argv binding.
+fn publish_tool_material(root: &Path, tools: &[pilot::json_harness::Tool]) -> Result<()> {
+    let schemas = celln_store::Store::open(root.join("tool-schemas"))?;
+    for tool in tools {
+        for schema in [&tool.input_schema, &tool.output_schema] {
+            ensure!(
+                schemas.put(schema.bytes.as_bytes())?.0 == schema.hash,
+                "tool schema hash mismatch"
+            );
+        }
+        if let Some(argv) = &tool.argv {
+            crate::tool_argv::publish(
+                root,
+                &crate::tool_argv::Identity {
+                    path: &tool.path,
+                    hash: &tool.hash,
+                    input_schema: &tool.input_schema.hash,
+                    output_schema: &tool.output_schema.hash,
+                },
+                argv,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lent_tool(name: &str, argv: bool) -> pilot::json_harness::Tool {
+        let schema = |bytes: &str| pilot::json_harness::Schema {
+            bytes: bytes.into(),
+            hash: Hash::of(bytes.as_bytes()).0,
+        };
+        pilot::json_harness::Tool {
+            name: name.into(),
+            path: format!("/{name}"),
+            hash: Hash::of(name.as_bytes()).0,
+            description: name.into(),
+            input_schema: schema(
+                r#"{"type":"object","properties":{"text":{"type":"string","minLength":0,"maxLength":64}},"required":["text"],"additionalProperties":false}"#,
+            ),
+            output_schema: schema(&pilot::json_harness::argv_output_schema().to_string()),
+            input_bytes: 8192,
+            output_bytes: 8192,
+            timeout_ms: 30000,
+            argv: argv.then(|| pilot::json_harness::Argv {
+                args: vec![name.into(), "{text}".into()],
+                stdin: None,
+            }),
+        }
+    }
+
+    /// A v1 source whose entry point is `/name`, signed by the package key.
+    fn source(name: &str) -> celln_manifest::closure::composition::Source {
+        crate::starter_package::command_source(
+            &format!("/{name}"),
+            name.as_bytes(),
+            &Hash::of(b"toolbox image"),
+            &[9; 32],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_toolbox_must_lend_every_catalogue_tool_in_catalogue_order() {
+        let tools = vec![lent_tool("workspace-read", false), lent_tool("grep", true)];
+        let runtime = source("worker");
+        let read = source("workspace-read");
+        let grep = source("grep");
+        let bundles = |name: &str| match name {
+            "runtime" => Some(runtime.hash.clone()),
+            "workspace-read" => Some(read.hash.clone()),
+            _ => None,
+        };
+        let toolbox = |sources: Vec<celln_manifest::closure::composition::Source>| {
+            let closure =
+                celln_manifest::closure::composition::compose(sources, &Hash::of(b"toolbox image"))
+                    .unwrap();
+            serde_json::to_vec(&closure.sign(&[9; 32]).unwrap()).unwrap()
+        };
+        let impostor = crate::starter_package::command_source(
+            "/workspace-read",
+            b"workspace-read",
+            &Hash::of(b"another image"),
+            &[9; 32],
+        )
+        .unwrap();
+        let lent = toolbox_sources(
+            &toolbox(vec![runtime.clone(), read.clone(), grep.clone()]),
+            &tools,
+            bundles,
+        )
+        .unwrap();
+        // A borrowed command's catalogue entry names its own source.
+        assert_eq!(lent["/grep"], grep.hash);
+        assert_eq!(lent["/workspace-read"], read.hash);
+        for refused in [
+            vec![runtime.clone(), grep.clone(), read.clone()],
+            vec![runtime.clone(), read.clone()],
+            vec![read.clone(), runtime.clone(), grep.clone()],
+            // The same starter executable lent by another closure than its
+            // packaged one.
+            vec![runtime.clone(), impostor, grep.clone()],
+        ] {
+            assert!(toolbox_sources(&toolbox(refused), &tools, bundles).is_err());
+        }
+    }
+
+    #[test]
+    fn reviewed_schemas_and_argv_bindings_reach_the_node_stores() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = vec![lent_tool("workspace-read", false), lent_tool("grep", true)];
+        publish_tool_material(root.path(), &tools).unwrap();
+        // Idempotent: every backend of one package records the same material.
+        publish_tool_material(root.path(), &tools).unwrap();
+        let schemas = celln_store::Store::open(root.path().join("tool-schemas")).unwrap();
+        for tool in &tools {
+            assert_eq!(
+                schemas.get(&Hash(tool.input_schema.hash.clone())).unwrap(),
+                tool.input_schema.bytes.as_bytes()
+            );
+        }
+        let identity = |tool: &pilot::json_harness::Tool| {
+            crate::tool_argv::lookup(
+                root.path(),
+                &crate::tool_argv::Identity {
+                    path: &tool.path,
+                    hash: &tool.hash,
+                    input_schema: &tool.input_schema.hash,
+                    output_schema: &tool.output_schema.hash,
+                },
+            )
+        };
+        assert_eq!(identity(&tools[1]).unwrap(), tools[1].argv.clone().unwrap());
+        assert!(
+            identity(&tools[0]).is_err(),
+            "a brokered tool has no binding"
+        );
+    }
 
     #[test]
     fn https_hosts_default_to_any_public_host_and_explicit_lists_stay_exact() {

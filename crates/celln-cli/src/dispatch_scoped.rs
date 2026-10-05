@@ -2396,7 +2396,8 @@ fn bounded_resource(
 
 fn native_tool(scoped: &ScopedState, material: &Value, binding: &Value) -> Result<Value, String> {
     let spec = &material["spec"];
-    if spec["invocationABI"] != "celln.json-stdio/v1"
+    let argv = spec["invocationABI"] == "celln.argv/v1";
+    if !(argv || spec["invocationABI"] == "celln.json-stdio/v1")
         || spec["lane"] != "tool"
         || spec["platform"] != "linux/amd64"
         || spec["executable"]["hash"] != binding["hash"]
@@ -2417,9 +2418,29 @@ fn native_tool(scoped: &ScopedState, material: &Value, binding: &Value) -> Resul
         let bytes = String::from_utf8(bytes).map_err(|_| "tool schema is not UTF-8")?;
         Ok(json!({"hash":hash,"bytes":bytes}))
     };
-    Ok(
-        json!({"name":material["name"],"path":spec["entryPoint"],"hash":binding["hash"],"description":spec["description"],"input_schema":schema(&spec["argumentsSchema"] )?,"output_schema":schema(&spec["resultSchema"] )?,"input_bytes":binding["limits"]["argumentBytes"],"output_bytes":binding["limits"]["outputBytes"],"timeout_ms":binding["limits"]["timeoutMillis"]}),
-    )
+    let mut tool = json!({"name":material["name"],"path":spec["entryPoint"],"hash":binding["hash"],"description":spec["description"],"input_schema":schema(&spec["argumentsSchema"] )?,"output_schema":schema(&spec["resultSchema"] )?,"input_bytes":binding["limits"]["argumentBytes"],"output_bytes":binding["limits"]["outputBytes"],"timeout_ms":binding["limits"]["timeoutMillis"]});
+    if argv {
+        // A borrowed command: how its arguments become a command line is
+        // this node's reviewed binding for exactly this executable and these
+        // schemas, never anything the material or decision says.
+        fn field(value: &Value) -> Result<&str, String> {
+            value
+                .as_str()
+                .ok_or_else(|| "AUTH_PROTOCOL_UNSUPPORTED".into())
+        }
+        let binding = crate::tool_argv::lookup(
+            scoped.root.parent().unwrap(),
+            &crate::tool_argv::Identity {
+                path: field(&spec["entryPoint"])?,
+                hash: field(&spec["executable"]["hash"])?,
+                input_schema: field(&spec["argumentsSchema"]["hash"])?,
+                output_schema: field(&spec["resultSchema"]["hash"])?,
+            },
+        )
+        .map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+        tool["argv"] = serde_json::to_value(binding).map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+    }
+    Ok(tool)
 }
 
 #[derive(Debug, PartialEq, Eq)]

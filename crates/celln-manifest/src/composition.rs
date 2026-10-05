@@ -31,13 +31,17 @@ impl Source {
     }
 }
 
+/// Most sources one composed graph retains: the runtime and at most 24 tools,
+/// the worker template's own tool cap (a starter toolbox lends them all).
+pub const MAX_SOURCES: usize = 25;
+
 /// Runtime first, followed by explicitly selected tool closures. Shared members
 /// must agree in bytes AND dependencies. No relocation or host library lookup.
 /// This checks signatures, not caller authorization: the host must independently
 /// authorize every source publisher and check current revocation policy.
 pub fn compose(sources: Vec<Source>, toolfs: &Hash) -> Result<Closure, String> {
-    if sources.is_empty() || sources.len() > 17 || !super::hash(&toolfs.0) {
-        return Err("composition requires 1..17 sources and a filesystem hash".into());
+    if sources.is_empty() || sources.len() > MAX_SOURCES || !super::hash(&toolfs.0) {
+        return Err("composition requires 1..25 sources and a filesystem hash".into());
     }
     let source_bytes = serde_json::to_vec(&sources).map_err(|_| "invalid sources")?;
     if source_bytes.len() > 196608 {
@@ -169,6 +173,19 @@ mod tests {
         publishers.insert(input_publisher);
         tampered.closure.sources[0].descriptor.push(' ');
         assert!(tampered.verify(&publishers).is_err());
+    }
+
+    #[test]
+    fn a_runtime_composes_with_at_most_24_tools() {
+        let sources = |tools: usize| {
+            let mut all = vec![source("/harness", b"library", 1)];
+            all.extend((0..tools).map(|i| source(&format!("/tool-{i}"), b"library", 2)));
+            all
+        };
+        let composed = compose(sources(24), &Hash::of(b"fs")).unwrap();
+        assert_eq!(composed.sources.len(), MAX_SOURCES);
+        assert_eq!(composed.members["/harness"].dependencies.len(), 25);
+        assert!(compose(sources(25), &Hash::of(b"fs")).is_err());
     }
 
     #[test]

@@ -36,6 +36,7 @@ mod tenancy_credentials;
 mod tenancy_model_context;
 #[cfg(target_os = "linux")]
 mod tenancy_model_relay;
+mod tool_argv;
 mod tool_commands;
 
 use anyhow::{Context, Result};
