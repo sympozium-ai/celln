@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.32](https://github.com/sympozium-ai/celln/compare/v0.5.31...v0.5.32) (2026-10-05)
+
+
+### Features
+
+* **router:** answer scoped capability discovery with the fleet's common contracts ([#162](https://github.com/sympozium-ai/celln/issues/162)) ([7116b53](https://github.com/sympozium-ai/celln/commit/7116b539753dcc23305fe4b88de0020505d5b899))
+
 ## [0.5.31](https://github.com/sympozium-ai/celln/compare/v0.5.30...v0.5.31) (2026-10-05)
 
 
