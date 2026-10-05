@@ -192,7 +192,7 @@ additive: a v1 decision (enduring, exact read/write) behaves exactly as above.
   creates a private, empty store owned by the run's broker and dropped with
   its cell. There is no parent, lease, reuse or persistence.
 - The shared authorisation decision schema admits the six operations (bundle
-  pin `sha256:23ff4588942a476adefd7d4b61d7b73867841f9067d0848cc872b2c3c2940f5b`;
+  pin `sha256:5fb2bd011d3d9451cac80747996c166a811d7fc15b54ebe76da3c9934fad4aa3`;
   only `decision.schema.json` changed).
 
 **`celln.scoped-https/v1`** (`dispatch_scoped_https.rs`,

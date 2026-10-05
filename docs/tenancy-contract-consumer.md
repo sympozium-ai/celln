@@ -14,7 +14,7 @@ use the schema-required empty array rather than null), regenerated for
 `celln.scoped-artifacts/v2` so `tools[].limits.artifacts.operation` may name
 all six run-data operations (only the decision schema changed). External bundle pin:
 
-`sha256:23ff4588942a476adefd7d4b61d7b73867841f9067d0848cc872b2c3c2940f5b`
+`sha256:5fb2bd011d3d9451cac80747996c166a811d7fc15b54ebe76da3c9934fad4aa3`
 
 Tests check the external pin, normative file checksums, eight decision digests,
 exact canonical bytes and their external-request digests. No new protocol or

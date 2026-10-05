@@ -134,7 +134,7 @@ fn vendored_contract_bundle_matches_external_pin() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/celln-authorisation/v1");
     let sums = std::fs::read(root.join("bundle/SHA256SUMS")).unwrap();
-    let expected = "sha256:23ff4588942a476adefd7d4b61d7b73867841f9067d0848cc872b2c3c2940f5b";
+    let expected = "sha256:5fb2bd011d3d9451cac80747996c166a811d7fc15b54ebe76da3c9934fad4aa3";
     assert_eq!(digest(&sums), expected);
     assert_eq!(
         std::fs::read_to_string(root.join("bundle/BUNDLE.sha256"))
