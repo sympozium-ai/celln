@@ -2,7 +2,7 @@
 //! credentials, Kubernetes operations, VM boot or claims of hardware readiness.
 use anyhow::{ensure, Context, Result};
 use celln_manifest::{
-    closure::{Closure, Member},
+    closure::{composition::Source, Closure, Member, SignedClosure},
     Author, Hash,
 };
 use serde_json::{json, Value};
@@ -333,9 +333,50 @@ pub(crate) fn prepare(
             &aliases,
             &programs,
             &kernel_bytes,
-            &signing_seed,
+            &|entrypoint, members, toolfs| {
+                plain_closure(entrypoint, members, toolfs, &signing_seed)
+            },
         )?);
     }
+    // The toolbox: the runtime composed with every starter tool and every
+    // borrowed command, in catalogue order, for a mediated Agent that lends
+    // the whole starter toolbox. Its signed graph names each selected tool's
+    // own closure, so the scoped receiver can check a selection against it
+    // exactly; a partial or reordered selection is refused, never served with
+    // unselected executables. The standing worker keeps the fleet path.
+    let mut toolbox_aliases = vec!["/worker", "/pilot-fetch"];
+    toolbox_aliases.extend(starter_aliases.iter().map(String::as_str));
+    toolbox_aliases.extend(commands.iter().map(|c| c.alias.as_str()));
+    bundles.push(bundle(
+        output,
+        staging.path(),
+        &runtime_copy,
+        "toolbox",
+        &toolbox_aliases,
+        &programs,
+        &kernel_bytes,
+        &|_, members, toolfs| {
+            let mut sources = vec![bundle_source(output, "runtime")?];
+            for name in STARTER_TOOLS {
+                sources.push(bundle_source(output, name)?);
+            }
+            for packaged in commands {
+                sources.push(command_source(
+                    &packaged.alias,
+                    &programs[packaged.alias.as_str()],
+                    toolfs,
+                    &signing_seed,
+                )?);
+            }
+            let closure = celln_manifest::closure::composition::compose(sources, toolfs)
+                .map_err(anyhow::Error::msg)?;
+            ensure!(
+                closure.members == *members,
+                "toolbox image differs from its composed source graph"
+            );
+            closure.sign(&signing_seed).map_err(anyhow::Error::msg)
+        },
+    )?);
     let inputs: BTreeMap<_, _> = programs
         .iter()
         .map(|(name, bytes)| (*name, Hash::of(bytes).0))
@@ -368,6 +409,74 @@ pub(crate) fn prepare(
     Ok(report)
 }
 
+/// The signed closure of one bundle's image, given its entrypoint, its exact
+/// members and the image's hash.
+type ClosureFor<'a> = dyn Fn(&str, &BTreeMap<String, Member>, &Hash) -> Result<SignedClosure> + 'a;
+
+/// An original v1 closure: exactly the bundle's members.
+fn plain_closure(
+    entrypoint: &str,
+    members: &BTreeMap<String, Member>,
+    toolfs: &Hash,
+    key: &[u8; 32],
+) -> Result<SignedClosure> {
+    Closure {
+        api_version: "celln.dev/closure-v1".into(),
+        sources: vec![],
+        toolfs: toolfs.0.clone(),
+        entrypoint: entrypoint.into(),
+        interpreter: false,
+        members: members.clone(),
+    }
+    .sign(key)
+    .map_err(anyhow::Error::msg)
+}
+
+/// A package bundle's signed closure, exactly as published, as a
+/// composition source.
+fn bundle_source(output: &Path, name: &str) -> Result<Source> {
+    let descriptor = String::from_utf8(regular(
+        &output.join(name).join("signed-closure.json"),
+        crate::closure_policy::MAX_DESCRIPTOR_BYTES,
+    )?)?;
+    Ok(Source {
+        hash: Hash::of(descriptor.as_bytes()).0,
+        descriptor,
+    })
+}
+
+/// A borrowed command's own signed closure: the command alone (an argv tool
+/// never calls the broker helper), on the toolbox filesystem that holds it.
+/// It is a composition source only and never boots by itself.
+pub(crate) fn command_source(
+    alias: &str,
+    bytes: &[u8],
+    toolfs: &Hash,
+    key: &[u8; 32],
+) -> Result<Source> {
+    let signed = Closure {
+        api_version: "celln.dev/closure-v1".into(),
+        sources: vec![],
+        toolfs: toolfs.0.clone(),
+        entrypoint: alias.into(),
+        interpreter: false,
+        members: BTreeMap::from([(
+            alias.to_owned(),
+            Member {
+                hash: Hash::of(bytes).0,
+                dependencies: BTreeSet::new(),
+            },
+        )]),
+    }
+    .sign(key)
+    .map_err(anyhow::Error::msg)?;
+    let descriptor = String::from_utf8(serde_json::to_vec(&signed)?)?;
+    Ok(Source {
+        hash: Hash::of(descriptor.as_bytes()).0,
+        descriptor,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn bundle(
     output: &Path,
@@ -377,7 +486,7 @@ fn bundle(
     aliases: &[&str],
     programs: &BTreeMap<&str, Vec<u8>>,
     kernel: &[u8],
-    key: &[u8; 32],
+    closure: &ClosureFor<'_>,
 ) -> Result<Value> {
     let build = staging.join(name);
     let rootfs = build.join("rootfs");
@@ -430,16 +539,11 @@ fn bundle(
             .arg("8192"),
     )?;
     let image = regular(&image_path, 64 << 20)?;
-    let signed = Closure {
-        api_version: "celln.dev/closure-v1".into(),
-        sources: vec![],
-        toolfs: Hash::of(&image).0,
-        entrypoint: aliases[0].into(),
-        interpreter: false,
-        members,
-    }
-    .sign(key)
-    .map_err(anyhow::Error::msg)?;
+    let signed = closure(aliases[0], &members, &Hash::of(&image))?;
+    ensure!(
+        signed.closure.entrypoint == aliases[0] && signed.closure.members == members,
+        "{name}: signed closure differs from its image"
+    );
     let signed_bytes = serde_json::to_vec(&signed)?;
     let assay_root = build.join("assay");
     assay::Assayer::open(&assay_root)?.admit_verified_authored(
@@ -506,20 +610,88 @@ mod tests {
         let key = dir.path().join("key");
         fs::write(&key, [17u8; 32]).unwrap();
         let output = dir.path().join("package");
-        let report = prepare(
-            &repo,
-            &guest,
-            &kernel,
-            &key,
-            &output,
-            &Default::default(),
-            &[],
-        )
-        .unwrap();
+        // Two borrowed commands lending the same static bytes, as busybox
+        // applets do; any static amd64 ELF serves.
+        let lent = fs::read(guest.join("pilot-fetch")).unwrap();
+        let command = |name: &str| PackagedCommand {
+            alias: format!("/{name}"),
+            image: "fixture".into(),
+            source_image: "registry.example/fixture@sha256:00".into(),
+            command: crate::tool_commands::CatalogueCommand {
+                name: name.into(),
+                exec: "/bin/fixture".into(),
+                args: vec![name.into(), "{text}".into()],
+                stdin: None,
+                description: format!("{name} the text"),
+                params: vec![crate::tool_commands::CatalogueParam {
+                    name: "text".into(),
+                    kind: "string".into(),
+                    required: true,
+                    max: Some(64),
+                    description: String::new(),
+                }],
+            },
+        };
+        let commands = vec![command("echo"), command("cat")];
+        let borrowed: BTreeMap<String, Vec<u8>> = commands
+            .iter()
+            .map(|c| (c.alias.clone(), lent.clone()))
+            .collect();
+        let report = prepare(&repo, &guest, &kernel, &key, &output, &borrowed, &commands).unwrap();
         assert_eq!(report["admitted"], false);
         assert_eq!(report["executionAuthorized"], false);
         assert_eq!(report["harness"]["maxTokensConfigurable"], true);
-        assert_eq!(report["bundles"].as_array().unwrap().len(), 11);
+        assert_eq!(report["bundles"].as_array().unwrap().len(), 12);
+        let entry = |name: &str| {
+            report["bundles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["name"] == name)
+                .unwrap()
+                .clone()
+        };
+        let read = |name: &str| -> celln_manifest::closure::SignedClosure {
+            serde_json::from_slice(
+                &fs::read(output.join(name).join("signed-closure.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        // The toolbox: the runtime, then every starter tool, then every
+        // borrowed command, in catalogue order; its image holds exactly the
+        // standing worker's members and nothing else.
+        let toolbox = read("toolbox");
+        assert_eq!(toolbox.closure.api_version, "celln.dev/closure-v2");
+        assert_eq!(toolbox.closure.entrypoint, "/worker");
+        let sources = &toolbox.closure.sources;
+        assert_eq!(sources.len(), 1 + STARTER_TOOLS.len() + commands.len());
+        assert_eq!(sources[0].hash, entry("runtime")["closure"]);
+        for (source, name) in sources[1..].iter().zip(STARTER_TOOLS) {
+            assert_eq!(source.hash, entry(name)["closure"]);
+        }
+        for (source, packaged) in sources[1 + STARTER_TOOLS.len()..].iter().zip(&commands) {
+            let lent = source.parse().unwrap();
+            assert_eq!(lent.closure.entrypoint, packaged.alias);
+            assert_eq!(
+                lent.closure.members.len(),
+                1,
+                "a command lends itself alone"
+            );
+            assert_eq!(lent.closure.toolfs, toolbox.closure.toolfs);
+        }
+        assert_eq!(
+            toolbox.closure.members.keys().collect::<BTreeSet<_>>(),
+            read("worker")
+                .closure
+                .members
+                .keys()
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(entry("toolbox")["entryPoint"], "/worker");
+        assert_eq!(
+            entry("toolbox")["executable"],
+            entry("runtime")["executable"]
+        );
         for entry in report["bundles"].as_array().unwrap() {
             let bundle = output.join(entry["name"].as_str().unwrap());
             let raw = fs::read(bundle.join("signed-closure.json")).unwrap();
@@ -568,16 +740,7 @@ mod tests {
             fs::metadata(&output).unwrap().permissions().mode() & 0o777,
             0o700
         );
-        assert!(prepare(
-            &repo,
-            &guest,
-            &kernel,
-            &key,
-            &output,
-            &Default::default(),
-            &[]
-        )
-        .is_err());
+        assert!(prepare(&repo, &guest, &kernel, &key, &output, &borrowed, &commands).is_err());
     }
 
     #[test]

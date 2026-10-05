@@ -31,6 +31,18 @@ pub(crate) struct Candidate {
     mote: String,
 }
 
+impl Candidate {
+    /// The bundle's name in the package.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The bundle's verified signed closure descriptor, as published.
+    pub(crate) fn descriptor(&self) -> &[u8] {
+        &self.descriptor
+    }
+}
+
 pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Vec<Candidate>> {
     ensure!(
         package.is_absolute() && root.is_absolute() && root.is_dir(),
@@ -50,9 +62,12 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
         .as_array()
         .context("package bundles required")?;
     let has_runtime = entries.iter().any(|entry| entry["name"] == "runtime");
+    // The toolbox composes the isolated runtime with every starter tool, so
+    // it is only ever packaged beside it.
+    let has_toolbox = has_runtime && entries.iter().any(|entry| entry["name"] == "toolbox");
     ensure!(
-        entries.len() == NAMES.len() + usize::from(has_runtime),
-        "exact starter bundles (and optional isolated runtime) required"
+        entries.len() == NAMES.len() + usize::from(has_runtime) + usize::from(has_toolbox),
+        "exact starter bundles (and optional isolated runtime and toolbox) required"
     );
     let kernel = regular(&package.join("kernel"), 64 << 20)?;
     ensure!(
@@ -64,6 +79,7 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
         .iter()
         .copied()
         .chain(has_runtime.then_some("runtime"))
+        .chain(has_toolbox.then_some("toolbox"))
     {
         let matching: Vec<_> = entries
             .iter()
@@ -102,7 +118,7 @@ pub(crate) fn verified(package: &Path, expected: &str, root: &Path) -> Result<Ve
                 "package artifact hash mismatch: {name}/{field}"
             );
         }
-        let alias = if name == "runtime" {
+        let alias = if name == "runtime" || name == "toolbox" {
             "/worker".into()
         } else {
             format!("/{name}")
@@ -221,7 +237,7 @@ mod tests {
         assert_eq!(run(&package, &expected, &root).unwrap(), 0);
         let policy: Value =
             serde_json::from_slice(&fs::read(root.join("trusted-motes.json")).unwrap()).unwrap();
-        assert_eq!(policy["bundles"].as_array().unwrap().len(), 11);
+        assert_eq!(policy["bundles"].as_array().unwrap().len(), 12);
         for entry in report["bundles"].as_array().unwrap() {
             assert!(policy["bundles"]
                 .as_array()
@@ -246,6 +262,28 @@ mod tests {
             .unwrap();
         assert_eq!(catalogue["worker"]["closure"]["hash"], runtime["closure"]);
         assert_eq!(catalogue["worker"]["mote"]["hash"], runtime["mote"]);
+        // The admitted toolbox is what a mediated run lending every tool
+        // executes on; each tool's catalogue closure is one of its sources.
+        let toolbox = report["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "toolbox")
+            .unwrap();
+        assert_eq!(catalogue["toolbox"]["closure"]["hash"], toolbox["closure"]);
+        assert_eq!(catalogue["toolbox"]["mote"]["hash"], toolbox["mote"]);
+        let composed: SignedClosure = serde_json::from_slice(
+            &Store::open(root.join("closures"))
+                .unwrap()
+                .get(&Hash(toolbox["closure"].as_str().unwrap().into()))
+                .unwrap(),
+        )
+        .unwrap();
+        let tools = catalogue["tools"].as_array().unwrap();
+        assert_eq!(composed.closure.sources.len(), tools.len() + 1);
+        for (source, tool) in composed.closure.sources[1..].iter().zip(tools) {
+            assert_eq!(tool["spec"]["closure"]["hash"], source.hash);
+        }
         assert!(!root.join("trusted-parent-permits").exists());
         assert!(crate::starter_configure::run(&config_plan, &root).is_err());
         // The reviewed parent is also written as the scoped receiver's parent

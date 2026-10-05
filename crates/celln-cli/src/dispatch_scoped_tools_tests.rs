@@ -6,6 +6,16 @@ use super::*;
 /// A runtime composed with signed tool sources, as Sympozium would select
 /// it: the runtime closure first, then one source per tool, in order.
 fn toolbox(root: &Path, tools: &[(&str, Value)]) -> (Artifacts, Vec<Value>, Vec<Value>) {
+    toolbox_lending(root, tools, &[])
+}
+
+/// `toolbox`, followed by borrowed commands (`celln.argv/v1`) whose argv
+/// bindings this node reviewed, as `starter-configure` records them.
+fn toolbox_lending(
+    root: &Path,
+    tools: &[(&str, Value)],
+    commands: &[&str],
+) -> (Artifacts, Vec<Value>, Vec<Value>) {
     use celln_manifest::closure::composition::Source;
     use celln_manifest::closure::{Closure, Member};
     let seed = [7; 32];
@@ -37,7 +47,11 @@ fn toolbox(root: &Path, tools: &[(&str, Value)]) -> (Artifacts, Vec<Value>, Vec<
     };
     let (runtime, publisher) = source("/harness");
     let mut sources = vec![runtime];
-    for (name, _) in tools {
+    for name in tools
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(commands.iter().copied())
+    {
         sources.push(source(&format!("/{name}")).0);
     }
     let toolfs = Hash::of(b"scoped-toolbox-toolfs");
@@ -74,6 +88,44 @@ fn toolbox(root: &Path, tools: &[(&str, Value)]) -> (Artifacts, Vec<Value>, Vec<
             "platform":"linux/amd64","lane":"tool","limits":limits}}),
         );
         bindings.push(json!({"name":name,"revision":"v1","hash":hash,"limits":limits}));
+    }
+    let store = Store::open(root.join("tool-schemas")).unwrap();
+    let input = store
+        .put(br#"{"type":"object","properties":{"text":{"type":"string","minLength":0,"maxLength":64}},"required":["text"],"additionalProperties":false}"#)
+        .unwrap();
+    let output = store
+        .put(
+            pilot::json_harness::argv_output_schema()
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+    let plain = limits("none", Value::Null, Value::Null);
+    for (name, source) in commands.iter().zip(&sources[1 + tools.len()..]) {
+        let entry = format!("/{name}");
+        let hash = Hash::of(entry.as_bytes()).0;
+        crate::tool_argv::publish(
+            root,
+            &crate::tool_argv::Identity {
+                path: &entry,
+                hash: &hash,
+                input_schema: &input.0,
+                output_schema: &output.0,
+            },
+            &pilot::json_harness::Argv {
+                args: vec![(*name).into(), "{text}".into()],
+                stdin: None,
+            },
+        )
+        .unwrap();
+        materials.push(
+            json!({"name":name,"spec":{"revision":"v1","description":name,
+            "supportOwner":"fixture","publisherKey":publisher,"executable":{"hash":hash},
+            "closure":{"hash":source.hash},"entryPoint":entry,"invocationABI":"celln.argv/v1",
+            "argumentsSchema":{"hash":input.0},"resultSchema":{"hash":output.0},
+            "platform":"linux/amd64","lane":"tool","limits":plain}}),
+        );
+        bindings.push(json!({"name":name,"revision":"v1","hash":hash,"limits":plain}));
     }
     (
         Artifacts {
@@ -346,5 +398,138 @@ fn an_enduring_broker_gets_web_tools_only_per_reserved_turn() {
     assert_eq!(
         attached.fetch("https://192.168.0.1/").unwrap_err(),
         warden::egress::FetchDenied::Address
+    );
+}
+
+/// The fleet's borrowed commands, as the starter package lends them.
+const COMMANDS: [&str; 14] = [
+    "cat", "echo", "grep", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "sed", "date",
+    "base64", "jq",
+];
+
+/// Prepares a one-shot mediated run lending exactly these tools and builds its
+/// native request, as the start route does.
+fn build_lending(
+    run: &str,
+    root: &Path,
+    artifacts: &Artifacts,
+    materials: Vec<Value>,
+    bindings: Vec<Value>,
+) -> Result<ExecutionRequest, String> {
+    let gateway = Gateway::serve(root, vec![]);
+    let state = node(
+        root,
+        NodeOptions {
+            max_cells: 1,
+            egress_slots: 1,
+            gateway: Some((&gateway.origin, &gateway.ca)),
+            parent_template: None,
+        },
+    );
+    let scoped = state.scoped.as_ref().unwrap();
+    let (mut operation, mut decision) = compose(artifacts, one_shot(run, true, unix_now()));
+    with_tools(&mut operation, &mut decision, materials, bindings);
+    let (code, _) = post(
+        &state,
+        "prepare",
+        Headers::operator(),
+        &json!({"operation":operation,"decision":decision}),
+    );
+    assert_eq!(code, 200, "the prepare route admits the selection");
+    let (id, _) = prepare(&state, &operation, &decision);
+    let prepared = scoped.load_prepared(&id).unwrap();
+    let execution = Permit::execution(&decision, "toolbox-closure-execution").sign(&decision);
+    let model = Permit::model(&decision, "toolbox-closure-model").sign(&decision);
+    let receiver = receiver_context(&operation, &decision, "execution.start").unwrap();
+    let control = operation_control(&prepared).unwrap();
+    build_native(
+        scoped,
+        &prepared,
+        &receiver,
+        &execution,
+        Some(&model),
+        &control,
+    )
+    .map(|(native, _)| native)
+}
+
+#[test]
+fn the_whole_starter_toolbox_runs_on_its_toolbox_closure() {
+    let root = tempfile::tempdir().unwrap();
+    let (artifacts, materials, bindings) = toolbox_lending(root.path(), &starter(), &COMMANDS);
+    assert_eq!(materials.len(), 22);
+    let native = build_lending("toolbox-full", root.path(), &artifacts, materials, bindings)
+        .ok()
+        .unwrap();
+    let config: pilot::json_harness::Config =
+        serde_json::from_str(&native.invocation.as_ref().unwrap().args[0]).unwrap();
+    pilot::json_harness::validate(&config).unwrap();
+    let paths: Vec<_> = config.tools.iter().map(|tool| tool.path.as_str()).collect();
+    let expected: Vec<_> = starter()
+        .iter()
+        .map(|(name, _)| format!("/{name}"))
+        .chain(COMMANDS.iter().map(|name| format!("/{name}")))
+        .collect();
+    assert_eq!(paths, expected);
+    // A borrowed command carries this node's reviewed binding; a brokered
+    // tool none.
+    for tool in &config.tools {
+        let name = tool.path.trim_start_matches('/');
+        match COMMANDS.contains(&name) {
+            true => assert_eq!(
+                tool.argv,
+                Some(pilot::json_harness::Argv {
+                    args: vec![name.into(), "{text}".into()],
+                    stdin: None
+                })
+            ),
+            false => assert!(tool.argv.is_none()),
+        }
+    }
+}
+
+#[test]
+fn a_partial_or_reordered_selection_of_the_toolbox_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let (artifacts, materials, bindings) = toolbox_lending(root.path(), &starter(), &COMMANDS);
+    // One tool fewer: the cell would carry an unselected executable.
+    let mut fewer = (materials.clone(), bindings.clone());
+    fewer.0.pop();
+    fewer.1.pop();
+    assert_eq!(
+        build_lending("toolbox-fewer", root.path(), &artifacts, fewer.0, fewer.1)
+            .err()
+            .unwrap(),
+        "prepared closure source count mismatch"
+    );
+    // Every tool, in another order: each must be the closure's source at
+    // its own position.
+    let mut reordered = (materials.clone(), bindings.clone());
+    reordered.0.swap(0, 21);
+    reordered.1.swap(0, 21);
+    assert_eq!(
+        build_lending(
+            "toolbox-reordered",
+            root.path(),
+            &artifacts,
+            reordered.0,
+            reordered.1
+        )
+        .err()
+        .unwrap(),
+        "prepared tool closure mismatch"
+    );
+}
+
+#[test]
+fn a_borrowed_command_without_a_reviewed_binding_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let (artifacts, materials, bindings) = toolbox_lending(root.path(), &[], &["cat"]);
+    fs::remove_dir_all(root.path().join("tool-argv")).unwrap();
+    assert_eq!(
+        build_lending("unreviewed", root.path(), &artifacts, materials, bindings)
+            .err()
+            .unwrap(),
+        "AUTH_PROTOCOL_UNSUPPORTED"
     );
 }
