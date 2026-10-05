@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.29](https://github.com/sympozium-ai/celln/compare/v0.5.28...v0.5.29) (2026-10-05)
+
+
+### Features
+
+* owner-bound scoped enduring artifact workspace ([#153](https://github.com/sympozium-ai/celln/issues/153)) ([5af9b79](https://github.com/sympozium-ai/celln/commit/5af9b79879c07025056c7fca5715b65cfe303c2b))
+* **router:** forward scoped receiver requests to their owning node ([#156](https://github.com/sympozium-ai/celln/issues/156)) ([31d0014](https://github.com/sympozium-ai/celln/commit/31d0014fbdbae28118ff534597a1d3236a6c8ab3))
+
 ## [0.5.28](https://github.com/sympozium-ai/celln/compare/v0.5.27...v0.5.28) (2026-09-20)
 
 
