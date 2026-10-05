@@ -85,6 +85,7 @@ struct EnduringContext {
     incarnation: Hash,
     worker_binding: Hash,
     artifacts: Option<artifacts::Policy>,
+    https: Option<https::Policy>,
     pending: Arc<Mutex<BTreeMap<String, PendingTurn>>>,
     active: Arc<Mutex<BTreeMap<String, celln_control::Control>>>,
     results: Arc<Mutex<BTreeMap<String, NativeProvenance>>>,
@@ -932,6 +933,11 @@ fn start_enduring(
         &prepared.decision,
     )
     .map_err(anyhow::Error::msg)?;
+    let web = https::derive(
+        &prepared.operation["resolution"]["execution"],
+        &prepared.decision,
+    )
+    .map_err(anyhow::Error::msg)?;
     // Check the run UID as well as namespace and incarnation on EVERY turn.
     let source = &prepared.operation["resolution"]["execution"]["source"];
     let scope = parent_scope(&prepared).map_err(anyhow::Error::msg)?;
@@ -962,6 +968,7 @@ fn start_enduring(
         if context.principal != principal
             || context.worker_binding != worker_binding
             || context.artifacts != artifacts
+            || context.https != web
         {
             let status = prepared_refusal(
                 scoped,
@@ -1148,6 +1155,7 @@ fn start_enduring(
         .transpose()
         .map_err(anyhow::Error::msg)?;
     let artifact_policy = artifacts.clone();
+    let web_policy = web.clone();
     let brokers: crate::dispatch::parent_create::scoped::Brokers = Box::new(move |turn| {
         if turn.parent != supply_incarnation {
             return Err("reserved turn belongs to another parent".into());
@@ -1176,6 +1184,9 @@ fn start_enduring(
             (None, None) => None,
             _ => return Err("scoped artifact owner unavailable".into()),
         };
+        let https = web_policy
+            .as_ref()
+            .map(|policy| policy.grants(child_control.remaining()));
         supply_active
             .lock()
             .map_err(|_| "scoped active turn registry unavailable")?
@@ -1183,6 +1194,7 @@ fn start_enduring(
         Ok(crate::dispatch::parent_create::scoped::ScopedTurnBroker {
             broker: pending.broker,
             artifacts,
+            https,
             control: child_control,
         })
     });
@@ -1256,6 +1268,7 @@ fn start_enduring(
         incarnation: incarnation.clone(),
         worker_binding,
         artifacts,
+        https: web,
         pending,
         active,
         results,
@@ -2193,8 +2206,24 @@ fn build_native(
                 .map_err(|_| "AUTH_CONTEXT_LOST")?,
             context,
         );
-        let broker =
+        let mut broker =
             HttpBroker::new_mediated(policy, Box::new(relay)).map_err(|_| "AUTH_CONTEXT_LOST")?;
+        // A one-shot run's tool authority rides its own broker. An enduring
+        // parent's is attached per reserved turn, after the model-only check.
+        if !enduring {
+            if let Some(policy) = artifacts::derive(execution, decision)? {
+                let grant = policy.one_shot(Hash::of(prepared.id.as_bytes()), control.clone())?;
+                broker = broker
+                    .with_scoped_artifacts(grant)
+                    .map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+            }
+            if let Some(policy) = https::derive(execution, decision)? {
+                let (get, post) = policy.grants(control.remaining());
+                broker = broker
+                    .with_scoped_https(get, post)
+                    .map_err(|_| "AUTH_PROTOCOL_UNSUPPORTED")?;
+            }
+        }
         (value.to_string(), Some(broker))
     };
     if config.0.len() > 65536 {
@@ -2248,6 +2277,7 @@ fn validate_artifacts(
     }
     validate_runtime_resources(execution, profile)?;
     artifacts::derive(execution, decision)?;
+    https::derive(execution, decision)?;
     let decision_tools = decision["tools"]
         .as_array()
         .ok_or("decision tools missing")?;
@@ -2259,9 +2289,8 @@ fn validate_artifacts(
     }
     for (tool, binding) in materials.iter().zip(decision_tools) {
         let limits = &tool["spec"]["limits"];
+        // Signed `https` limits are derived and bounded by `https::derive`.
         if limits["workspace"] != "none"
-            || limits.get("https").is_some_and(|v| !v.is_null())
-            || binding["limits"].get("https").is_some_and(|v| !v.is_null())
             || limits["egress"].as_array().is_some_and(|v| !v.is_empty())
             || limits["inputs"].as_array().is_some_and(|v| !v.is_empty())
         {
@@ -2444,6 +2473,7 @@ fn validate_prepared(operation: &Value, final_decision: &Value) -> Result<()> {
     let execution = &operation["resolution"]["execution"];
     let base = &operation["resolution"]["decision"];
     artifacts::derive(execution, final_decision).map_err(anyhow::Error::msg)?;
+    https::derive(execution, final_decision).map_err(anyhow::Error::msg)?;
     if !execution.is_object()
         || base["apiVersion"] != "celln.sympozium.ai/authorisation-decision-v1"
         || final_decision["apiVersion"] != base["apiVersion"]
@@ -2869,6 +2899,8 @@ use std::os::unix::fs::PermissionsExt;
 
 #[path = "dispatch_scoped_artifacts.rs"]
 mod artifacts;
+#[path = "dispatch_scoped_https.rs"]
+mod https;
 
 #[cfg(test)]
 #[path = "dispatch_scoped_http_tests.rs"]

@@ -24,6 +24,8 @@ pub(super) fn unix_now() -> i64 {
 
 #[path = "dispatch_scoped_artifacts_kvm_tests.rs"]
 mod artifacts_kvm;
+#[path = "dispatch_scoped_tools_tests.rs"]
+mod tools;
 pub(crate) use artifacts_kvm::prove_scoped_artifacts_on_kvm;
 
 /// Immutable runtime identity a prepared operation names. The hermetic cases
@@ -392,7 +394,11 @@ fn scoped_transport_discovers_capabilities_without_dispatcher_authority() {
     assert_eq!(status, 200);
     assert_eq!(
         body["scopedArtifactContracts"],
-        json!(["celln.scoped-artifacts/v1"])
+        json!(["celln.scoped-artifacts/v1", "celln.scoped-artifacts/v2"])
+    );
+    assert_eq!(
+        body["scopedHttpsContracts"],
+        json!([crate::capabilities::SCOPED_HTTPS_CONTRACT])
     );
     for (method, path, body) in [
         ("POST", "/v1/capabilities", ""),

@@ -226,6 +226,38 @@ impl HttpBroker {
         Ok(self)
     }
 
+    /// Attach independently admitted web tool authority to a mediated
+    /// transport, after any model-only check. These are the same GET/POST
+    /// grants the fleet path enforces (`Reach::Tool`: public IPv4, HTTPS on
+    /// 443, pinned DNS, every redirect hop re-authorised, POST never
+    /// redirected). The mediated transport never carries `allow_insecure`,
+    /// and that flag never reaches tool requests anyway. A missing GET grant
+    /// becomes an explicit empty one so no GET can fall back to the shared
+    /// model allowance.
+    pub fn with_scoped_https(
+        mut self,
+        get: Option<GetGrant>,
+        post: Option<PostGrant>,
+    ) -> Result<Self, FetchDenied> {
+        if !self.is_mediated()
+            || self.policy.allow_insecure
+            || !self.policy.allow_hosts.is_empty()
+            || self.policy.get.is_some()
+            || self.policy.post.is_some()
+            || (get.is_none() && post.is_none())
+        {
+            return Err(FetchDenied::Fetch("invalid scoped HTTPS transport".into()));
+        }
+        self.policy.get = Some(get.unwrap_or(GetGrant {
+            allow_hosts: vec![],
+            max_requests: 0,
+            max_response_bytes: 0,
+            timeout: Duration::from_secs(1),
+        }));
+        self.policy.post = post;
+        Ok(self)
+    }
+
     /// Check a model-only transfer against an already reserved native turn.
     /// This cannot establish tenant identity; the supplying owner must bind the
     /// relay to that turn's independently verified capability context.

@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const VERSION: &str = "celln.dev/capabilities-v1alpha1";
 
+/// Signed `tools[].limits.https` on the scoped (mediated) path, enforced by
+/// the fleet's own broker egress (`dispatch_scoped_https.rs`).
+pub(crate) const SCOPED_HTTPS_CONTRACT: &str = "celln.scoped-https/v1";
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DispatcherCapabilities {
@@ -18,6 +22,9 @@ pub(crate) struct DispatcherCapabilities {
     /// Additive negotiation; absence on older binaries means unsupported.
     #[serde(default)]
     pub scoped_artifact_contracts: Vec<String>,
+    /// Additive negotiation for signed web tool limits on the scoped path.
+    #[serde(default)]
+    pub scoped_https_contracts: Vec<String>,
 }
 
 impl DispatcherCapabilities {
@@ -38,7 +45,13 @@ impl DispatcherCapabilities {
             ],
             persistent_sessions: false,
             artifact_readiness: "not_checked".into(),
-            scoped_artifact_contracts: vec!["celln.scoped-artifacts/v1".into()],
+            // v2 adds list/append/search/delete and one-shot runs; v1 (exact
+            // read/write, enduring only) keeps its behaviour unchanged.
+            scoped_artifact_contracts: vec![
+                "celln.scoped-artifacts/v1".into(),
+                "celln.scoped-artifacts/v2".into(),
+            ],
+            scoped_https_contracts: vec![SCOPED_HTTPS_CONTRACT.into()],
         }
     }
 
@@ -75,7 +88,11 @@ mod tests {
         let mut value = serde_json::to_value(&report).unwrap();
         assert_eq!(
             value["scopedArtifactContracts"],
-            serde_json::json!(["celln.scoped-artifacts/v1"])
+            serde_json::json!(["celln.scoped-artifacts/v1", "celln.scoped-artifacts/v2"])
+        );
+        assert_eq!(
+            value["scopedHttpsContracts"],
+            serde_json::json!(["celln.scoped-https/v1"])
         );
         assert!(report.preflight_only);
         assert!(!report.node.eligible());
@@ -83,8 +100,13 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("scopedArtifactContracts");
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("scopedHttpsContracts");
         let legacy: DispatcherCapabilities = serde_json::from_value(value).unwrap();
         assert!(legacy.scoped_artifact_contracts.is_empty());
+        assert!(legacy.scoped_https_contracts.is_empty());
         assert!(legacy.compatible());
     }
 }
