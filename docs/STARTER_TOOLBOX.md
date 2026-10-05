@@ -60,7 +60,7 @@ The `post` object carries `allowHosts`, `maxRequests`, `maxBodyBytes`,
     "maxTotalBytes": 65536
   },
   "fetch": {
-    "allowHosts": ["example.com"],
+    "allowHosts": ["*"],
     "maxRequests": 4,
     "maxResponseBytes": 16384,
     "timeoutMs": 10000
@@ -84,11 +84,40 @@ PIO broker channel, with a strict `body` tagged by `operation`. Requests are
 at most 8192 encoded bytes, including JSON escaping. This keeps the existing
 wire ABI and gives the guest neither network sockets nor filesystem authority.
 
-GET authority has its own exact-host allowlist, request/response/time limits,
+GET authority has its own host allowlist, request/response/time limits,
 and counter, separate from credential-bearing model POSTs. Every redirect is
 reauthorized and public IPv4 DNS results are pinned. GET ignores curl startup
 configuration, URL globbing and ambient proxies. It never receives the model
 credential. Both budgets are bounded again by the child lifetime.
+
+### Web tool hosts: any public HTTPS site, never a private one
+
+`fetch.allowHosts` and `post.allowHosts` (and the catalogue's
+`limits.https.allowHosts`) take either:
+
+- exactly `["*"]` — the tool may reach **any public HTTPS host**. This is the
+  `celln starter configure` default when the plan has no `httpsHosts`;
+- 1..=16 exact lowercase DNS names — the tool may reach only those hosts.
+
+`"*"` is a sentinel, not a glob: it must be the only entry (`["*","a.com"]` and
+`["*.example.com"]` are refused), and an empty list still means no egress.
+
+Whatever the list says, the broker treats every `https-fetch` and
+`https-post-json` URL as agent-chosen and therefore hostile. Each request, and
+each GET redirect hop, must be `https://` on port 443; the host is resolved to
+IPv4 only, the address must be globally routable, and it is pinned for the
+connection (`--resolve`), so DNS rebinding cannot swap it. Refused ranges:
+0/8, 10/8, 100.64/10, 127/8, 169.254/16 (including the 169.254.169.254
+metadata endpoint), 172.16/12, 192.0.0/16, 192.88.99/24, 192.168/16, 198.18/15,
+198.51.100/24, 203.0.113/24 and 224/3 (multicast, reserved, broadcast). IPv6 is
+never used for tools. Certificates are always verified, proxies are ignored
+and JSON POSTs never follow redirects.
+
+The model profile's `allowInsecure` applies **only to the operator-pinned
+model endpoint**. It never lets a web tool use HTTP, another port, a
+self-signed certificate or a private address. Cluster pod and service CIDRs
+are not separately configurable here; in typical clusters they sit inside the
+refused private ranges above.
 
 Current tests cover host protocol, quota atomicity, stale writes, cross-turn
 data, parent/child binding, cancellation/revocation, and independent GET/model
@@ -102,7 +131,7 @@ It ran a retained native parent cell and three disposable worker cells with
 real DeepSeek requests. Actual guest tool events prove `workspace-write` stored
 `violet` in `notes.txt` at revision 1, `workspace-read` returned those bytes on
 the next turn, and `https-fetch` returned the Example Domain page from the
-allowlisted `https://example.com/`. All three broker audits reported zero
+then-allowlisted `https://example.com/`. All three broker audits reported zero
 denials. Session destruction dropped the parent/worker owners at test exit.
 
 Local evidence: `target/starter-live-2052225-1788939482308025817/`. This includes

@@ -14,9 +14,40 @@ pub use post::{
     DEFAULT_REQUEST_OUTPUT_TOKENS, REQUEST_OUTPUT_TOKENS,
 };
 
+/// The tool allowlist sentinel: `["*"]`, and only that, lets a web tool
+/// reach any **public** HTTPS host. It never widens the model path, never
+/// admits HTTP, a non-443 port, an unverified certificate or a private,
+/// reserved or IPv6 address. An empty list still means no egress.
+pub const ANY_PUBLIC_HOST: &str = "*";
+
+/// Whether `host` is admitted by a tool allowlist: exactly `["*"]` admits any
+/// host (the address check still applies); otherwise an exact,
+/// case-insensitive name match. A `"*"` mixed with other entries is not a
+/// wildcard (configuration refuses it) and so matches nothing extra.
+pub fn host_allowed(list: &[String], host: &str) -> bool {
+    if host.is_empty() {
+        return false;
+    }
+    if list.len() == 1 && list[0] == ANY_PUBLIC_HOST {
+        return true;
+    }
+    list.iter()
+        .any(|allowed| allowed != ANY_PUBLIC_HOST && allowed.eq_ignore_ascii_case(host))
+}
+
+/// Who a destination is for. Only the operator-pinned model endpoint may use
+/// `allow_insecure`; every agent-selected web tool URL is `Tool`, which is
+/// always HTTPS on 443 to a public IPv4 address with a verified certificate.
+#[derive(Clone, Copy)]
+enum Reach<'a> {
+    Model,
+    Tool(&'a [String]),
+}
+
 /// Independent credential-free GET authority for native starter tools.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetGrant {
+    /// Exact hosts, or exactly `["*"]` for any public host. Empty denies.
     pub allow_hosts: Vec<String>,
     pub max_requests: usize,
     pub max_response_bytes: usize,
@@ -28,6 +59,7 @@ pub struct GetGrant {
 /// a credential and never implies GET or model access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostGrant {
+    /// Exact hosts, or exactly `["*"]` for any public host. Empty denies.
     pub allow_hosts: Vec<String>,
     pub max_requests: usize,
     pub max_body_bytes: usize,
@@ -37,7 +69,9 @@ pub struct PostGrant {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpPolicy {
-    /// Exact DNS names this cell may contact. Empty means no egress.
+    /// Exact DNS names this cell may contact. Empty means no egress. The
+    /// model path never treats `"*"` as a wildcard; the legacy GET path (no
+    /// `get` grant) honours exactly `["*"]` as any public host.
     pub allow_hosts: Vec<String>,
     pub max_requests: usize,
     pub max_response_bytes: usize,
@@ -54,7 +88,8 @@ pub struct HttpPolicy {
     pub post: Option<PostGrant>,
     /// Operator opt-in that also permits HTTP and self-signed HTTPS model
     /// endpoints on private addresses. Default false keeps the HTTPS-only,
-    /// public-address contract.
+    /// public-address contract. It applies to the model endpoint only; web
+    /// tool GETs and POSTs stay public-only HTTPS regardless.
     pub allow_insecure: bool,
 }
 
@@ -212,11 +247,13 @@ impl HttpBroker {
     }
 
     /// Validate a request and pin its DNS result before curl is allowed to
-    /// connect. Pinning closes a DNS-rebinding SSRF hole.
-    fn authorize(&self, raw: &str) -> Result<Authorized, FetchDenied> {
+    /// connect. Pinning closes a DNS-rebinding SSRF hole. `allow_insecure`
+    /// relaxes scheme, port and address only for `Reach::Model`.
+    fn authorize(&self, raw: &str, reach: Reach<'_>) -> Result<Authorized, FetchDenied> {
+        let insecure = matches!(reach, Reach::Model) && self.policy.allow_insecure;
         let (scheme, rest) = if let Some(rest) = raw.strip_prefix("https://") {
             ("https", rest)
-        } else if self.policy.allow_insecure {
+        } else if insecure {
             (
                 "http",
                 raw.strip_prefix("http://").ok_or(FetchDenied::Scheme)?,
@@ -241,15 +278,19 @@ impl HttpBroker {
                 if scheme == "https" { 443 } else { 80 },
             ),
         };
-        if host.is_empty() || (!self.policy.allow_insecure && port != 443) {
+        if host.is_empty() || (!insecure && port != 443) {
             return Err(FetchDenied::Authority);
         }
-        if !self
-            .policy
-            .allow_hosts
-            .iter()
-            .any(|h| h.eq_ignore_ascii_case(&host))
-        {
+        let admitted = match reach {
+            // The model origin is an exact operator-pinned name, never "*".
+            Reach::Model => self
+                .policy
+                .allow_hosts
+                .iter()
+                .any(|h| h != ANY_PUBLIC_HOST && h.eq_ignore_ascii_case(&host)),
+            Reach::Tool(list) => host_allowed(list, &host),
+        };
+        if !admitted {
             return Err(FetchDenied::Host(host));
         }
         let addresses: Vec<IpAddr> = if celln_control::current().is_some() {
@@ -274,7 +315,9 @@ impl HttpBroker {
                 .map(|a| a.ip())
                 .collect()
         };
-        let ip = if self.policy.allow_insecure {
+        // IPv6 is never used: only an A record is pinned, so a tool cannot
+        // reach a v6 link-local, ULA or v4-mapped private address.
+        let ip = if insecure {
             addresses
                 .into_iter()
                 .find(|a| matches!(a, IpAddr::V4(_)))
@@ -340,24 +383,14 @@ impl HttpBroker {
             if used >= max_requests {
                 return Err(FetchDenied::Budget);
             }
-            // Validate the independent GET allowlist before any DNS or I/O.
-            if let Some(grant) = &self.policy.get {
-                let authority = url
-                    .strip_prefix("https://")
-                    .ok_or(FetchDenied::Scheme)?
-                    .split('/')
-                    .next()
-                    .unwrap_or_default();
-                let host = authority.split(':').next().unwrap_or_default();
-                if !grant
-                    .allow_hosts
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(host))
-                {
-                    return Err(FetchDenied::Host(host.into()));
-                }
-            }
-            let authorized = self.authorize(&url)?;
+            // A GET is always a web tool request: the independent GET
+            // allowlist (or the legacy shared one), checked before any DNS
+            // or I/O, then public-only HTTPS whatever the model profile says.
+            let hosts = match &self.policy.get {
+                Some(grant) => &grant.allow_hosts,
+                None => &self.policy.allow_hosts,
+            };
+            let authorized = self.authorize(&url, Reach::Tool(hosts))?;
             self.used += 1;
             self.get_used += 1;
             let header =
@@ -448,14 +481,23 @@ fn redirect_url(current: &str, location: &str) -> Result<String, FetchDenied> {
     Ok(format!("{base}/{location}"))
 }
 
+/// Globally routable unicast IPv4 only. Refused: 0/8 (this network),
+/// 10/8, 100.64/10 (CGNAT), 127/8, 169.254/16 (link-local, cloud metadata),
+/// 172.16/12, 192.0.0/16 (covers 192.0.0/24 IETF and 192.0.2/24 TEST-NET-1),
+/// 192.88.99/24 (6to4 relay), 192.168/16, 198.18/15 (benchmarking),
+/// 198.51.100/24 (TEST-NET-2), 203.0.113/24 (TEST-NET-3) and 224/3
+/// (multicast, reserved, 255.255.255.255 broadcast).
 fn is_public_v4(o: [u8; 4]) -> bool {
-    let [a, b, _, _] = o;
+    let [a, b, c, _] = o;
     !(matches!(a, 0 | 10 | 127 | 224..=255)
         || a == 100 && (64..=127).contains(&b)
-        || a == 169 && b == 254)
-        && !(a == 172 && (16..=31).contains(&b))
-        && !(a == 192 && (b == 0 || b == 168))
-        && !(a == 198 && (b == 18 || b == 19))
+        || a == 169 && b == 254
+        || a == 172 && (16..=31).contains(&b)
+        || a == 192 && (b == 0 || b == 168)
+        || a == 192 && b == 88 && c == 99
+        || a == 198 && (b == 18 || b == 19)
+        || a == 198 && b == 51 && c == 100
+        || a == 203 && b == 0 && c == 113)
 }
 
 #[cfg(test)]
@@ -466,15 +508,16 @@ mod tests {
     fn rejects_ambient_and_undeclared_reach() {
         let b = HttpBroker::new(HttpPolicy::new(vec!["example.com".into()]));
         assert_eq!(
-            b.authorize("http://example.com/").unwrap_err(),
+            b.authorize("http://example.com/", Reach::Model)
+                .unwrap_err(),
             FetchDenied::Scheme
         );
         assert!(matches!(
-            b.authorize("https://evil.example/"),
+            b.authorize("https://evil.example/", Reach::Model),
             Err(FetchDenied::Host(_))
         ));
         assert_eq!(
-            b.authorize("https://example.com:444/"),
+            b.authorize("https://example.com:444/", Reach::Model),
             Err(FetchDenied::Authority)
         );
     }
@@ -485,7 +528,10 @@ mod tests {
         policy.allow_insecure = true;
         let broker = HttpBroker::new(policy);
         let authorized = broker
-            .authorize("http://192.168.1.237:8080/v1/chat/completions")
+            .authorize(
+                "http://192.168.1.237:8080/v1/chat/completions",
+                Reach::Model,
+            )
             .unwrap();
         assert_eq!(authorized.scheme, "http");
         assert_eq!(authorized.host, "192.168.1.237");
@@ -495,7 +541,7 @@ mod tests {
         let strict = HttpBroker::new(HttpPolicy::new(vec!["192.168.1.237".into()]));
         assert_eq!(
             strict
-                .authorize("http://192.168.1.237:8080/v1")
+                .authorize("http://192.168.1.237:8080/v1", Reach::Model)
                 .unwrap_err(),
             FetchDenied::Scheme
         );
@@ -518,10 +564,222 @@ mod tests {
 
     #[test]
     fn private_addresses_are_never_public() {
-        assert!(!is_public_v4([10, 0, 0, 1]));
-        assert!(!is_public_v4([127, 0, 0, 1]));
-        assert!(!is_public_v4([192, 168, 1, 1]));
-        assert!(is_public_v4([1, 1, 1, 1]));
+        for private in [
+            [0, 0, 0, 0],
+            [0, 255, 255, 255],
+            [10, 0, 0, 1],
+            [10, 255, 255, 255],
+            [100, 64, 0, 1],
+            [100, 127, 255, 255],
+            [127, 0, 0, 1],
+            [127, 255, 255, 254],
+            [169, 254, 0, 1],
+            [169, 254, 169, 254],
+            [172, 16, 0, 1],
+            [172, 31, 255, 255],
+            [192, 0, 0, 1],
+            [192, 0, 2, 1],
+            [192, 88, 99, 1],
+            [192, 168, 1, 1],
+            [198, 18, 0, 1],
+            [198, 19, 255, 255],
+            [198, 51, 100, 7],
+            [203, 0, 113, 9],
+            [224, 0, 0, 1],
+            [239, 255, 255, 250],
+            [240, 0, 0, 1],
+            [255, 255, 255, 255],
+        ] {
+            assert!(!is_public_v4(private), "{private:?} must not be public");
+        }
+        for public in [
+            [1, 1, 1, 1],
+            [8, 8, 8, 8],
+            [93, 184, 215, 14],
+            [100, 63, 255, 255],
+            [100, 128, 0, 1],
+            [172, 15, 255, 255],
+            [172, 32, 0, 1],
+            [192, 88, 98, 1],
+            [192, 169, 0, 1],
+            [198, 17, 255, 255],
+            [198, 20, 0, 1],
+            [198, 51, 101, 1],
+            [203, 0, 114, 1],
+            [223, 255, 255, 254],
+        ] {
+            assert!(is_public_v4(public), "{public:?} is public");
+        }
+    }
+
+    fn hosts(list: &[&str]) -> Vec<String> {
+        list.iter().map(|h| (*h).into()).collect()
+    }
+
+    #[test]
+    fn host_allowed_matrix() {
+        // Exactly ["*"]: any host name (the address check still applies).
+        assert!(host_allowed(&hosts(&["*"]), "example.com"));
+        assert!(host_allowed(&hosts(&["*"]), "anything.example"));
+        // Explicit lists stay exact and case-insensitive.
+        assert!(host_allowed(&hosts(&["example.com"]), "EXAMPLE.com"));
+        assert!(!host_allowed(&hosts(&["example.com"]), "evil.example"));
+        assert!(!host_allowed(&hosts(&["example.com"]), "sub.example.com"));
+        // Empty is no egress, never fail open.
+        assert!(!host_allowed(&[], "example.com"));
+        assert!(!host_allowed(&[], "*"));
+        // "*" mixed with others is not a wildcard (and validation refuses it).
+        assert!(!host_allowed(&hosts(&["*", "a.com"]), "b.com"));
+        assert!(host_allowed(&hosts(&["*", "a.com"]), "a.com"));
+        assert!(!host_allowed(&hosts(&["*", "*"]), "b.com"));
+        // Patterns are not globs.
+        assert!(!host_allowed(&hosts(&["*.example.com"]), "a.example.com"));
+        assert!(!host_allowed(&hosts(&["*"]), ""));
+    }
+
+    /// A model profile that opts into private/insecure model reach, with
+    /// wildcard web tool grants: the worst case for tool SSRF.
+    fn insecure_wildcard_policy() -> HttpPolicy {
+        let mut policy = HttpPolicy::new(vec!["192.168.1.237".into()]);
+        policy.allow_insecure = true;
+        policy.get = Some(GetGrant {
+            allow_hosts: hosts(&["*"]),
+            max_requests: 8,
+            max_response_bytes: 4096,
+            timeout: Duration::from_secs(1),
+        });
+        policy.post = Some(PostGrant {
+            allow_hosts: hosts(&["*"]),
+            max_requests: 8,
+            max_body_bytes: 4096,
+            max_response_bytes: 4096,
+            timeout: Duration::from_secs(1),
+        });
+        policy
+    }
+
+    #[test]
+    fn wildcard_tool_reach_is_public_https_only() {
+        let broker = HttpBroker::new(insecure_wildcard_policy());
+        let any = hosts(&["*"]);
+        // A public literal is admitted under the wildcard, pinned, port 443.
+        let ok = broker
+            .authorize("https://1.1.1.1/x", Reach::Tool(&any))
+            .unwrap();
+        assert_eq!((ok.scheme.as_str(), ok.port), ("https", 443));
+        assert_eq!(ok.ip.to_string(), "1.1.1.1");
+        for private in [
+            "https://10.0.0.1/",
+            "https://127.0.0.1/",
+            "https://localhost/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://192.168.1.237/v1",
+            "https://100.64.0.1/",
+            "https://198.51.100.7/",
+            "https://203.0.113.9/",
+            "https://192.88.99.1/",
+            "https://0.0.0.0/",
+            "https://255.255.255.255/",
+        ] {
+            assert_eq!(
+                broker.authorize(private, Reach::Tool(&any)).unwrap_err(),
+                FetchDenied::Address,
+                "{private}"
+            );
+        }
+        // Even with allow_insecure on the model profile: no http, no port.
+        assert_eq!(
+            broker
+                .authorize("http://1.1.1.1/", Reach::Tool(&any))
+                .unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert_eq!(
+            broker
+                .authorize("https://1.1.1.1:8443/", Reach::Tool(&any))
+                .unwrap_err(),
+            FetchDenied::Authority
+        );
+        // IPv6 literals are never pinned for a tool.
+        assert!(broker
+            .authorize("https://[::1]/", Reach::Tool(&any))
+            .is_err());
+    }
+
+    #[test]
+    fn tool_get_refuses_private_http_and_redirects_despite_insecure_model() {
+        let mut broker = HttpBroker::new(insecure_wildcard_policy());
+        for url in [
+            "https://10.0.0.1/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://192.168.1.237/v1/models",
+        ] {
+            assert_eq!(broker.fetch(url).unwrap_err(), FetchDenied::Address);
+        }
+        assert_eq!(
+            broker.fetch("http://192.168.1.237:8080/").unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert_eq!(
+            broker.fetch("http://example.com/").unwrap_err(),
+            FetchDenied::Scheme
+        );
+        // Refused before any I/O: no budget spent.
+        assert_eq!((broker.used, broker.get_used), (0, 0));
+        // A redirect hop is re-authorised as a tool request: a public origin
+        // cannot bounce the broker into private or plaintext reach.
+        let any = hosts(&["*"]);
+        for location in [
+            "https://169.254.169.254/latest/meta-data/",
+            "//127.0.0.1/admin",
+            "https://192.168.1.237:8080/",
+        ] {
+            let next = redirect_url("https://1.1.1.1/start", location).unwrap();
+            assert!(
+                broker.authorize(&next, Reach::Tool(&any)).is_err(),
+                "{next}"
+            );
+        }
+        // A plaintext Location never leaves the current https origin.
+        let next = redirect_url("https://1.1.1.1/a/b", "http://10.0.0.1/").unwrap();
+        assert!(next.starts_with("https://1.1.1.1/"), "{next}");
+    }
+
+    #[test]
+    fn legacy_get_without_grant_is_tool_reach_too() {
+        // The legacy shared list also names the private model host, but a
+        // GET is a tool request: allow_insecure does not extend to it.
+        let mut policy = HttpPolicy::new(vec!["192.168.1.237".into()]);
+        policy.allow_insecure = true;
+        let mut broker = HttpBroker::new(policy);
+        assert_eq!(
+            broker.fetch("https://192.168.1.237/").unwrap_err(),
+            FetchDenied::Address
+        );
+        assert_eq!(
+            broker.fetch("http://192.168.1.237:8080/").unwrap_err(),
+            FetchDenied::Scheme
+        );
+    }
+
+    #[test]
+    fn model_reach_never_honours_the_wildcard() {
+        let mut policy = HttpPolicy::new(hosts(&["*"]));
+        policy.allow_insecure = true;
+        let broker = HttpBroker::new(policy);
+        assert!(matches!(
+            broker.authorize("http://192.168.1.237:8080/v1", Reach::Model),
+            Err(FetchDenied::Host(_))
+        ));
+        assert!(matches!(
+            broker.authorize("https://1.1.1.1/v1", Reach::Model),
+            Err(FetchDenied::Host(_))
+        ));
+        // Empty tool list denies everything.
+        assert!(matches!(
+            broker.authorize("https://1.1.1.1/", Reach::Tool(&[])),
+            Err(FetchDenied::Host(_))
+        ));
     }
 
     #[test]

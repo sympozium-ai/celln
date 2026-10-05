@@ -267,11 +267,10 @@ impl PreparedWorker {
             WorkerBrokers::Legacy(brokers) => {
                 let mut policy = brokers.for_turn(turn)?;
                 let lease = brokers.workspace_for_turn(turn, &mut policy)?;
-                let egress = policy
-                    .allow_hosts
-                    .iter()
-                    .map(|host| format!("https://{host}"))
-                    .collect();
+                // Informational destinations for the child request; the
+                // broker policy is the enforcement point. The `"*"` tool
+                // sentinel is not a destination and is never emitted.
+                let egress = worker_egress(&policy);
                 (warden::egress::HttpBroker::new(policy), None, lease, egress)
             }
             WorkerBrokers::Scoped { supply, .. } => {
@@ -454,6 +453,32 @@ fn failure_reason(outcome: &super::super::LaunchOutcome) -> Option<String> {
     Some(bounded_failure(reason))
 }
 
+/// The child request's declared destinations: the model origin and every
+/// explicit tool host, as `https://` names. A wildcard tool grant contributes
+/// no entry (`https://*` is not a destination); the broker enforces it.
+fn worker_egress(policy: &warden::egress::HttpPolicy) -> Vec<String> {
+    let tools = policy
+        .get
+        .iter()
+        .flat_map(|grant| grant.allow_hosts.iter())
+        .chain(
+            policy
+                .post
+                .iter()
+                .flat_map(|grant| grant.allow_hosts.iter()),
+        );
+    let mut hosts = Vec::new();
+    for host in policy.allow_hosts.iter().chain(tools) {
+        if host != warden::egress::ANY_PUBLIC_HOST && !hosts.contains(host) {
+            hosts.push(host.clone());
+        }
+    }
+    hosts
+        .into_iter()
+        .map(|host| format!("https://{host}"))
+        .collect()
+}
+
 fn bounded_failure(mut reason: String) -> String {
     if reason.len() > FAILURE_ANSWER_BYTES {
         let mut end = FAILURE_ANSWER_BYTES;
@@ -615,6 +640,37 @@ mod tests {
             signal: None,
             timed_out: false,
         }
+    }
+
+    #[test]
+    fn worker_egress_never_names_the_wildcard() {
+        let grant = |hosts: &[&str]| warden::egress::GetGrant {
+            allow_hosts: hosts.iter().map(|h| (*h).into()).collect(),
+            max_requests: 1,
+            max_response_bytes: 1,
+            timeout: std::time::Duration::from_secs(1),
+        };
+        let post = |hosts: &[&str]| warden::egress::PostGrant {
+            allow_hosts: hosts.iter().map(|h| (*h).into()).collect(),
+            max_requests: 1,
+            max_body_bytes: 1,
+            max_response_bytes: 1,
+            timeout: std::time::Duration::from_secs(1),
+        };
+        let mut policy = warden::egress::HttpPolicy::new(vec!["api.deepseek.com".into()]);
+        policy.get = Some(grant(&["*"]));
+        policy.post = Some(post(&["*"]));
+        assert_eq!(worker_egress(&policy), vec!["https://api.deepseek.com"]);
+        policy.get = Some(grant(&["example.com"]));
+        policy.post = Some(post(&["hooks.example", "example.com"]));
+        assert_eq!(
+            worker_egress(&policy),
+            vec![
+                "https://api.deepseek.com",
+                "https://example.com",
+                "https://hooks.example"
+            ]
+        );
     }
 
     // A child that failed is a failed turn with a readable reason, never an
