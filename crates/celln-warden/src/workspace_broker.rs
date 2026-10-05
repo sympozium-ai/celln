@@ -28,7 +28,8 @@ impl Drop for Owner {
 
 struct Authority {
     active: bool,
-    artifacts_only: bool,
+    /// Scoped grants name each operation exactly; None is a legacy grant.
+    only: Option<ArtifactOperations>,
     remaining: usize,
     read: bool,
     write: bool,
@@ -65,23 +66,86 @@ impl PartialEq for Grant {
 }
 impl Eq for Grant {}
 
+/// The exact run-data operations a scoped grant names. Unlike a legacy
+/// workspace grant, read never implies list/search and write never implies
+/// append/delete: each operation is granted only by a tool that names it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArtifactOperations {
+    pub read: bool,
+    pub write: bool,
+    pub list: bool,
+    pub append: bool,
+    pub search: bool,
+    pub delete: bool,
+}
+
+impl ArtifactOperations {
+    /// The scoped v1 shape: exact read and/or write only.
+    pub fn read_write(read: bool, write: bool) -> Self {
+        Self {
+            read,
+            write,
+            ..Self::default()
+        }
+    }
+
+    /// Grant one named operation; unknown names grant nothing.
+    pub fn grant(&mut self, operation: &str) -> bool {
+        let slot = match operation {
+            "read" => &mut self.read,
+            "write" => &mut self.write,
+            "list" => &mut self.list,
+            "append" => &mut self.append,
+            "search" => &mut self.search,
+            "delete" => &mut self.delete,
+            _ => return false,
+        };
+        *slot = true;
+        true
+    }
+
+    fn reads(&self) -> bool {
+        self.read || self.list || self.search
+    }
+
+    fn writes(&self) -> bool {
+        self.write || self.append || self.delete
+    }
+
+    fn allows(&self, operation: &Operation) -> bool {
+        match operation {
+            Operation::Read { .. } => self.read,
+            Operation::Write { .. } => self.write,
+            Operation::List {} => self.list,
+            Operation::Append { .. } => self.append,
+            Operation::Search { .. } => self.search,
+            Operation::Delete { .. } => self.delete,
+        }
+    }
+}
+
 impl Owner {
-    /// Narrow scoped v1 capability: only exact read/write operations. Unlike
-    /// legacy workspace grants this never implies list/search/append/delete.
+    /// Narrow scoped capability: exactly the named operations. Unlike legacy
+    /// workspace grants, read/write never imply list/search/append/delete.
     pub fn begin_artifacts(
         &mut self,
         turn: &ReservedTurn,
-        read: bool,
-        write: bool,
+        operations: ArtifactOperations,
         max_operations: usize,
         control: Control,
     ) -> Result<(Lease, Grant), String> {
-        let (lease, grant) = self.begin(turn, read, write, max_operations, control)?;
+        let (lease, grant) = self.begin(
+            turn,
+            operations.reads(),
+            operations.writes(),
+            max_operations,
+            control,
+        )?;
         grant
             .authority
             .lock()
             .map_err(|_| "workspace authority unavailable")?
-            .artifacts_only = true;
+            .only = Some(operations);
         Ok((lease, grant))
     }
 
@@ -131,7 +195,7 @@ impl Owner {
         self.claimed.insert(turn.child.0.clone());
         let authority = Arc::new(Mutex::new(Authority {
             active: true,
-            artifacts_only: false,
+            only: None,
             remaining: max_operations,
             read,
             write,
@@ -195,6 +259,37 @@ struct Request {
 }
 
 impl Grant {
+    /// A one-shot run's private store: empty at admission, owned only by this
+    /// grant (held by the run's broker) and dropped with it when the run's
+    /// cell is destroyed. There is no parent, lease or reuse; the store's
+    /// identity is the admitted run's, never guest-chosen.
+    pub fn ephemeral(
+        run: Hash,
+        limits: Limits,
+        operations: ArtifactOperations,
+        max_operations: usize,
+        control: Control,
+    ) -> Result<Self, String> {
+        if !(operations.reads() || operations.writes()) || !(1..=64).contains(&max_operations) {
+            return Err("workspace grant does not match bounds".into());
+        }
+        control.check().map_err(|e| e.to_string())?;
+        let data = Workspace::new(run.clone(), limits).map_err(|e| e.to_string())?;
+        Ok(Self {
+            parent: run,
+            data: Arc::new(Mutex::new(data)),
+            authority: Arc::new(Mutex::new(Authority {
+                active: true,
+                only: Some(operations),
+                remaining: max_operations,
+                read: operations.reads(),
+                write: operations.writes(),
+                control,
+                operation_control: None,
+            })),
+        })
+    }
+
     /// Add an independent cancellation/deadline fence; never replace the
     /// reserved child's parent-bound control. Host custody only.
     pub fn constrain(&self, control: Control) -> Result<(), String> {
@@ -232,11 +327,9 @@ impl Grant {
         if request.api_version != "celln.workspace/v1" {
             return Err("unsupported workspace request version".into());
         }
-        if authority.artifacts_only
-            && !matches!(
-                request.body,
-                Operation::Read { .. } | Operation::Write { .. }
-            )
+        if authority
+            .only
+            .is_some_and(|operations| !operations.allows(&request.body))
         {
             return Err("workspace operation not granted".into());
         }

@@ -26,6 +26,12 @@ pub(crate) struct ScopedTurnBroker {
         warden::workspace_broker::Lease,
         warden::workspace_broker::Grant,
     )>,
+    /// Separately admitted web tool authority (GET, POST), attached after the
+    /// model-only check and enforced by the broker as public-only HTTPS.
+    pub https: Option<(
+        Option<warden::egress::GetGrant>,
+        Option<warden::egress::PostGrant>,
+    )>,
     /// Independently admitted operation control, already bounded by the
     /// original absolute turn deadline. It is nested under the live parent's
     /// exact child control while the VM runs.
@@ -293,6 +299,12 @@ impl PreparedWorker {
                         Some(lease),
                     ),
                     None => (supplied.broker, None),
+                };
+                let broker = match supplied.https {
+                    Some((get, post)) => broker
+                        .with_scoped_https(get, post)
+                        .map_err(|e| e.to_string())?,
+                    None => broker,
                 };
                 (broker, Some(supplied.control), lease, Vec::new())
             }

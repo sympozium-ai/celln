@@ -977,6 +977,156 @@ mod tests {
         );
     }
 
+    /// The scoped (mediated) path gets the fleet's own web tool grants and
+    /// their enforcement: public IPv4 HTTPS on 443 only, every hop
+    /// re-authorised, separate GET/POST budgets that never buy model calls.
+    #[test]
+    fn scoped_https_reuses_tool_reach_on_a_mediated_transport() {
+        use crate::egress::{GetGrant, PostGrant, Reach};
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let relay = || {
+            Box::new(RecordingRelay {
+                calls: calls.clone(),
+                fail: false,
+            })
+        };
+        let mut policy = model_policy();
+        policy.allow_hosts.clear();
+        policy.json_posts[0].bearer_token_file.clear();
+        policy.max_requests = 1;
+        let any = || vec!["*".to_string()];
+        let get = GetGrant {
+            allow_hosts: any(),
+            max_requests: 2,
+            max_response_bytes: 4096,
+            timeout: std::time::Duration::from_secs(1),
+        };
+        let post = PostGrant {
+            allow_hosts: any(),
+            max_requests: 2,
+            max_body_bytes: 64,
+            max_response_bytes: 4096,
+            timeout: std::time::Duration::from_secs(1),
+        };
+        let post_wire = |url: &str| {
+            serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST","url":url,"body":{"event":"done"}})
+                .to_string()
+        };
+        // Without the attachment a mediated transport has no web reach.
+        let mut bare = HttpBroker::new_mediated(policy.clone(), relay()).unwrap();
+        assert!(matches!(
+            bare.fetch("https://1.1.1.1/").unwrap_err(),
+            FetchDenied::Host(_)
+        ));
+        assert!(bare.fetch(&post_wire("https://1.1.1.1/in")).is_err());
+        assert!(bare.fits_mediated_turn(1, 1024));
+        // The attachment is mediated-only, single and never empty.
+        assert!(HttpBroker::new(policy.clone())
+            .with_scoped_https(Some(get.clone()), None)
+            .is_err());
+        assert!(HttpBroker::new_mediated(policy.clone(), relay())
+            .unwrap()
+            .with_scoped_https(None, None)
+            .is_err());
+        let mut broker = HttpBroker::new_mediated(policy.clone(), relay())
+            .unwrap()
+            .with_scoped_https(Some(get.clone()), Some(post.clone()))
+            .unwrap();
+        assert!(!broker.fits_mediated_turn(1, 1024));
+        // Public HTTPS on 443 is admitted by the attached GET grant.
+        let hosts = broker.policy.get.as_ref().unwrap().allow_hosts.clone();
+        let ok = broker
+            .authorize("https://1.1.1.1/page", Reach::Tool(&hosts))
+            .unwrap();
+        assert_eq!((ok.port, ok.ip.to_string()), (443, "1.1.1.1".to_string()));
+        // Private, plaintext and non-443 destinations refuse before any I/O.
+        for url in [
+            "https://10.0.0.1/",
+            "https://127.0.0.1/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://192.168.1.1/",
+        ] {
+            assert_eq!(
+                broker.fetch(url).unwrap_err(),
+                FetchDenied::Address,
+                "{url}"
+            );
+            assert_eq!(
+                broker.fetch(&post_wire(url)).unwrap_err(),
+                FetchDenied::Address,
+                "{url}"
+            );
+        }
+        assert_eq!(
+            broker.fetch("http://1.1.1.1/").unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert_eq!(
+            broker.fetch(&post_wire("http://1.1.1.1/in")).unwrap_err(),
+            FetchDenied::Scheme
+        );
+        assert_eq!(
+            broker.fetch("https://1.1.1.1:8443/").unwrap_err(),
+            FetchDenied::Authority
+        );
+        assert_eq!((broker.used, broker.get_used, broker.post_used), (0, 0, 0));
+        // A redirect from a public origin is re-authorised hop by hop.
+        for location in [
+            "https://169.254.169.254/",
+            "//127.0.0.1/admin",
+            "http://10.0.0.1/",
+        ] {
+            let next = crate::egress::redirect_url("https://1.1.1.1/start", location).unwrap();
+            let refused = broker.authorize(&next, Reach::Tool(&hosts));
+            assert!(
+                refused.is_err() || refused.unwrap().ip.to_string() == "1.1.1.1",
+                "{next}"
+            );
+        }
+        // POST bodies are bounded by the grant before any I/O.
+        let large = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
+            "url":"https://1.1.1.1/in","body":{"event":"x".repeat(80)}})
+        .to_string();
+        assert!(broker.fetch(&large).is_err());
+        assert_eq!(broker.post_used, 0);
+        // Exhausted tool budgets refuse; they neither spend nor block the
+        // model allowance, which the relay still serves exactly once.
+        broker.get_used = 2;
+        broker.used = 2;
+        broker.post_used = 2;
+        assert_eq!(
+            broker.fetch("https://1.1.1.1/").unwrap_err(),
+            FetchDenied::Budget
+        );
+        assert_eq!(
+            broker.fetch(&post_wire("https://1.1.1.1/in")).unwrap_err(),
+            FetchDenied::Budget
+        );
+        let model = serde_json::json!({"apiVersion":"celln.fetch/v1","method":"POST",
+            "url":"https://provider.invalid/chat","body":chat_body()})
+        .to_string();
+        assert!(broker.fetch(&model).is_ok());
+        assert_eq!(broker.fetch(&model).unwrap_err(), FetchDenied::Budget);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        // Explicit host lists stay exact on the scoped path too.
+        let mut exact = HttpBroker::new_mediated(policy, relay())
+            .unwrap()
+            .with_scoped_https(
+                Some(GetGrant {
+                    allow_hosts: vec!["docs.example".into()],
+                    ..get
+                }),
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            exact.fetch("https://1.1.1.1/").unwrap_err(),
+            FetchDenied::Host(_)
+        ));
+        assert!(exact.fetch(&post_wire("https://1.1.1.1/in")).is_err());
+        assert!(exact.with_scoped_https(None, Some(post)).is_err());
+    }
+
     /// One-request local provider: answers `reply` and hands back the exact
     /// request (headers and body) the broker sent.
     fn capture(reply: String) -> (u16, std::thread::JoinHandle<(String, serde_json::Value)>) {

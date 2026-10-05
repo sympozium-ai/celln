@@ -10,9 +10,11 @@ It does not close either issue or enable mediated admission.
 
 The unmodified fixture bundle is vendored from Sympozium's #496/#499 stack at
 Sympozium source commit `8b69b03` (accepted tool-free decisions corrected to
-use the schema-required empty array rather than null). External bundle pin:
+use the schema-required empty array rather than null), regenerated for
+`celln.scoped-artifacts/v2` so `tools[].limits.artifacts.operation` may name
+all six run-data operations (only the decision schema changed). External bundle pin:
 
-`sha256:f95cb70646986fe581aedd2dfd24e8f7055bbe25fec1fe598dd8efc4c0d92e0e`
+`sha256:23ff4588942a476adefd7d4b61d7b73867841f9067d0848cc872b2c3c2940f5b`
 
 Tests check the external pin, normative file checksums, eight decision digests,
 exact canonical bytes and their external-request digests. No new protocol or

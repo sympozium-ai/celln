@@ -11,7 +11,9 @@ review or installed acceptance has already happened.
 
 ## Exact negotiation and wire fields
 
-`GET /v1/capabilities` adds `scopedArtifactContracts: ["celln.scoped-artifacts/v1"]`.
+`GET /v1/capabilities` adds `scopedArtifactContracts: ["celln.scoped-artifacts/v1",
+"celln.scoped-artifacts/v2"]` and `scopedHttpsContracts: ["celln.scoped-https/v1"]`
+(see [v2 and scoped HTTPS](#v2-and-scoped-https) below; this section describes v1).
 Missing field or missing value means **Unsupported**, never a legacy fallback.
 The capability remains preflight-only: scoped receiver/gateway/parent-template
 configuration, KVM, publishers, signed closure, tool schemas, resource admission,
@@ -166,3 +168,69 @@ Run hardware tests only with KVM access and explicit private scratch `TMPDIR`;
 all ignored tests: some unrelated legacy tests are explicitly billable.
 Installed Sympozium/Kubernetes, cross-tenant installed evidence and release
 acceptance remain the dependent PR's work, not implied by this native proof.
+
+## v2 and scoped HTTPS
+
+Mediated model access is Sympozium's default install, so the scoped path now
+serves the same starter toolbox as the fleet path. Both contracts are
+additive: a v1 decision (enduring, exact read/write) behaves exactly as above.
+
+**`celln.scoped-artifacts/v2`** (`tests/fixtures/scoped-artifacts/v2.json`,
+23 vectors, byte-identical in Sympozium):
+
+- `operation` is one of `read`, `write`, `list`, `append`, `search`, `delete`.
+  Effects pair exactly: `write`/`append`/`delete` require
+  `external-side-effects`, `read`/`list`/`search` require `none`, on both the
+  signed limits and the material.
+- The broker grants exactly the named operations
+  (`workspace_broker::ArtifactOperations`); read never implies list/search
+  and write never implies append/delete. Envelopes are the existing
+  `celln.workspace/v1` list/append/search/delete bodies.
+- Enduring parents keep the v1 owner-bound store, lease, minimum
+  intersection, pinned continuation policy and aggregate operation counter.
+- `one-shot` runs with a model route are now supported: `Grant::ephemeral`
+  creates a private, empty store owned by the run's broker and dropped with
+  its cell. There is no parent, lease, reuse or persistence.
+- The shared authorisation decision schema admits the six operations (bundle
+  pin `sha256:23ff4588942a476adefd7d4b61d7b73867841f9067d0848cc872b2c3c2940f5b`;
+  only `decision.schema.json` changed).
+
+**`celln.scoped-https/v1`** (`dispatch_scoped_https.rs`,
+`tests/fixtures/scoped-https/v1.json`, 19 vectors, byte-identical in
+Sympozium):
+
+- Signed `tools[i].limits.https` and the material's are strict objects:
+  `allowHosts` exactly `["*"]` or 1–16 distinct lowercase multi-label DNS
+  names, `maxRequests` 1–16, `maxResponseBytes` 1–4096, `timeoutMillis`
+  1–30000 and at most the tool's `timeoutMillis`; effects
+  `external-side-effects`; `artifacts` null; a model route. Signed hosts must
+  be admitted by the material's (`["*"]` only by `["*"]`), budgets no larger.
+- The signed closure entry point selects the method: `/https-fetch` becomes
+  a `GetGrant`, `/https-post-json` a `PostGrant` (body at most
+  min(argumentBytes, 4096)); any other entry point refuses. Several tools of
+  one method intersect (hosts and budgets), never sum.
+- Enforcement is the fleet broker's own egress (`HttpBroker::with_scoped_https`
+  attaches the grants to the mediated transport): `Reach::Tool` public IPv4
+  only, HTTPS on 443, pinned `--resolve`, every redirect hop re-authorised,
+  POST never redirected, independent GET/POST budgets that never spend or buy
+  model requests. The mediated transport never carries `allow_insecure`, and
+  it never applies to tool requests.
+- One-shot runs attach the grants to their broker at start. Enduring parents
+  attach them per reserved turn, after the worker's model-only check
+  (`fits_mediated_turn`), bounded by the turn's remaining deadline; the policy
+  is pinned and compared on every continuation.
+
+Sympozium requires the contracts a decision actually needs (v1 for enduring
+read/write only, v2 for other operations or one-shot, the HTTPS contract for
+web tools) and refuses an older node with `AUTH_PROTOCOL_UNSUPPORTED` before
+any gateway or native work.
+
+Hermetic proofs: `workspace_broker_scoped_tests.rs` (exact v2 grants across
+three owned turns, foreign owner isolation, one-shot store privacy and
+cancellation), `egress_post.rs`
+(`scoped_https_reuses_tool_reach_on_a_mediated_transport`),
+`dispatch_scoped_tools_tests.rs` (the eight starter tools through the real
+prepare route and `build_native`: all six workspace operations, private/
+plaintext/non-443 web refusal, model alias unaffected; signed widening refused
+at prepare; enduring attachment after the model-only check). Public HTTPS
+success is not exercised hermetically (no network in tests).
