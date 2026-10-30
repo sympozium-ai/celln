@@ -108,6 +108,7 @@ mod tests {
             require_tool_call: false,
             allow_insecure: false,
             max_tokens: json_harness::DEFAULT_MAX_TOKENS,
+            budget_exhaustion: json_harness::BudgetExhaustion::EndTurn,
         }
     }
     fn turn(task: &str) -> ReservedTurn {
@@ -185,5 +186,39 @@ mod tests {
         let mut bad = config();
         bad.task = "hidden task".into();
         assert!(Template::new(bad).is_err());
+    }
+
+    /// A worker template written before `budget_exhaustion` existed and its
+    /// binding, pinned: fleets hash these bytes into their parent permits.
+    const PINNED_TEMPLATE: &str = r#"{"contract":"celln.json-tools/v1","task":"","system":"host persona","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","tools":[],"max_turns":6,"max_calls":5}"#;
+    const PINNED_BINDING: &str =
+        "blake3:76d7c2987f990bacb99a451ad9e96ddd781d9ea17fce67adfca1aa6ca62f342c";
+
+    #[test]
+    fn templates_without_budget_exhaustion_keep_their_binding() {
+        let pinned: Config = serde_json::from_str(PINNED_TEMPLATE).unwrap();
+        let template = Template::new(pinned.clone()).unwrap();
+        assert_eq!(template.binding().0, PINNED_BINDING);
+        assert_eq!(
+            serde_json::to_string(template.policy()).unwrap(),
+            PINNED_TEMPLATE
+        );
+        let mut explicit: serde_json::Value = serde_json::from_str(PINNED_TEMPLATE).unwrap();
+        explicit["budget_exhaustion"] = "end_turn".into();
+        let explicit: Config = serde_json::from_value(explicit).unwrap();
+        assert_eq!(Template::new(explicit).unwrap().binding().0, PINNED_BINDING);
+        // Opting in is another worker configuration, needing fresh approval,
+        // and reserves exactly the same model budget per turn.
+        let mut opted = pinned;
+        opted.budget_exhaustion = json_harness::BudgetExhaustion::ToolError;
+        let opted = Template::new(opted).unwrap();
+        assert_ne!(opted.binding().0, PINNED_BINDING);
+        let mut reserved = turn(r#"{"history":[],"message":"hello"}"#);
+        reserved.limits.model_requests = 5;
+        reserved.limits.output_tokens = 6 * 512;
+        assert!(opted.arguments(&reserved).is_err());
+        reserved.limits.model_requests = 6;
+        let args = opted.arguments(&reserved).unwrap();
+        assert!(args[0].ends_with(r#""budget_exhaustion":"tool_error"}"#));
     }
 }
