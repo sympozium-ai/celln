@@ -35,6 +35,34 @@ Host configuration is one bounded JSON argument (at most 64 KiB) containing:
   explicit `enduring.requireToolCall` intent through matching prepared parent
   registration. The one-shot catalogue issuer is unchanged.
   Provider semantics: [DeepSeek chat completions](https://api-docs.deepseek.com/api/create-chat-completion/).
+- Optional `budget_exhaustion` says what happens when the model asks for more
+  tool calls than `max_calls` leaves. `end_turn` is the default, and the only
+  behaviour before this field: the turn ends with `tool call budget exhausted`
+  and nothing in the batch runs. `tool_error` runs the calls that still fit the
+  budget, in order, and runs **none** of the rest. Each refused call gets a
+  `role:tool` result with the stable content
+  `{"error":"tool call budget exhausted; answer without further tools"}`, so
+  every call ID is answered and the model can finish with what it has. Under
+  `tool_error`, a request on which no further call could run (the call budget
+  is spent) or after which no request would remain to read a result (the last
+  of `max_turns`) carries `tool_choice: none`, which the Anthropic translation
+  sends as a request without tools. The model-request budget does not grow: the
+  loop is still at most `max_turns` requests, within the permit's
+  `MAX_TURN_MODEL_REQUESTS`. If a provider still calls a tool on the last
+  request, the turn ends as before (`model budget leaves no tool result turn`)
+  without running it. Batch validation is unchanged: an unselected tool, a
+  repeated call ID or invalid arguments anywhere in the batch, including the
+  refused part, still refuse the whole batch before any side effect, and so does
+  a batch of more than 16 calls, which the broker could not replay. The worker
+  reports each refused call as a `{"type":"budget",...}` event, and its
+  completion carries `budgetRefusedCalls`; under `end_turn` neither appears.
+  Omitting the field or setting `end_turn` keeps the serialized template bytes
+  and turn-template binding unchanged (pinned by tests). `tool_error` is a
+  different worker configuration and needs fresh host approval. Older workers
+  refuse a template that names the field rather than ignoring it. On the scoped
+  path the host sets it from the operation's `profileSpec.json.budgetExhaustion`
+  (`end_turn` | `tool_error`; any other value refuses with
+  `AUTH_LIMIT_OUT_OF_RANGE`).
 - Each tool has `name`, canonical absolute `path`, executable BLAKE3 `hash`,
   `description`, `input_schema`, `output_schema`, `input_bytes`, `output_bytes`
   and `timeout_ms`.
@@ -57,7 +85,8 @@ before the first call executes. A requested unselected tool or repeated call ID
 refuses; omission grants nothing. A final answer may use no tools. Results must
 validate against the pinned output schema before returning to the model.
 Tool-call batches on the last permitted model turn refuse before execution:
-there must be a remaining model turn to consume the results. A tool-free final
+there must be a remaining model turn to consume the results (under
+`budget_exhaustion: tool_error` that request also withholds tools). A tool-free final
 answer on the last turn is allowed. This does not promise that a later provider
 request succeeds or that it has enough remaining host-granted allowance.
 

@@ -129,6 +129,7 @@ fn config(names: &[&str]) -> Config {
         require_tool_call: false,
         allow_insecure: false,
         max_tokens: DEFAULT_MAX_TOKENS,
+        budget_exhaustion: BudgetExhaustion::EndTurn,
         tools: names
             .iter()
             .map(|name| Tool {
@@ -810,4 +811,243 @@ fn an_answer_longer_than_the_parent_accepts_fails_the_turn_with_the_remedy() {
         answer(MAX_ANSWER_BYTES + 1).unwrap_err().to_string(),
         "final answer exceeds 8192 bytes: ask for a shorter answer or lower the backend's maxOutputTokens"
     );
+}
+
+fn tool_error(names: &[&str]) -> Config {
+    let mut cfg = config(names);
+    cfg.budget_exhaustion = BudgetExhaustion::ToolError;
+    cfg
+}
+
+#[test]
+fn over_budget_calls_are_refused_as_tool_errors_and_never_executed() {
+    let mut cfg = tool_error(&["echo"]);
+    cfg.max_calls = 2;
+    let executed = Cell::new(0);
+    let mut requests = Vec::new();
+    let mut events = Vec::new();
+    let result = run(
+        &cfg,
+        |wire| {
+            let wire: Value = serde_json::from_slice(wire).unwrap();
+            requests.push(wire["body"].clone());
+            Ok(match requests.len() {
+                1 => response(vec![
+                    call("a", "echo", r#"{"text":"one"}"#),
+                    call("b", "echo", r#"{"text":"two"}"#),
+                    call("c", "echo", r#"{"text":"three"}"#),
+                ]),
+                _ => answer(),
+            })
+        },
+        |_, input| {
+            executed.set(executed.get() + 1);
+            Ok(input.to_vec())
+        },
+        |e| events.push(e),
+    )
+    .unwrap();
+    assert_eq!(result, "completed structured task");
+    assert_eq!(executed.get(), 2, "only the budgeted calls execute");
+    assert_eq!(requests.len(), 2);
+    // Calls remained on the first request; none after the budget was spent.
+    assert_eq!(requests[0]["tool_choice"], "auto");
+    assert_eq!(requests[1]["tool_choice"], "none");
+    // Every call ID is answered: two results and one stable budget error.
+    let tool_messages: Vec<_> = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .cloned()
+        .collect();
+    assert_eq!(tool_messages.len(), 3);
+    assert_eq!(tool_messages[2]["tool_call_id"], "c");
+    assert_eq!(
+        tool_messages[2]["content"],
+        r#"{"error":"tool call budget exhausted; answer without further tools"}"#
+    );
+    assert_eq!(
+        tool_messages[2]["content"],
+        Value::String(tool_budget_exhausted_result())
+    );
+    // The outcome is recorded: a budget event for the refused call and the
+    // count on the completion.
+    let budget: Vec<_> = events.iter().filter(|e| e["type"] == "budget").collect();
+    assert_eq!(budget.len(), 1);
+    assert_eq!(budget[0]["id"], "c");
+    assert_eq!(budget[0]["maxCalls"], 2);
+    assert_eq!(events.iter().filter(|e| e["type"] == "tool").count(), 2);
+    let completed = events.iter().find(|e| e["type"] == "completed").unwrap();
+    assert_eq!(completed["calls"], 2);
+    assert_eq!(completed["budgetRefusedCalls"], 1);
+}
+
+#[test]
+fn the_last_model_request_withholds_tools_and_the_turn_stays_within_its_requests() {
+    let mut cfg = tool_error(&["echo"]);
+    cfg.max_turns = 3;
+    let mut choices = Vec::new();
+    let executed = Cell::new(0);
+    let result = run(
+        &cfg,
+        |wire| {
+            let wire: Value = serde_json::from_slice(wire).unwrap();
+            choices.push(wire["body"]["tool_choice"].clone());
+            let id = format!("call-{}", choices.len());
+            Ok(if wire["body"]["tool_choice"] == "none" {
+                answer()
+            } else {
+                response(vec![call(&id, "echo", r#"{"text":"again"}"#)])
+            })
+        },
+        |_, input| {
+            executed.set(executed.get() + 1);
+            Ok(input.to_vec())
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(result, "completed structured task");
+    assert_eq!(choices, [json!("auto"), json!("auto"), json!("none")]);
+    assert_eq!(executed.get(), 2);
+
+    // A provider that calls a tool despite `none` still cannot spend a
+    // request the permit does not hold, nor run the call: the turn ends.
+    let mut requests = 0;
+    let error = run(
+        &cfg,
+        |_| {
+            requests += 1;
+            Ok(response(vec![call(
+                &format!("call-{requests}"),
+                "echo",
+                r#"{"text":"again"}"#,
+            )]))
+        },
+        |_, input| Ok(input.to_vec()),
+        |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(requests, cfg.max_turns);
+    assert!(error.to_string().contains("result turn"));
+}
+
+#[test]
+fn tool_error_still_refuses_invalid_batches_before_any_side_effect() {
+    // An unselected tool or invalid arguments in the over-budget part of a
+    // batch still refuse the whole batch: refusal is not a validation bypass.
+    for bad in [
+        call("b", "unselected", r#"{"text":"x"}"#),
+        call("b", "echo", r#"{"text":42}"#),
+        call("a", "echo", r#"{"text":"x"}"#),
+    ] {
+        let mut cfg = tool_error(&["echo"]);
+        cfg.max_calls = 1;
+        let bytes = response(vec![call("a", "echo", r#"{"text":"valid"}"#), bad]);
+        assert!(run(
+            &cfg,
+            |_| Ok(bytes.clone()),
+            |_, _| panic!("invalid batch executed"),
+            |_| {}
+        )
+        .is_err());
+    }
+    // A batch the broker could not replay refuses before any side effect.
+    let cfg = tool_error(&["echo"]);
+    let batch: Vec<_> = (0..17)
+        .map(|i| call(&format!("c{i}"), "echo", r#"{"text":"x"}"#))
+        .collect();
+    let bytes = response(batch);
+    assert!(run(
+        &cfg,
+        |_| Ok(bytes.clone()),
+        |_, _| panic!("oversized batch executed"),
+        |_| {}
+    )
+    .is_err());
+    // With no call budget at all, every call is refused and nothing runs.
+    let mut cfg = tool_error(&["echo"]);
+    cfg.max_calls = 0;
+    let mut choices = Vec::new();
+    let result = run(
+        &cfg,
+        |wire| {
+            let wire: Value = serde_json::from_slice(wire).unwrap();
+            choices.push(wire["body"]["tool_choice"].clone());
+            Ok(if choices.len() == 1 {
+                response(vec![call("a", "echo", r#"{"text":"x"}"#)])
+            } else {
+                answer()
+            })
+        },
+        |_, _| panic!("no call budget"),
+        |_| {},
+    )
+    .unwrap();
+    assert_eq!(result, "completed structured task");
+    assert_eq!(choices, [json!("none"), json!("none")]);
+}
+
+#[test]
+fn the_default_contract_still_ends_the_turn_and_never_withholds_tools() {
+    let mut cfg = config(&["echo"]);
+    cfg.max_calls = 2;
+    let mut choices = Vec::new();
+    let mut events = Vec::new();
+    let error = run(
+        &cfg,
+        |wire| {
+            let wire: Value = serde_json::from_slice(wire).unwrap();
+            choices.push(wire["body"]["tool_choice"].clone());
+            Ok(response(vec![
+                call("a", "echo", r#"{"text":"one"}"#),
+                call("b", "echo", r#"{"text":"two"}"#),
+                call("c", "echo", r#"{"text":"three"}"#),
+            ]))
+        },
+        |_, _| panic!("over-budget batch executed"),
+        |e| events.push(e),
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "tool call budget exhausted");
+    assert_eq!(choices, [json!("auto")]);
+    assert!(!events.iter().any(|e| e["type"] == "budget"));
+    // A completion under the default contract carries no budget field.
+    let mut events = Vec::new();
+    cfg.max_turns = 1;
+    run(&cfg, |_| Ok(answer()), |_, _| panic!(), |e| events.push(e)).unwrap();
+    let completed = events.iter().find(|e| e["type"] == "completed").unwrap();
+    assert!(completed.get("budgetRefusedCalls").is_none());
+}
+
+#[test]
+fn budget_exhaustion_is_omitted_at_its_default_and_refuses_unknown_values() {
+    let mut cfg = config(&[]);
+    cfg.task.clear();
+    // Literal output of the struct as it was before `budget_exhaustion`.
+    let before = r#"{"contract":"celln.json-tools/v1","task":"","system":"Bounded agent","url":"https://api.deepseek.com/chat/completions","model":"deepseek-chat","tools":[],"max_turns":6,"max_calls":6}"#;
+    assert_eq!(serde_json::to_string(&cfg).unwrap(), before);
+    let mut explicit: Value = serde_json::from_str(before).unwrap();
+    explicit["budget_exhaustion"] = json!("end_turn");
+    let explicit: Config = serde_json::from_value(explicit).unwrap();
+    assert_eq!(serde_json::to_string(&explicit).unwrap(), before);
+    cfg.budget_exhaustion = BudgetExhaustion::ToolError;
+    assert_eq!(
+        serde_json::to_string(&cfg).unwrap(),
+        format!(
+            r#"{},"budget_exhaustion":"tool_error"}}"#,
+            &before[..before.len() - 1]
+        )
+    );
+    for value in [json!("toolError"), json!(""), json!(null), json!(true)] {
+        let mut raw: Value = serde_json::from_str(before).unwrap();
+        raw["budget_exhaustion"] = value;
+        assert!(serde_json::from_value::<Config>(raw).is_err());
+    }
+    // How a worker that predates a field treats it: the template is refused,
+    // never read as the old behaviour.
+    let mut raw: Value = serde_json::from_str(before).unwrap();
+    raw["budget_exhaustion_next"] = json!("tool_error");
+    assert!(serde_json::from_value::<Config>(raw).is_err());
 }
