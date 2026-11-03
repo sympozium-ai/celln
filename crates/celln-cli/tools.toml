@@ -43,7 +43,7 @@
 [[image]]
 name = "python"
 tag = "docker.io/library/python:3.12-slim"
-ref = "docker.io/library/python@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704"
+ref = "docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30"
 about = "CPython 3.12 with its own OpenSSL, sqlite and glibc"
 default = true
 provides = [
@@ -54,7 +54,7 @@ provides = [
 [[image]]
 name = "curl"
 tag = "docker.io/curlimages/curl:latest"
-ref = "docker.io/curlimages/curl@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac"
+ref = "docker.io/curlimages/curl@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93"
 about = "curl and its TLS stack, musl-linked"
 default = true
 provides = [
@@ -75,7 +75,7 @@ provides = [
 [[image]]
 name = "busybox"
 tag = "docker.io/library/busybox:1.37.0-musl"
-ref = "docker.io/library/busybox@sha256:5cec3fc171c87218698e85a52af7087de727372aae264a787b8112901a5b0092"
+ref = "docker.io/library/busybox@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
 about = "BusyBox 1.37, one static musl binary carrying the classic Unix text tools"
 provides = [
   { alias = "/bin/busybox", exec = "/bin/busybox" },
