@@ -8,6 +8,12 @@
 **Celln** runs agents in isolated **cells** that borrow verified tools instead
 of rebuilding Linux environments.
 
+> **Scope:** Celln is now an opt-in execution backend for
+> [Sympozium](https://github.com/sympozium-ai/sympozium) rather than its default.
+> Its scope is frozen to the `celln.json-tools/v1` contract, isolation
+> correctness, security fixes and per-release KVM evidence; new runtime features
+> are paused. See [docs/SCOPE.md](docs/SCOPE.md).
+
 ```console
 $ celln agent --tool python "decode this base64 and name the file type: R0lGODlhAQABAAAAACw="
   ✔ /usr/bin/python permitted in the agent lane

@@ -87,6 +87,7 @@ Persistent conversation support needs an explicit design: state outside
 disposable cells, or a bounded persistent execution model. Define reconnect,
 turn cancellation, resume and teardown. An indefinitely extended one-shot run
 is not a persistence implementation. Coordinate with [Celln #9](https://github.com/sympozium-ai/celln/issues/9).
+This work is paused under the [scope freeze](SCOPE.md).
 
 ### R2 — Model and remote-service mediation
 
