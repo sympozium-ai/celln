@@ -819,7 +819,25 @@ fn native_json_config(
     if cap != warden::egress::DEFAULT_REQUEST_OUTPUT_TOKENS {
         config["max_tokens"] = json!(cap);
     }
+    // Likewise named only for the opt-in, so a profile without
+    // `budgetExhaustion` (or stating the default) keeps its template bytes; a
+    // worker that predates the field refuses the template instead of ending
+    // the turn the old way.
+    if budget_exhaustion(limits)? == pilot::json_harness::BudgetExhaustion::ToolError {
+        config["budget_exhaustion"] = json!("tool_error");
+    }
     Ok(config)
+}
+
+/// The profile's `json.budgetExhaustion`: `end_turn` (also when absent) or
+/// `tool_error`. Anything else refuses before any claim or VM.
+fn budget_exhaustion(limits: &Value) -> Result<pilot::json_harness::BudgetExhaustion, String> {
+    match limits.get("budgetExhaustion") {
+        None => Ok(pilot::json_harness::BudgetExhaustion::EndTurn),
+        Some(value) => {
+            serde_json::from_value(value.clone()).map_err(|_| "AUTH_LIMIT_OUT_OF_RANGE".into())
+        }
+    }
 }
 
 /// Model requests one worker turn may make: the profile's loop, never more
@@ -3154,6 +3172,60 @@ mod tests {
             assert_eq!(config["require_tool_call"], true);
             assert_eq!(config["max_turns"], 2);
             assert_eq!(config["task"], if enduring { "" } else { "task" });
+        }
+    }
+
+    /// The worker template a profile without `budgetExhaustion` produced
+    /// before the field existed, and its turn-template binding, pinned.
+    const PINNED_SCOPED_TEMPLATE: &str = r#"{"contract":"celln.json-tools/v1","max_calls":1,"max_turns":1,"model":"model","require_tool_call":false,"system":"fixture","task":"","tools":[],"url":"https://celln-model.invalid/v1/invoke"}"#;
+    const PINNED_SCOPED_BINDING: &str =
+        "blake3:8b69c6083768dd5cfe3928a5f6fad8054a3933a49c59b283a6762cb8c4cd6571";
+
+    #[test]
+    fn budget_exhaustion_is_opt_in_and_leaves_existing_templates_byte_identical() {
+        let (operation, mut decision) = fixture();
+        decision["route"]["model"] = json!("model");
+        let template = |mode: Option<Value>| {
+            let mut operation = operation.clone();
+            if let Some(mode) = mode {
+                operation["resolution"]["execution"]["profileSpec"]["json"]["budgetExhaustion"] =
+                    mode;
+            }
+            let prepared = PreparedRecord {
+                version: 1,
+                id: String::new(),
+                owner: String::new(),
+                operation,
+                decision: decision.clone(),
+            };
+            let config = native_json_config(&prepared, &[], true)?;
+            let typed: pilot::json_harness::Config =
+                serde_json::from_value(config.clone()).map_err(|e| e.to_string())?;
+            let binding = pilot::turn_worker::Template::new(typed)
+                .map_err(|e| e.to_string())?
+                .binding()
+                .clone();
+            Ok::<_, String>((config.to_string(), binding.0))
+        };
+        let unnamed = template(None).unwrap();
+        assert_eq!(unnamed.0, PINNED_SCOPED_TEMPLATE);
+        assert_eq!(unnamed.1, PINNED_SCOPED_BINDING);
+        assert_eq!(template(Some(json!("end_turn"))).unwrap(), unnamed);
+        let opted = template(Some(json!("tool_error"))).unwrap();
+        assert!(opted.0.contains(r#""budget_exhaustion":"tool_error""#));
+        assert_ne!(opted.1, unnamed.1);
+        for mode in [
+            json!("toolError"),
+            json!(""),
+            json!(true),
+            Value::Null,
+            json!(1),
+        ] {
+            assert_eq!(
+                template(Some(mode.clone())).unwrap_err(),
+                "AUTH_LIMIT_OUT_OF_RANGE",
+                "{mode}"
+            );
         }
     }
 

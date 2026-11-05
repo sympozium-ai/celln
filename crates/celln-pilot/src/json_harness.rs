@@ -42,7 +42,14 @@ pub fn validate(config: &Config) -> Result<()> {
 pub fn validate_with_history(config: &Config, history: &[Exchange]) -> Result<()> {
     let tools = compile(config)?;
     let history = fit_history(config, &tools, history)?;
-    model_request(config, &tools, &contextual_messages(config, history)?, 0).map(|_| ())
+    model_request(
+        config,
+        &tools,
+        &contextual_messages(config, history)?,
+        0,
+        config.max_turns == 1,
+    )
+    .map(|_| ())
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -219,6 +226,49 @@ pub struct Config {
         skip_serializing_if = "is_default_max_tokens"
     )]
     pub max_tokens: u64,
+    /// What the worker does when the model asks for more tool calls than
+    /// `max_calls` leaves. `end_turn` (the default, and the only behaviour
+    /// before this field) ends the turn with "tool call budget exhausted".
+    /// `tool_error` executes nothing past the budget: each over-budget call
+    /// is answered with a `role:tool` error result, and the requests the
+    /// model can no longer use tools on carry `tool_choice: none`, so the
+    /// model can still answer within the same model-request budget. Omitted
+    /// at the default, which preserves the original serialized template and
+    /// hash; a worker built before this field refuses a template that
+    /// carries it (`deny_unknown_fields`) rather than ignoring it.
+    #[serde(default, skip_serializing_if = "BudgetExhaustion::is_end_turn")]
+    pub budget_exhaustion: BudgetExhaustion,
+}
+
+/// How a worker answers a tool call past its `max_calls` budget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetExhaustion {
+    /// End the turn: "tool call budget exhausted". The original contract.
+    #[default]
+    EndTurn,
+    /// Refuse only the over-budget calls, as tool errors the model can read.
+    ToolError,
+}
+
+impl BudgetExhaustion {
+    fn is_end_turn(&self) -> bool {
+        *self == BudgetExhaustion::EndTurn
+    }
+}
+
+/// Most calls one model response may carry: the broker's per-message bound,
+/// and the contract's `max_calls` ceiling.
+const MAX_BATCH_CALLS: usize = 16;
+
+/// The text of the tool error an over-budget call receives under
+/// `budget_exhaustion: tool_error`. Stable: models and operators read it.
+pub const TOOL_BUDGET_EXHAUSTED: &str = "tool call budget exhausted; answer without further tools";
+
+/// The `role:tool` content an over-budget call receives: a JSON object, like
+/// every tool result, naming the refusal. It is never a tool's output.
+pub fn tool_budget_exhausted_result() -> String {
+    json!({"error": TOOL_BUDGET_EXHAUSTED}).to_string()
 }
 
 fn is_false(value: &bool) -> bool {
@@ -392,8 +442,12 @@ pub fn run_with_history(
     let mut messages = contextual_messages(config, history)?;
     let mut ids = BTreeSet::new();
     let mut calls = 0usize;
+    // Over-budget calls answered with a tool error (`tool_error` only).
+    let mut refused = 0usize;
+    let tool_error = config.budget_exhaustion == BudgetExhaustion::ToolError;
     for turn in 0..config.max_turns {
-        let wire = model_request(config, &tools, &messages, calls)?;
+        let last = turn + 1 == config.max_turns;
+        let wire = model_request(config, &tools, &messages, calls, last)?;
         let response = broker(&wire)?;
         ensure!(response.len() <= 1_048_576, "model response exceeds limit");
         let response: Value = serde_json::from_slice(&response)?;
@@ -408,9 +462,19 @@ pub fn run_with_history(
             Some(Value::Array(calls)) => calls.clone(),
             _ => bail!("invalid tool call list"),
         };
+        // Calls of this batch that may still execute; any beyond are refused
+        // before execution, as the turn's end or (tool_error) as tool errors.
+        let allowed = config.max_calls.saturating_sub(calls);
         ensure!(
-            tool_calls.len() <= config.max_calls.saturating_sub(calls),
+            tool_error || tool_calls.len() <= allowed,
             "tool call budget exhausted"
+        );
+        // Refused calls are still replayed to the broker, which accepts at
+        // most 16 calls per message (the contract's `max_calls` ceiling); a
+        // larger batch could not be answered, so it refuses here.
+        ensure!(
+            tool_calls.len() <= MAX_BATCH_CALLS,
+            "tool call batch exceeds contract"
         );
         event(json!({"type":"model","turn":turn,"model":config.model}));
         if tool_calls.is_empty() {
@@ -434,13 +498,20 @@ pub fn run_with_history(
             ensure!(answer.len() <= MAX_ANSWER_BYTES, "{}", answer_too_long());
             // `answerLimit` tells the host which answer contract this guest
             // package was built with; a package without it predates 8 KiB.
-            event(
-                json!({"type":"completed","answer":answer,"calls":calls,"answerLimit":MAX_ANSWER_BYTES}),
-            );
+            let mut completed = json!({"type":"completed","answer":answer,"calls":calls,"answerLimit":MAX_ANSWER_BYTES});
+            if tool_error {
+                // The budget outcome travels with the completion, so the
+                // turn's record says how many calls were refused.
+                completed["budgetRefusedCalls"] = json!(refused);
+            }
+            event(completed);
             return Ok(answer.into());
         }
         // Do not start side effects when the configured turn budget already
-        // makes returning their results to the model impossible.
+        // makes returning their results to the model impossible. Under
+        // tool_error the last request withheld tools (`tool_choice: none`);
+        // a provider that calls one anyway still ends the turn here, because
+        // no model request remains to read a result or an error.
         ensure!(
             turn + 1 < config.max_turns,
             "model budget leaves no tool result turn"
@@ -482,7 +553,17 @@ pub fn run_with_history(
         );
         messages
             .push(json!({"role":"assistant","content":message["content"],"tool_calls":sanitized}));
-        for (id, tool, arguments) in pending {
+        for (index, (id, tool, arguments)) in pending.into_iter().enumerate() {
+            if index >= allowed {
+                // Only reachable under tool_error: the call is not executed;
+                // the model reads why and can answer with what it has.
+                refused += 1;
+                event(
+                    json!({"type":"budget","id":id,"name":tool.tool.name,"reason":"tool call budget exhausted","maxCalls":config.max_calls}),
+                );
+                messages.push(json!({"role":"tool","tool_call_id":id,"content":tool_budget_exhausted_result()}));
+                continue;
+            }
             let output = execute(tool.tool, arguments.as_bytes())?;
             tool.output
                 .validate(&output, tool.tool.output_bytes)
@@ -554,7 +635,13 @@ fn fit_history<'a>(
     };
     for start in 0..history.len() {
         let kept = &history[start..];
-        let wire = model_wire(config, tools, &contextual_messages(config, kept)?, 0)?;
+        let wire = model_wire(
+            config,
+            tools,
+            &contextual_messages(config, kept)?,
+            0,
+            config.max_turns == 1,
+        )?;
         if wire.len() <= MODEL_WIRE_BYTES - reserve {
             return Ok(kept);
         }
@@ -567,8 +654,9 @@ fn model_request(
     tools: &[CheckedTool<'_>],
     messages: &[Value],
     calls: usize,
+    last: bool,
 ) -> Result<Vec<u8>> {
-    let wire = model_wire(config, tools, messages, calls)?;
+    let wire = model_wire(config, tools, messages, calls, last)?;
     ensure!(
         wire.len() <= MODEL_WIRE_BYTES,
         "conversation/schema envelope exceeds broker byte limit"
@@ -581,6 +669,7 @@ fn model_wire(
     tools: &[CheckedTool<'_>],
     messages: &[Value],
     calls: usize,
+    last: bool,
 ) -> Result<Vec<u8>> {
     let mut body = json!({"model":config.model,"stream":false,"max_tokens":config.max_tokens,"messages":messages});
     if !tools.is_empty() {
@@ -588,7 +677,15 @@ fn model_wire(
         // Provider request is advisory; completion is independently checked
         // above. Once a tool has run, allow the final answer without forcing
         // another side effect or replenishing the existing call budget.
-        body["tool_choice"] = json!(if config.require_tool_call && calls == 0 {
+        // Under tool_error, a request after which no call could execute or
+        // no request would remain to read its result withholds tools, so the
+        // model answers instead of spending the turn's last request on a
+        // call. The default contract never sends `none`.
+        let withheld = config.budget_exhaustion == BudgetExhaustion::ToolError
+            && (last || calls >= config.max_calls);
+        body["tool_choice"] = json!(if withheld {
+            "none"
+        } else if config.require_tool_call && calls == 0 {
             "required"
         } else {
             "auto"
